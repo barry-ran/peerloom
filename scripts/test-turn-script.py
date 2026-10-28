@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 MOCK = r'''#!/usr/bin/env python3
-import json, os, pathlib, stat, subprocess, sys
+import json, os, pathlib, re, stat, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
 root = pathlib.Path(os.environ["TEST_ROOT"])
 if name == "python3":
@@ -20,6 +20,8 @@ if name == "python3":
 if name == "docker":
     if "build" in sys.argv:
         recipe = sys.stdin.read()
+        image = sys.argv[sys.argv.index("--tag") + 1]
+        assert re.fullmatch(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", image)
         assert "@sha256:bbefd3e1" in recipe and "cat /usr/bin/turnserver > /tmp/turnserver-unprivileged" in recipe
         assert "USER nobody:nogroup" in recipe and "sha256sum /usr/bin/turnserver" in recipe
         assert sys.argv[sys.argv.index("--network") + 1] == "none"
@@ -36,7 +38,7 @@ if name == "docker":
         assert "--read-only" in args and "--cap-drop" in args and "no-new-privileges:true" in args
         assert args[args.index("--entrypoint") + 1] == "/usr/bin/turnserver"
         assert (root / "image-built").exists()
-        assert any(arg.endswith(":local") for arg in args)
+        assert any(arg.startswith("peerloom-turn-test:") for arg in args)
         mount = args[args.index("--mount") + 1]
         config = pathlib.Path(mount.split("src=", 1)[1].split(",", 1)[0])
         assert stat.S_IMODE(config.stat().st_mode) == 0o600

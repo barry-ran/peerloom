@@ -8,7 +8,7 @@ if [ "$(id -u)" = 0 ]; then echo 'TURN test requires a non-root caller' >&2; exi
 umask 077
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/peerloom-turn.XXXXXXXX")"
 container="peerloom-turn-$(basename "$fixture")"
-image="$container:local"
+image="peerloom-turn-test:$(basename "$fixture")"
 cleanup() {
   result=$?
   if [ "$result" -ne 0 ]; then
