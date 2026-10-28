@@ -173,9 +173,16 @@ class ImportProbeTest(unittest.TestCase):
                 self.assertNotIn(name, output.getvalue())
                 self.assertLessEqual(len(output.getvalue().encode()), 1024)
 
+    def test_workflow_source_uses_utf8_under_windows_legacy_locale(self):
+        original = Path.read_text
+        def windows_default(path, encoding=None, errors=None):
+            return original(path, encoding=encoding or 'cp1252', errors=errors)
+        with patch.object(Path, 'read_text', windows_default):
+            self.test_probe_is_early_single_direct_import_with_owned_cleanup()
+
     def test_probe_is_early_single_direct_import_with_owned_cleanup(self):
-        script = (ROOT/'test-windows-service.ps1').read_text()
-        workflow = (ROOT.parent/'.github/workflows/native.yml').read_text()
+        script = (ROOT/'test-windows-service.ps1').read_text(encoding='utf-8')
+        workflow = (ROOT.parent/'.github/workflows/native.yml').read_text(encoding='utf-8')
         self.assertEqual(script.count('& wsl.exe --import '), 1)
         self.assertIn("$drive.DriveFormat -ne 'NTFS'", script)
         self.assertIn("$drive.DriveType -ne 'Fixed'", script)
@@ -248,11 +255,11 @@ class PlainTarTest(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b'preserved')
 
     def test_single_import_keeps_version_and_io_with_plain_tar_argument(self):
-        source = (ROOT / 'windows-service.py').read_text()
+        source = (ROOT / 'windows-service.py').read_text(encoding='utf-8')
         self.assertIn("str(directory / 'ubuntu_base.tar'), '--version', '1']", source)
         self.assertNotIn("str(directory / 'ubuntu_base.archive'), '--version', '1']", source)
         self.assertIn('stdin=subprocess.DEVNULL if owned_import else None', source)
-        pins = json.loads((ROOT / 'windows-service-dependencies.json').read_text())['ubuntu_base']
+        pins = json.loads((ROOT / 'windows-service-dependencies.json').read_text(encoding='utf-8'))['ubuntu_base']
         self.assertEqual(pins['tar_size'], 84101120)
         self.assertEqual(pins['tar_sha256'], 'c0bb584a1fe79db423329609b8c8280ca755e99fdee6be4555420061bdd08cde')
 
@@ -324,7 +331,7 @@ class ArchiveTest(unittest.TestCase):
                 self.assertFalse((Path(temp) / 'out').exists())
 
     def test_dependency_pins_are_explicit_official_sha256(self):
-        dependencies = json.loads((ROOT / 'windows-service-dependencies.json').read_text())
+        dependencies = json.loads((ROOT / 'windows-service-dependencies.json').read_text(encoding='utf-8'))
         self.assertEqual(dependencies['postgresql']['version'], '18.6')
         self.assertEqual(dependencies['redis']['version'], '8.10.3')
         for spec in dependencies.values():
@@ -333,7 +340,7 @@ class ArchiveTest(unittest.TestCase):
             self.assertIn(service.urllib.parse.urlparse(spec['url']).hostname, service.HOSTS)
 
     def test_no_privileged_or_global_mutation_fallback(self):
-        source = (ROOT / 'windows-service.py').read_text() + (ROOT / 'test-windows-service.ps1').read_text()
+        source = (ROOT / 'windows-service.py').read_text(encoding='utf-8') + (ROOT / 'test-windows-service.ps1').read_text(encoding='utf-8')
         for forbidden in ('--set-default', '--shutdown', '--install', 'Enable-WindowsOptionalFeature', 'Start-Service', '-Verb RunAs', 'netsh', 'Set-NetFirewall'):
             self.assertNotIn(forbidden, source)
         self.assertIn("'--version', '1'", source)
