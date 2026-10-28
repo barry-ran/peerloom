@@ -117,6 +117,7 @@ case "$PHASE" in
     # simulator-only application host for the SAME original test sources and SDK.
     [[ ! -e "$OUT/SimulatorHost" ]]
     cp -R "$HERE/SimulatorHost" "$OUT/SimulatorHost"
+    cp -R "$HERE/ServiceTests" "$OUT/ServiceTests"
     IOS_PROJECT="$OUT/SimulatorHost/PeerloomSimulatorHost.xcodeproj"
     run_capture ios-schemes 60 xcodebuild -project "$IOS_PROJECT" -list -json
     python3 - "$OUT/phase-ios-schemes.stdout" <<'PYSCHEME'

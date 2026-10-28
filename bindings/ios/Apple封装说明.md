@@ -77,6 +77,14 @@ try await sdk.close()
 
 后台/锁屏时平台可能挂起应用或拒绝 Keychain；本封装不保证后台常驻连接。WSS 重连不会延长旧授权，平台暂停后的租约边界和真机锁屏行为仍需单独验收。
 
+## 独立真实服务链验收
+
+`ServiceTests/SwiftServiceTests.swift` 与 `PeerloomSwiftService` scheme 新增一个独立 iOS Simulator 场景，**尚待首次原生 CI 执行**；不替换既有 macOS 14 项/iOS 12 项、TLS 或签名检查。它不注入 MockNative 或内存存储：真实 Go 管理 API 创建三个不同 App 的安装身份及方向性授权，Swift 将身份写入真实默认 DP Keychain 后由 SDK 恢复、认证 WSS、明确接受会话，再验证两条连接、可靠/低延迟消息、256 KiB 字节流、双工读写、FIN 半关闭与父子失效。此场景证明恢复身份链，不冒称首次注册由 Swift 发出。
+
+仅在 macOS CI 自己的回环地址启动 PostgreSQL、Redis 和 Go；先只读探测预装的精确版本，不匹配时校验官方归档 SHA-256 后在用户私有目录编译。缓存按 runner/镜像、依赖 manifest 与构建脚本区分，恢复后核对文件哈希和实际版本，绝不缓存 PGDATA、配置秘密或测试身份，也不调用 `brew services`、提权或操作已有数据库。依赖原始许可证随构建缓存保留，不代替第三方法律审查。
+
+fixture 只在本次 Simulator 应用的 Documents 中以 0600 保存，不改已签名的 bundle；Go/数据库日志、凭证、测试 xcresult 和运行时原始日志只留在临时私有目录并在结束清理。公开证据仅包含固定测试名、结果、无秘密阶段标记与编译日志；失败时也尝试删除已确认 UUID 的本次 Simulator，并逐项停止自己创建的前台服务；清理未完成会明确失败，不承诺在创建结果不确定或 runner 被强制终止时仍能清理。测试使用显式 developmentLoopback HTTP/WSS 与真实 WebRTC，不能外推为生产正向 HTTPS 信任或真机验证；现有双平台 TLS 拒绝测试仍独立必需。
+
 ## 原生构建与验收门禁
 
 脚本固定 Xcode **16.4 / 16F6**、Rust **1.99.1**；官方 `macos-15` arm64 runner 镜像列出该 Xcode 路径。runner 镜像仍滚动更新，构建记录实际 ImageVersion 与 SDK 版本，不能称不可变运行环境。[GitHub runner 官方清单](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md)
@@ -100,4 +108,4 @@ iOS 测试使用 `SimulatorHost` 中的空应用宿主和显式 XCTest target，
 
 为尽快定位模拟器问题，CI 先构建独立单 arm64 Simulator 诊断包并执行相同 12 项测试；此产物不是发布 XCFramework。诊断通过后仍须完成全部五 slice 构建与全部原生门禁，失败不会跳过检查晋级。
 
-Linux 可运行 `python3 bindings/ios/scripts/test-static.py`，只覆盖打包平台/头一致性与脚本拒绝伪构建。既有 Swift/Keychain/Xcode 用例已有上述真实证据；当前 macOS 严格 14 项及 iOS 12 项等新增组合仍标**待当前原生 CI 验证**。产物保留项目 MIT；第三方按自身许可，已有 notice/SBOM 的缺项及非法律清关状态继续保留。
+Linux 可运行 `python3 bindings/ios/scripts/test-static.py`，只覆盖打包平台/头一致性与脚本拒绝伪构建。既有 Swift/Keychain/Xcode 用例已有上述真实证据；macOS 严格 14 项及 iOS 12 项已在[精确提交 702a04 的原生阶段](https://github.com/barry-ran/peerloom/actions/runs/40702942734)实测通过；这不表示该提交的打包步骤或全部必需工作流成功。上文独立真实服务场景仍待原生 CI，正式交付仍须当前完整门禁。产物保留项目 MIT；第三方按自身许可，已有 notice/SBOM 的缺项及非法律清关状态继续保留。

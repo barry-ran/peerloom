@@ -126,6 +126,37 @@ jobs:
         with:
           go-version: '1.27.3'
           cache-dependency-path: src/device-server/go.sum
+      - name: 检查 Apple 真实服务夹具边界
+        run: python3 bindings/ios/scripts/test-apple-service.py
+      - name: 准备私有 Apple 服务依赖缓存目录
+        id: apple-service-cache
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/peerloom-apple-service-deps"
+          printf 'key=apple-service-v1-%s-%s-%s\n' "$RUNNER_ARCH" "${ImageVersion:?}" '${{ hashFiles('bindings/ios/scripts/apple-service-dependencies.json', 'bindings/ios/scripts/apple-service.py') }}' >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/peerloom-apple-service-deps
+          key: ${{ steps.apple-service-cache.outputs.key }}
+      - name: iOS 真实 Go 授权与三类通道服务验收（独立场景）
+        timeout-minutes: 30
+        run: |
+          python3 bindings/ios/scripts/apple-service.py \
+            --cache "$RUNNER_TEMP/peerloom-apple-service-deps" \
+            --output "$RUNNER_TEMP/peerloom-apple-service"
+      - name: 保留 Apple 真实服务非秘密证据
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-apple-service-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/peerloom-apple-service/service-evidence.json
+            ${{ runner.temp }}/peerloom-apple-service/service-dependencies.json
+            ${{ runner.temp }}/peerloom-apple-service/service-build.log
+            ${{ runner.temp }}/peerloom-apple-service/service-progress.log
+            ${{ runner.temp }}/peerloom-apple-service/cleanup-failure.txt
       - name: 打包已验收 Apple release XCFramework 与原文证据
         run: |
           python3 scripts/test-package-release.py

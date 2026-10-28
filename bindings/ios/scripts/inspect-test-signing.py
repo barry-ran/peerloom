@@ -34,7 +34,9 @@ def resolve_path(original, products, developer, host=None):
     return target
 
 
-def inspect(products, developer, require_host=False):
+def inspect(products, developer, require_host=False, test_bundle="PeerloomSwiftTests.xctest"):
+    if test_bundle not in ("PeerloomSwiftTests.xctest", "PeerloomServiceTests.xctest"):
+        raise ValueError("测试包必须为本仓库明确声明的原生或服务 XCTest target")
     products, developer = products.resolve(strict=True), developer.resolve(strict=True)
     documents = sorted(products.glob("*.xctestrun"))
     if not 1 <= len(documents) <= 16:
@@ -54,7 +56,7 @@ def inspect(products, developer, require_host=False):
                         for kind, original in fields.items()}
             if require_host and host_bundle is not None:
                 expected_executable = host_bundle / "PeerloomSimulatorHost"
-                expected_test = host_bundle / "PlugIns/PeerloomSwiftTests.xctest"
+                expected_test = host_bundle / "PlugIns" / test_bundle
                 if (host_bundle.is_relative_to(products) and host_bundle.name == "PeerloomSimulatorHost.app"
                         and host_bundle.is_dir() and expected_executable.is_file()
                         and expected_executable.resolve(strict=True).parent == host_bundle
