@@ -200,10 +200,10 @@ class WatchdogTests(unittest.TestCase):
             (products / "fixture.xctestrun").write_bytes(plistlib.dumps({"TestConfigurations": [
                 {"TestTargets": [{"TestBundlePath": "__TESTROOT__/fixture.xctest"}]}]}))
             output = io.StringIO()
-            result = subprocess.CompletedProcess([], 1, "", str(bundle) + ": code object is not signed at all")
+            result = subprocess.CompletedProcess([], 1, "", str(bundle.resolve()) + ": code object is not signed at all")
             with mock.patch.object(SIGNING.subprocess, "run", return_value=result) as run, contextlib.redirect_stdout(output):
                 SIGNING.inspect(products, developer)
-            self.assertEqual(run.call_args.args[0], ["codesign", "-d", "--verbose=2", "--entitlements", ":-", str(bundle)])
+            self.assertEqual(run.call_args.args[0], ["codesign", "-d", "--verbose=2", "--entitlements", ":-", str(bundle.resolve())])
             self.assertEqual(run.call_args.kwargs["timeout"], 10)
             self.assertNotIn(str(root), output.getvalue())
             self.assertIn('"codesign_exit": 1', output.getvalue())
