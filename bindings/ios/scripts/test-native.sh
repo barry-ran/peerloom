@@ -113,6 +113,17 @@ case "$PHASE" in
     ;;
   ios-simulator)
     start_tls
+    # The package also contains an implicit executable product. Its aggregate scheme
+    # owns all test targets; the PeerloomSwift library product scheme has no TestAction.
+    run_capture ios-schemes 60 xcodebuild -list -json
+    python3 - "$OUT/phase-ios-schemes.stdout" <<'PYSCHEME'
+import json,sys
+info=json.load(open(sys.argv[1]))
+schemes=[]
+for kind in ('workspace','project'):
+    schemes.extend(info.get(kind,{}).get('schemes',[]))
+assert 'PeerloomApple-Package' in schemes, '缺少全包测试 scheme；不回退到产品或任意首个 scheme'
+PYSCHEME
     RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-18-5
     TYPE=com.apple.CoreSimulator.SimDeviceType.iPhone-16
     run_capture ios-runtime-list 30 xcrun simctl list runtimes -j
@@ -130,9 +141,13 @@ PY
     printf '%s\n' "$DEVICE" > "$OUT/phase-ios-device-id.txt"
     run ios-boot 30 xcrun simctl boot "$DEVICE"
     run ios-bootstatus 180 xcrun simctl bootstatus "$DEVICE" -b
-    run ios-simulator 600 xcodebuild -scheme PeerloomSwift -destination "platform=iOS Simulator,id=$DEVICE" \
+    # build-for-testing verifies the actual TestAction and builds the test runner.
+    # Only a real test-without-building execution can satisfy the >=8-test gate below.
+    run ios-build-for-testing 600 xcodebuild -scheme PeerloomApple-Package -destination "platform=iOS Simulator,id=$DEVICE" \
+      -derivedDataPath "$OUT/DerivedData-simulator" CODE_SIGNING_ALLOWED=NO build-for-testing
+    run ios-simulator 180 xcodebuild -scheme PeerloomApple-Package -destination "platform=iOS Simulator,id=$DEVICE" \
       -derivedDataPath "$OUT/DerivedData-simulator" -resultBundlePath "$OUT/iOS模拟器测试.xcresult" \
-      CODE_SIGNING_ALLOWED=NO test
+      CODE_SIGNING_ALLOWED=NO test-without-building
     run_capture ios-summary 30 xcrun xcresulttool get test-results summary --path "$OUT/iOS模拟器测试.xcresult"
     cp "$OUT/phase-ios-summary.stdout" "$OUT/iOS测试摘要.json"
     python3 - "$OUT/iOS测试摘要.json" <<'PY'

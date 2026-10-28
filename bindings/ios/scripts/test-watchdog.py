@@ -146,6 +146,25 @@ class WatchdogTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     VERIFY.discovery(path)
 
+    def test_requires_actual_package_scheme_not_product_or_guessed_first(self):
+        source = SCRIPT.with_name("test-native.sh").read_text()
+        validator = source.split("<<'PYSCHEME'\n", 1)[1].split("\nPYSCHEME", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "schemes.json"
+            for kind in ("workspace", "project"):
+                path.write_text(json.dumps({kind: {"schemes": ["PeerloomSwift", "PeerloomApple-Package"]}}))
+                self.assertEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
+            for wrong in ({}, {"workspace": {"schemes": ["PeerloomSwift", "PeerloomStoreProbe"]}},
+                          {"workspace": {"schemes": ["Other-Package"]}}):
+                path.write_text(json.dumps(wrong))
+                self.assertNotEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
+        self.assertIn("summary['totalTestCount'] >= 8 and summary['failedTests'] == 0", source)
+        self.assertIn("CODE_SIGNING_ALLOWED=NO test-without-building", source)
+        self.assertIn("run ios-device 600 xcodebuild -scheme PeerloomSwift", source)
+        self.assertNotIn("-skip-testing", source)
+        self.assertEqual(source.count("    verify_tls"), 2)
+        self.assertIn("state['rejected_handshakes'] >= 1 and state['accepted_handshakes'] == 0", source)
+
     def test_shell_helpers_preserve_failure_under_or_and_if(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
