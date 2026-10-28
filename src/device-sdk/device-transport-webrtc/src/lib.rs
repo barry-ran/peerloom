@@ -57,6 +57,7 @@ pub enum TransportError {
     InvalidConfiguration,
     RelayRequired,
     RelayForbidden,
+    InvalidCandidate,
     UnsupportedChannel,
     TooManyChannels,
     MessageTooLarge,
@@ -146,19 +147,29 @@ fn validate_remote_sdp(
     if description.sdp.len() > config.max_sdp_bytes {
         return Err(TransportError::SdpTooLarge);
     }
-    if config.policy == ConnectionPolicy::DirectOnly
-        && description.sdp.lines().any(|line| {
-            line.trim()
-                .strip_prefix("a=candidate:")
-                .is_some_and(|candidate| {
-                    let parts: Vec<_> = candidate.split_ascii_whitespace().collect();
-                    parts
-                        .windows(2)
-                        .any(|pair| pair[0] == "typ" && pair[1] == "relay")
-                })
-        })
-    {
-        return Err(TransportError::RelayForbidden);
+    let mut candidate_count = 0;
+    for line in description.sdp.lines() {
+        let Some(raw) = line.trim().strip_prefix("a=candidate:") else {
+            continue;
+        };
+        candidate_count += 1;
+        // RFC ICE 使用 ASCII SP 分隔，先拒绝非规范字段，避免与后端 Unicode 分词差异。
+        let fields: Vec<_> = raw.split_ascii_whitespace().collect();
+        if candidate_count > 256
+            || raw.len() > 2048
+            || !raw.bytes().all(|byte| (32..=126).contains(&byte))
+            || fields.len() < 8
+            || fields[6] != "typ"
+        {
+            return Err(TransportError::InvalidCandidate);
+        }
+        let candidate = rtc::ice::candidate::unmarshal_candidate(raw)
+            .map_err(|_| TransportError::InvalidCandidate)?;
+        if config.policy == ConnectionPolicy::DirectOnly
+            && candidate.candidate_type() == rtc::ice::candidate::CandidateType::Relay
+        {
+            return Err(TransportError::RelayForbidden);
+        }
     }
     Ok(())
 }
@@ -475,7 +486,15 @@ impl MessageChannel {
         if payload.len() > self.max_message_bytes {
             return Err(TransportError::MessageTooLarge);
         }
-        tokio::time::timeout(self.timeout, self.channel.send(BytesMut::from(payload)))
+        tokio::time::timeout(self.timeout, self.channel.try_send(BytesMut::from(payload)))
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(classify_backend)
+    }
+
+    /// SCTP 尚未确认的有效载荷字节，用于背压观测；不代表进程总内存。
+    pub async fn outstanding_bytes(&self) -> Result<usize, TransportError> {
+        tokio::time::timeout(self.timeout, self.channel.outstanding_bytes())
             .await
             .map_err(|_| TransportError::Timeout)?
             .map_err(classify_backend)
@@ -615,5 +634,23 @@ mod tests {
             classify_backend(webrtc::error::Error::ErrDataChannelNotOpen),
             TransportError::NotReady
         );
+    }
+    #[test]
+    fn noncanonical_relay_candidate_cannot_bypass_direct_policy() {
+        let config = TransportConfig {
+            policy: ConnectionPolicy::DirectOnly,
+            ..TransportConfig::default()
+        };
+        for candidate in [
+            "1 1 udp 1 192.0.2.1 3478 bogus relay",
+            "1 1 udp 1 192.0.2.1 3478 typ\u{00a0}relay",
+        ] {
+            let mut description = SessionDescription::default();
+            description.sdp = format!("v=0\r\na=candidate:{candidate}\r\n");
+            assert_eq!(
+                validate_remote_sdp(&config, &description),
+                Err(TransportError::InvalidCandidate)
+            );
+        }
     }
 }

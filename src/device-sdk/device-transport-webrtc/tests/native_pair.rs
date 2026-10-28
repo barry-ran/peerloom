@@ -111,3 +111,67 @@ async fn native_direct_100_sequential_connections() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "真实 UDP 并发背压集成，CI 显式执行 --ignored"]
+async fn native_concurrent_sends_obey_hard_buffer_limit() {
+    let mut config = local_config();
+    config.send_buffer_bytes = 65536;
+    let a = PeerTransport::new(config.clone()).await.expect("create A");
+    let b = match PeerTransport::new(config).await {
+        Ok(peer) => peer,
+        Err(error) => {
+            let _ = a.close().await;
+            panic!("create B: {error}");
+        }
+    };
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        let mut sender = a
+            .create_channel("bounded", ChannelMode::ReliableMessage)
+            .await?;
+        let offer = a.create_offer().await?;
+        let answer = b.answer_offer(offer).await?;
+        a.apply_answer(answer).await?;
+        let mut receiver = b.accept_channel().await?;
+        sender.wait_open().await?;
+        receiver.wait_open().await?;
+        let sender = std::sync::Arc::new(sender);
+        let mut workers = tokio::task::JoinSet::new();
+        for _ in 0..32 {
+            let sender = sender.clone();
+            workers.spawn(async move {
+                let outcome = sender.send(&vec![1; 65536]).await;
+                let outstanding = sender.outstanding_bytes().await?;
+                assert!(
+                    outstanding <= 65536,
+                    "concurrent admission exceeded byte budget"
+                );
+                Ok::<_, TransportError>(outcome)
+            });
+        }
+        let mut accepted = 0;
+        let mut full = 0;
+        while let Some(joined) = workers.join_next().await {
+            match joined.expect("sender task panicked")? {
+                Ok(()) => accepted += 1,
+                Err(TransportError::BufferFull) => full += 1,
+                Err(error) => return Err(error),
+            }
+        }
+        assert!(accepted > 0, "must send actual data");
+        assert!(full > 0, "burst must observe explicit backpressure");
+        assert_eq!(accepted + full, 32);
+        for _ in 0..accepted {
+            assert_eq!(receiver.receive().await?.len(), 65536);
+        }
+        Ok::<(), TransportError>(())
+    })
+    .await;
+    let a_close = a.close().await;
+    let b_close = b.close().await;
+    a_close.expect("close A");
+    b_close.expect("close B");
+    result
+        .expect("test deadline")
+        .expect("concurrent send bounded");
+}
