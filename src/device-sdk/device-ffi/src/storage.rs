@@ -167,6 +167,7 @@ mod tests {
                 callback_done: AtomicBool::new(false),
                 shutdown_id: AtomicU64::new(0),
                 connection_id: AtomicU64::new(0),
+                connection_validity: Mutex::new(None),
                 closing_connection: AtomicU64::new(0),
                 data_count: AtomicUsize::new(0),
                 control_count: AtomicUsize::new(0),

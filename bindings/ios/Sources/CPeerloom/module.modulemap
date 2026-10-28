@@ -1,0 +1,5 @@
+module CPeerloom [system] {
+    header "shim.h"
+    link "device_ffi"
+    export *
+}

@@ -1,0 +1,104 @@
+name: Windows 与 Apple 原生验收
+on:
+  push:
+    branches: [master, 'feat/**']
+permissions:
+  contents: read
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-native:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: src/device-server/go.sum
+      - name: 固定 Windows Rust 工具链
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
+          if ($LASTEXITCODE -ne 0) { throw 'rustup failed' }
+          rustup default 1.99.1
+          if ($LASTEXITCODE -ne 0) { throw 'rustup default failed' }
+      - name: Go 原生 Windows 单元与静态检查（非 race 声明）
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          Push-Location src/device-server
+          try {
+            go test ./...
+            if ($LASTEXITCODE -ne 0) { throw 'Go tests failed' }
+            go vet ./...
+            if ($LASTEXITCODE -ne 0) { throw 'Go vet failed' }
+            go build ./...
+            if ($LASTEXITCODE -ne 0) { throw 'Go build failed' }
+          } finally { Pop-Location }
+      - name: 真实 DPAPI、ACL、Rust 双端与 MSVC C/C++ ABI
+        run: ./scripts/test-windows.ps1
+      - name: 保存 Windows 原生检查证据与 ABI（非正式发布）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-windows-native-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            dist/validation/windows-*.txt
+            src/device-sdk/target/x86_64-pc-windows-msvc/debug/device_ffi.dll
+            src/device-sdk/target/x86_64-pc-windows-msvc/debug/device_ffi.dll.lib
+            src/device-sdk/target/x86_64-pc-windows-msvc/debug/device_ffi.lib
+            src/device-sdk/device-ffi/include/device_sdk.h
+            LICENSE
+  apple-native:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      PEERLOOM_REPO_ROOT: ${{ github.workspace }}
+      PEERLOOM_APPLE_OUTPUT: ${{ runner.temp }}/peerloom-apple-validation
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: 固定 Apple Rust 目标和 Xcode
+        run: |
+          set -euo pipefail
+          [[ $(xcodebuild -version) == $'Xcode 16.4\nBuild version 16F6' ]]
+          rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
+          rustup default 1.99.1
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - name: 构建真实五 slice XCFramework 与 Swift Package
+        run: ./bindings/ios/scripts/build-xcframework.sh
+      - name: macOS Keychain 与 iOS Simulator XCTest、真实 TLS 拒绝
+        run: ./bindings/ios/scripts/test-native.sh
+      - name: 保存 Apple 检查产物（unsigned device build 非真机验证）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-apple-native-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/peerloom-apple-validation/SwiftPackage
+            !${{ runner.temp }}/peerloom-apple-validation/SwiftPackage/.build/**
+            !${{ runner.temp }}/peerloom-apple-validation/SwiftPackage/.swiftpm/**
+            ${{ runner.temp }}/peerloom-apple-validation/*.txt
+            ${{ runner.temp }}/peerloom-apple-validation/*.json
+            LICENSE
+      - name: 保留真实 Xcode 测试诊断（不视为验收产物）
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-apple-diagnostics-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/peerloom-apple-validation/*.xcresult
+            ${{ runner.temp }}/peerloom-apple-validation/*.txt
+            ${{ runner.temp }}/peerloom-apple-validation/*.json

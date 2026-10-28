@@ -118,6 +118,12 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
     let mut sdk: Option<DeviceSdk> = None;
     let mut connection: Option<(u64, Connection)> = None;
     loop {
+        if connection.is_none() {
+            if let Ok(mut validity) = instance.connection_validity.lock() {
+                *validity = None;
+            }
+            instance.connection_id.store(0, Ordering::Release);
+        }
         if instance.shutting.load(Ordering::Acquire) {
             break;
         }
@@ -165,6 +171,9 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
                             continue;
                         };
                         let payload = json!({"session_id": c.session_id()}).to_string().into_bytes();
+                        if let Ok(mut validity) = instance.connection_validity.lock() {
+                            *validity = Some((id, c.validity()));
+                        } else { drop(c); instance.stop(); continue; }
                         instance.connection_id.store(id, Ordering::Release);
                         instance.closing_connection.store(0, Ordering::Release);
                         let mut event = Event::new(5, 0, id, OK, payload);
@@ -232,6 +241,10 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
     if let Some(sdk) = sdk.take() {
         sdk.close().await;
     }
+    if let Ok(mut validity) = instance.connection_validity.lock() {
+        *validity = None;
+    }
+    instance.connection_id.store(0, Ordering::Release);
     if let Ok(mut pending) = instance.storage.lock() {
         pending.clear();
     }

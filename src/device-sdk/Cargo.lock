@@ -592,6 +592,7 @@ name = "device-storage"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "device-storage-windows",
  "nix",
  "secret-service",
  "serde",
@@ -599,6 +600,15 @@ dependencies = [
  "sha2",
  "tokio",
  "zbus",
+ "zeroize",
+]
+
+[[package]]
+name = "device-storage-windows"
+version = "0.1.0"
+dependencies = [
+ "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

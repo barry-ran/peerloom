@@ -1,10 +1,15 @@
-//! 身份存储接口；显式内存适配器及 Linux Secret Service 安全存储。
-//! 系统服务不可用时不回退明文文件或内存；其他平台适配器尚未实现。
+//! 身份存储接口；显式内存、Linux Secret Service 及 Windows DPAPI 适配器。
+//! 系统服务不可用时不回退明文文件或内存；平台运行验证见对应必需 CI。
 //! 自定义适配器应使用系统安全设施，并保证 CAS 更新、取消期间的原子性和不记录秘密。
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxSecretServiceStore;
+
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use windows::WindowsDpapiStore;
 
 use async_trait::async_trait;
 use std::collections::HashMap;

@@ -88,6 +88,7 @@ pub struct Instance {
     pub callback_done: AtomicBool,
     pub shutdown_id: AtomicU64,
     pub connection_id: AtomicU64,
+    pub connection_validity: Mutex<Option<(u64, ConnectionValidity)>>,
     pub closing_connection: AtomicU64,
     pub data_count: AtomicUsize,
     pub control_count: AtomicUsize,

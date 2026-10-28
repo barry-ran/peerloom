@@ -122,6 +122,9 @@ uint32_t dp_storage_complete(uint64_t sdk, uint64_t storage_request_id, uint32_t
  * After successful release handle is invalid forever; handles are never reused.
  */
 uint32_t dp_sdk_state(uint64_t sdk);
+/* Host queues must recheck immediately before delivering Ready/Message to application.
+ * Read-only: no renewal, no transport exposure. Running callbacks cannot be recalled. */
+uint32_t dp_connection_is_valid(uint64_t sdk, uint64_t connection);
 uint32_t dp_sdk_release(uint64_t sdk);
 #ifdef __cplusplus
 }

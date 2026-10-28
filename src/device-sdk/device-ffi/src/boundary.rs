@@ -78,8 +78,14 @@ pub unsafe extern "C" fn dp_sdk_create(
         if !config.validate() {
             return Err(INVALID);
         }
-        // Mobile trust initialization and host keystores are not claimed by this Linux milestone.
-        if !cfg!(target_os = "linux") {
+        // Native validation stage: promote this exact SHA only after every required
+        // Windows/macOS/iOS native gate passes. No separate test-only create path.
+        if !cfg!(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "windows"
+        )) {
             return Err(UNSUPPORTED);
         }
         let mut registry = registry().lock().map_err(|_| INTERNAL)?;
@@ -100,6 +106,7 @@ pub unsafe extern "C" fn dp_sdk_create(
             callback_done: AtomicBool::new(false),
             shutdown_id: AtomicU64::new(0),
             connection_id: AtomicU64::new(0),
+            connection_validity: Mutex::new(None),
             closing_connection: AtomicU64::new(0),
             data_count: AtomicUsize::new(0),
             control_count: AtomicUsize::new(0),
@@ -298,4 +305,27 @@ pub extern "C" fn dp_sdk_state(sdk: u64) -> u32 {
     } else {
         0
     }
+}
+
+/// Read-only gate check for host executor delivery; does not extend authorization.
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_connection_is_valid(sdk: u64, connection: u64) -> u32 {
+    guarded(|| {
+        let instance = lookup(sdk)?;
+        if instance.shutting.load(Ordering::Acquire)
+            || instance.closing_connection.load(Ordering::Acquire) == connection
+        {
+            return Err(CLOSED);
+        }
+        let validity = instance.connection_validity.lock().map_err(|_| INTERNAL)?;
+        let (_, validity) = validity
+            .as_ref()
+            .filter(|(id, _)| *id == connection)
+            .ok_or(HANDLE)?;
+        if validity.is_valid() {
+            Ok(())
+        } else {
+            Err(CLOSED)
+        }
+    })
 }
