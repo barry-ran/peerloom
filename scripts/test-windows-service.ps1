@@ -24,7 +24,7 @@ if (@($existing | ForEach-Object { ($_ -replace "`0", '').Trim() }) -contains $n
 $root = Split-Path -Parent $PSScriptRoot
 $directory = Join-Path $env:RUNNER_TEMP $name
 if (Test-Path $directory) { throw 'REFUSE_EXISTING_TEST_DIRECTORY' }
-if ($ImportProbeOnly) {
+& {
     # Check only this target's ancestor chain; never enumerate other task/user trees.
     $ancestor = [System.IO.DirectoryInfo]::new([System.IO.Path]::GetFullPath($env:RUNNER_TEMP))
     if ($ancestor.FullName.StartsWith('\\')) { throw 'PUBLIC_PROBE_UNC_FORBIDDEN' }
@@ -53,6 +53,9 @@ if (-not $ImportProbeOnly) {
 } else {
     Write-Output 'Public import-only staging uses its new directory inherited ACL; no credentials or SDK state are created.'
 }
+$publicDirectory = $null
+$publicCreated = $false
+$fullSucceeded = $false
 try {
     if ($ImportProbeOnly) {
         # One independent owned fixture; this mutates only its UUID distribution.
@@ -96,8 +99,18 @@ try {
         }
         return
     }
-    & python (Join-Path $PSScriptRoot 'windows-service.py') --directory $directory --distro $name
+    $publicDirectory = Join-Path $env:RUNNER_TEMP ($name + '-public')
+    if (Test-Path -LiteralPath $publicDirectory) { throw 'REFUSE_EXISTING_PUBLIC_DEPENDENCY_DIRECTORY' }
+    New-Item -ItemType Directory $publicDirectory -ErrorAction Stop | Out-Null
+    $publicCreated = $true
+    $publicDrive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($publicDirectory))
+    if ($publicDrive.DriveFormat -ne 'NTFS' -or $publicDrive.DriveType -ne 'Fixed' -or
+        ((Get-Item -LiteralPath $publicDirectory -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'PUBLIC_DEPENDENCY_LOCAL_NTFS_REQUIRED'
+    }
+    & python (Join-Path $PSScriptRoot 'windows-service.py') --directory $directory --distro $name --public-directory $publicDirectory
     if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_SERVICE_ACCEPTANCE_FAILED' }
+    $fullSucceeded = $true
 } finally {
     $remaining = & wsl.exe --list --quiet
     if ($LASTEXITCODE -ne 0) { throw 'WSL_CLEANUP_VERIFICATION_FAILED' }
@@ -127,6 +140,30 @@ try {
         Remove-Item -LiteralPath $directory -Force
         Write-Output 'Public probe UUID absent and owned staging cleanup: PASS'
     } else {
-        Remove-Item -LiteralPath $directory -Recurse -Force
+        if ($publicCreated -and (Test-Path -LiteralPath $publicDirectory)) {
+            if (((Get-Item -LiteralPath $publicDirectory -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'PUBLIC_DEPENDENCY_REPARSE_ROOT_RETAINED'
+            }
+            $publicItems = @(Get-ChildItem -LiteralPath $publicDirectory -Force)
+            foreach ($item in $publicItems) {
+                if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'PUBLIC_DEPENDENCY_REPARSE_REMAINDER_RETAINED'
+                }
+                if ($item.PSIsContainer) {
+                    if ($item.Name -ne 'wsl' -or @(Get-ChildItem -LiteralPath $item.FullName -Force).Count -ne 0) {
+                        throw 'PUBLIC_DEPENDENCY_NONEMPTY_REMAINDER_RETAINED'
+                    }
+                } elseif (@('ubuntu_base.archive', 'ubuntu_base.tar', 'redis.archive') -notcontains $item.Name) {
+                    throw 'PUBLIC_DEPENDENCY_UNKNOWN_REMAINDER_RETAINED'
+                }
+            }
+            foreach ($item in $publicItems) { Remove-Item -LiteralPath $item.FullName -Force }
+            Remove-Item -LiteralPath $publicDirectory -Force
+        }
+        if ($fullSucceeded) {
+            Remove-Item -LiteralPath $directory -Recurse -Force
+        } else {
+            Write-Output 'Full fixture failed; protected task logs retained until ephemeral runner teardown.'
+        }
     }
 }

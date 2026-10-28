@@ -326,12 +326,102 @@ class PlainTarTest(unittest.TestCase):
 
     def test_single_import_keeps_version_and_io_with_plain_tar_argument(self):
         source = (ROOT / 'windows-service.py').read_text(encoding='utf-8')
-        self.assertIn("str(directory / 'ubuntu_base.tar'), '--version', '1']", source)
+        self.assertIn("str(public / 'ubuntu_base.tar'), '--version', '1']", source)
         self.assertNotIn("str(directory / 'ubuntu_base.archive'), '--version', '1']", source)
         self.assertIn('stdin=subprocess.DEVNULL if owned_import else None', source)
         pins = json.loads((ROOT / 'windows-service-dependencies.json').read_text(encoding='utf-8'))['ubuntu_base']
         self.assertEqual(pins['tar_size'], 84101120)
         self.assertEqual(pins['tar_sha256'], 'c0bb584a1fe79db423329609b8c8280ca755e99fdee6be4555420061bdd08cde')
+
+
+class PrivateRedisTest(unittest.TestCase):
+    def test_stdin_handle_closed_and_child_owned_before_return_no_secret_args_env(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp); config = directory/'redis.conf'; secret = 'a'*43
+            config.write_bytes(service.redis_config(16379, secret))
+            children, handles = [], []
+            child = Mock()
+            captured = {}
+            def spawn(argv, **kwargs):
+                captured.update(argv=argv, env=kwargs['env'], source=kwargs['stdin'], data=kwargs['stdin'].read())
+                self.assertFalse(kwargs['stdin'].closed)
+                return child
+            with patch.object(service.subprocess, 'Popen', side_effect=spawn):
+                service.launch_private_redis('PeerloomCI-'+'b'*32, config, directory/'redis.log', children, handles,
+                    {'PATH':'safe', 'SYSTEMROOT':'system', 'PGPASSWORD':secret, 'GITHUB_TOKEN':secret, 'WSLENV':'PGPASSWORD', 'DATABASE_URL':secret})
+            self.assertEqual(children, [child])
+            self.assertTrue(captured['source'].closed)
+            self.assertIn(secret.encode(), captured['data'])
+            self.assertNotIn(secret, repr(captured['argv'])+repr(captured['env']))
+            self.assertEqual(captured['env'], {'PATH':'safe', 'SYSTEMROOT':'system', 'WSLENV':''})
+            self.assertIn('ulimit -c 0 && exec', captured['argv'][-1])
+            for handle in handles: handle.close()
+
+    def test_spawn_or_config_read_failure_closes_source_and_leaves_owned_logs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory=Path(temp);config=directory/'redis.conf';config.write_bytes(service.redis_config(16379,'a'*43))
+            children,handles=[],[];seen=[]
+            def fail(*args, **kwargs):
+                seen.append(kwargs['stdin']); raise OSError('synthetic start failure')
+            with patch.object(service.subprocess,'Popen',side_effect=fail), self.assertRaises(OSError):
+                service.launch_private_redis('owned',config,directory/'redis.log',children,handles,{})
+            self.assertTrue(seen[0].closed);self.assertEqual(children,[])
+            for handle in handles:handle.close()
+            config.write_bytes(b'x'*1025)
+            with patch.object(service.subprocess,'Popen') as spawn,self.assertRaises(ValueError):
+                service.launch_private_redis('owned',config,directory/'second.log',[],[],{})
+            spawn.assert_not_called()
+            config.unlink()
+            with self.assertRaises(ValueError):service.launch_private_redis('owned',config,directory/'missing.log',[],[],{})
+
+    def test_config_inputs_and_effective_persistence_fail_closed(self):
+        for port,password in ((0,'a'*43),(65536,'a'*43),(True,'a'*43),(16379,'bad\nconfig')):
+            with self.assertRaises(ValueError):service.redis_config(port,password)
+        data=service.redis_config(16379,'a'*43)
+        self.assertLessEqual(len(data),1024)
+        for setting in (b'save ""',b'appendonly no',b'daemonize no',b'syslog-enabled no',b'logfile ""'):
+            self.assertIn(setting,data)
+        for reply in (b'*17\r\n',b'$1025\r\n',b'*1\r\n*0\r\n',b'$3\r\nab'):
+            with self.assertRaises(RuntimeError):service.redis_response(io.BytesIO(reply))
+
+    def test_effective_config_mismatch_is_not_readiness_success(self):
+        def bulk(data): return b'$'+str(len(data)).encode()+b'\r\n'+data+b'\r\n'
+        fields=[b'save',b'',b'appendonly',b'no',b'daemonize',b'no',b'logfile',b'',b'syslog-enabled',b'no']
+        for index in (1,3,5,7,9):
+            altered=list(fields);altered[index]=b'unsafe'
+            reply=b'+OK\r\n+PONG\r\n'+bulk(b'peerloom-ci')+b'*10\r\n'+b''.join(bulk(x) for x in altered)
+            sock=Mock();sock.makefile.return_value=io.BytesIO(reply)
+            context=Mock();context.__enter__=Mock(return_value=sock);context.__exit__=Mock(return_value=False)
+            with patch.object(service.socket,'create_connection',return_value=context),self.assertRaisesRegex(RuntimeError,'configuration unsafe'):
+                service.redis_ready(16379,'a'*43)
+
+    def test_child_is_registered_even_if_parent_stdin_close_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory=Path(temp);config=directory/'redis.conf';config.write_bytes(service.redis_config(16379,'a'*43))
+            original=Path.open;children=[];handles=[];child=Mock()
+            class ClosingFailure:
+                def __init__(self, file): self.file=file
+                def __enter__(self): return self.file
+                def __exit__(self,*args): self.file.close();raise OSError('synthetic close failure')
+            def opened(path,*args,**kwargs):
+                file=original(path,*args,**kwargs)
+                return ClosingFailure(file) if path==config and args==('rb',) else file
+            with patch.object(Path,'open',opened),patch.object(service.subprocess,'Popen',return_value=child),self.assertRaises(OSError):
+                service.launch_private_redis('owned',config,directory/'redis.log',children,handles,{})
+            self.assertEqual(children,[child])
+            for handle in handles:handle.close()
+
+    def test_public_rootfs_never_receives_secret_config_and_cleanup_retains_failure(self):
+        source=(ROOT/'windows-service.py').read_text(encoding='utf-8')
+        script=(ROOT/'test-windows-service.ps1').read_text(encoding='utf-8')
+        self.assertNotIn("'/root/peerloom-ci/redis.conf'",source)
+        self.assertNotIn("wsl('/bin/cp', config",source)
+        self.assertIn("launch_private_redis(args.distro, config, directory / 'redis.log'",source)
+        self.assertIn('if ($publicCreated -and',script)
+        self.assertLess(script.index('New-Item -ItemType Directory $publicDirectory'),script.index('$publicCreated = $true'))
+        self.assertIn('if ($fullSucceeded)',script)
+        self.assertIn('protected task logs retained',script)
+        self.assertIn('$acl.SetAccessRuleProtection($true, $false)',script)
 
 
 class ManagementFixture(unittest.TestCase):

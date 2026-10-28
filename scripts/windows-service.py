@@ -209,20 +209,85 @@ def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import
     return output
 
 
+def redis_config(port, password):
+    if type(port) is not int or not 1 <= port <= 65535 or not re.fullmatch(r'[A-Za-z0-9_-]{43}', password):
+        raise ValueError('invalid private Redis configuration inputs')
+    data = (f'bind 127.0.0.1\nport {port}\nprotected-mode yes\nrequirepass {password}\n'
+            'save ""\nappendonly no\ndaemonize no\nsyslog-enabled no\nlogfile ""\n'
+            'dir /root/peerloom-ci\n').encode('ascii')
+    if len(data) > 1024:
+        raise ValueError('private Redis configuration exceeds bound')
+    return data
+
+
+def launch_private_redis(distro, config, output, children, handles, source_env):
+    # Pass only OS process-location essentials, never PG/admin/SDK credentials.
+    allowed = {'SYSTEMROOT', 'WINDIR', 'PATH', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA'}
+    child_env = {key: value for key, value in source_env.items() if key.upper() in allowed}
+    child_env['WSLENV'] = ''
+    if config.is_symlink() or not config.is_file() or not 1 <= config.stat().st_size <= 1024:
+        raise ValueError('bounded private Redis configuration required')
+    log = output.open('xb')
+    handles.append(log)
+    # The inherited file handle reaches EOF naturally; no pipe writer can hang.
+    with config.open('rb') as source:
+        process = subprocess.Popen(['wsl.exe', '--distribution', distro, '--exec', '/bin/sh', '-c',
+                                    'ulimit -c 0 && exec /root/peerloom-ci/src/redis-server -'],
+                                   stdin=source, stdout=log, stderr=subprocess.STDOUT, env=child_env)
+        children.append(process)  # Register ownership before closing the parent handle.
+    return process
+
+
+def redis_response(stream, allow_array=True):
+    header = stream.readline(128)
+    if not header.endswith(b'\r\n'):
+        raise RuntimeError('bounded Redis reply header required')
+    if header.startswith(b'+'):
+        return header[1:-2]
+    if header.startswith(b'$'):
+        size = int(header[1:-2])
+        if not 0 <= size <= 1024:
+            raise RuntimeError('bounded Redis bulk reply required')
+        data = stream.read(size + 2)
+        if len(data) != size + 2 or not data.endswith(b'\r\n'):
+            raise RuntimeError('truncated Redis reply')
+        return data[:-2]
+    if header.startswith(b'*'):
+        if not allow_array:
+            raise RuntimeError('nested Redis reply not accepted')
+        count = int(header[1:-2])
+        if not 0 <= count <= 16:
+            raise RuntimeError('bounded Redis array reply required')
+        values = []
+        for _ in range(count):
+            value = redis_response(stream, allow_array=False)
+            if not isinstance(value, bytes):
+                raise RuntimeError('nested Redis reply not accepted')
+            values.append(value)
+        return values
+    raise RuntimeError('unexpected Redis response')
+
+
 def redis_ready(port, password):
     with socket.create_connection(('127.0.0.1', port), timeout=2) as sock:
         stream = sock.makefile('rb')
-        for command, expected in ((['AUTH', password], b'+OK\r\n'), (['PING'], b'+PONG\r\n'),
-                                  (['EVAL', "return 'peerloom-ci'", '0'], b'$11\r\n')):
+        commands = [(['AUTH', password], b'OK'), (['PING'], b'PONG'),
+                    (['EVAL', "return 'peerloom-ci'", '0'], b'peerloom-ci')]
+        for command, expected in commands + [(['CONFIG', 'GET', 'save', 'appendonly', 'daemonize', 'logfile', 'syslog-enabled'], None)]:
             request = ('*%d\r\n' % len(command)).encode()
             for part in command:
                 raw = part.encode()
                 request += ('$%d\r\n' % len(raw)).encode() + raw + b'\r\n'
             sock.sendall(request)
-            if stream.readline(128) != expected:
+            actual = redis_response(stream)
+            if expected is not None and actual != expected:
                 raise RuntimeError('Redis authentication/Lua probe failed')
-        if stream.readline(128) != b'peerloom-ci\r\n':
-            raise RuntimeError('Redis Lua value mismatch')
+            if expected is None:
+                if not isinstance(actual, list) or len(actual) != 10:
+                    raise RuntimeError('Redis effective configuration missing')
+                config = dict(zip(actual[::2], actual[1::2]))
+                if config != {b'save': b'', b'appendonly': b'no', b'daemonize': b'no', b'logfile': b'', b'syslog-enabled': b'no'}:
+                    raise RuntimeError('Redis effective persistence/logging configuration unsafe')
 
 
 def create_authorized_pair(client, credential):
@@ -253,6 +318,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--directory', required=True)
     parser.add_argument('--distro', required=True)
+    parser.add_argument('--public-directory')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--prepare-import-only', action='store_true')
     modes.add_argument('--diagnose-import-only', action='store_true')
@@ -277,6 +343,12 @@ def main():
                                    [str(directory), args.distro, os.environ.get('USERPROFILE', ''),
                                     os.environ.get('HOME', ''), os.environ.get('RUNNER_TEMP', '')]))
         return
+    if not args.public_directory:
+        raise ValueError('separate public dependency directory required')
+    public = Path(args.public_directory)
+    if (public.is_symlink() or not public.is_dir() or public.resolve().parent != directory.parent
+            or public.name != args.distro + '-public'):
+        raise ValueError('invalid owned public dependency directory')
     children, handles = [], []
     imported = False
     pg_started = False
@@ -302,24 +374,24 @@ def main():
     try:
         for name, spec in dependencies.items():
             STAGE = 'download-' + name
-            download(spec, directory / (name + '.archive'))
+            download(spec, (public if name in ('ubuntu_base', 'redis') else directory) / (name + '.archive'))
         STAGE = 'extract-postgresql'
         extract_postgres(directory / 'postgresql.archive', directory / 'postgresql')
         pg = directory / 'postgresql/pgsql/bin'
         assert b'18.6' in run([str(pg / 'postgres.exe'), '--version'])
         STAGE = 'prepare-owned-wsl-tar'
-        prepare_wsl_tar(directory / 'ubuntu_base.archive', directory / 'ubuntu_base.tar', dependencies['ubuntu_base'])
+        prepare_wsl_tar(public / 'ubuntu_base.archive', public / 'ubuntu_base.tar', dependencies['ubuntu_base'])
         STAGE = 'import-owned-wsl1'
         wsl_status_diagnostic([str(directory), args.distro, os.environ.get('USERPROFILE', ''),
                                os.environ.get('HOME', ''), os.environ.get('RUNNER_TEMP', '')])
         imported = True  # An uncertain result is checked/cleaned; import is never repeated.
-        run(['wsl.exe', '--import', args.distro, str(directory / 'wsl'),
-             str(directory / 'ubuntu_base.tar'), '--version', '1'], timeout=180, import_diagnostic=True)
+        run(['wsl.exe', '--import', args.distro, str(public / 'wsl'),
+             str(public / 'ubuntu_base.tar'), '--version', '1'], timeout=180, import_diagnostic=True)
         # No default distribution/version/network setting is changed.
         STAGE = 'build-real-redis-in-owned-wsl1'
         wsl('/bin/bash', '-ec', 'mkdir -m 700 /root/peerloom-ci; apt-get update; '
             'DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential ca-certificates', timeout=600)
-        archive = wsl_mounted_path(directory / 'redis.archive')
+        archive = wsl_mounted_path(public / 'redis.archive')
         wsl('/usr/bin/test', '-f', archive)
         wsl('/bin/tar', '-xf', archive, '-C', '/root/peerloom-ci', '--strip-components=1')
         wsl('/usr/bin/make', '-C', '/root/peerloom-ci/src', '-j2', 'MALLOC=libc',
@@ -342,13 +414,10 @@ def main():
         run([str(pg / 'pg_ctl.exe'), '-D', str(directory / 'data'), '-l', str(directory / 'postgres.log'),
              '-o', f'-h 127.0.0.1 -p {pgport}', '-w', 'start'], env=env)
         STAGE = 'start-private-real-redis'
-        config = private('redis.conf', f'bind 127.0.0.1\nport {redisport}\nprotected-mode yes\nrequirepass {redispassword}\nsave ""\nappendonly no\ndir /root/peerloom-ci\n')
-        config_wsl = wsl_mounted_path(config)
-        wsl('/usr/bin/test', '-f', config_wsl)
-        wsl('/bin/cp', config_wsl, '/root/peerloom-ci/redis.conf')
-        wsl('/bin/chmod', '600', '/root/peerloom-ci/redis.conf')
-        launch(['wsl.exe', '--distribution', args.distro, '--exec',
-                '/root/peerloom-ci/src/redis-server', '/root/peerloom-ci/redis.conf'], 'redis.log')
+        config = directory / 'redis.conf'
+        with config.open('xb') as file:
+            file.write(redis_config(redisport, redispassword))
+        launch_private_redis(args.distro, config, directory / 'redis.log', children, handles, os.environ)
         deadline = time.monotonic() + 30
         while True:
             try:
