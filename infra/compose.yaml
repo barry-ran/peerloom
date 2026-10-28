@@ -1,0 +1,105 @@
+# 仅本机开发：明文 HTTP，不能直接作为生产部署。
+name: peerloom-dev
+services:
+  postgres:
+    image: postgres:18.6-alpine3.24@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+    environment:
+      POSTGRES_DB: peerloom
+      POSTGRES_USER: peerloom
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U peerloom -d peerloom"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 20s
+  redis:
+    image: redis:8.10.3-alpine3.23@sha256:896f241f438ab6a210cfb24f573b84bea721a4cbe67f1b4fd07eb638b3b02a7b
+    command: [redis-server, /run/secrets/redis_config]
+    secrets: [redis_config, redis_password]
+    networks: [backend]
+    read_only: true
+    tmpfs: [/data]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$(cat /run/secrets/redis_password)" redis-cli ping | grep -q PONG']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 10s
+  migrate:
+    image: peerloom-device-server:dev
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    profiles: [tools]
+    entrypoint: [device-migrate]
+    command: [--dir, /app/infra/migrations, up]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets: [database_url]
+    networks: [backend]
+    depends_on:
+      postgres: {condition: service_healthy}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  device-server:
+    image: peerloom-device-server:dev
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      LISTEN_ADDRESS: :8080
+    secrets: [database_url]
+    networks: [backend]
+    depends_on:
+      postgres: {condition: service_healthy}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/readyz]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 15s
+  gateway:
+    image: nginx:1.31.8-alpine3.24@sha256:1ef7ca94d7879df82421428ce13bd1eaa412404953859cf7a5b6512c25e67a60
+    user: '65532:65532'
+    entrypoint: [nginx, -g, 'daemon off;']
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports: ['127.0.0.1:18080:8080']
+    networks: [backend]
+    depends_on:
+      device-server: {condition: service_healthy}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/healthz]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 10s
+networks:
+  backend:
+    internal: true
+volumes:
+  postgres_data:
+secrets:
+  postgres_password:
+    file: ../.secrets/postgres_password
+  database_url:
+    file: ../.secrets/database_url
+  redis_password:
+    file: ../.secrets/redis_password
+  redis_config:
+    file: ../.secrets/redis_config

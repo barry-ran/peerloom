@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WSS 信令信封草案",
+  "description": "M2/M3 尚未接入；仅验证信封结构，不能替代身份、当前 fencing 所有权、授权、速率、状态及完整 payload 校验。帧字节硬上限由运行时实施；租约消息待 M3 定稿。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "v",
+    "type",
+    "id",
+    "seq",
+    "sent_at",
+    "payload"
+  ],
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "type": {
+      "enum": [
+        "hello",
+        "hello.ack",
+        "presence.heartbeat",
+        "presence.ack",
+        "session.request",
+        "session.pending",
+        "session.accept",
+        "session.reject",
+        "session.offer",
+        "session.answer",
+        "session.ice_candidate",
+        "session.connected",
+        "session.reconnecting",
+        "session.terminate",
+        "session.terminated",
+        "sync.request",
+        "sync.snapshot",
+        "error"
+      ]
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "request_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "connection_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "fencing_token": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 256
+    },
+    "negotiation_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "sent_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "payload": {
+      "type": "object",
+      "maxProperties": 32
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "hello"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "connection_generation"
+              ]
+            },
+            {
+              "required": [
+                "fencing_token"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "connection_generation",
+          "fencing_token"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "session.offer",
+              "session.answer",
+              "session.ice_candidate"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "session_id",
+          "negotiation_generation"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "session.offer",
+              "session.answer"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "sdp"
+            ],
+            "properties": {
+              "sdp": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

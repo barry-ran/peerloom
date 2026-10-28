@@ -1,0 +1,63 @@
+package httpserver
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sync/atomic"
+	"time"
+)
+
+// Handler only reports this process and its PostgreSQL schema readiness.
+// It does not claim that the future signaling/relay platform is ready.
+type Handler struct {
+	check    func(context.Context) error
+	stopping atomic.Bool
+	requests atomic.Uint64
+}
+
+func New(check func(context.Context) error) *Handler { return &Handler{check: check} }
+func (h *Handler) Stop()                             { h.stopping.Store(true) }
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.requests.Add(1)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		problem(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED")
+		return
+	}
+	switch r.URL.Path {
+	case "/healthz":
+		writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
+	case "/readyz":
+		if h.stopping.Load() {
+			problem(w, http.StatusServiceUnavailable, "NOT_READY")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if h.check == nil || h.check(ctx) != nil {
+			problem(w, http.StatusServiceUnavailable, "NOT_READY")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready", "scope": "postgres_schema"})
+	case "/metrics":
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		fmt.Fprintf(w, "# HELP peerloom_http_requests_total HTTP requests handled by this process.\n# TYPE peerloom_http_requests_total counter\npeerloom_http_requests_total %d\n", h.requests.Load())
+	default:
+		problem(w, http.StatusNotFound, "NOT_FOUND")
+	}
+}
+
+func problem(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"type": "about:blank", "title": http.StatusText(status), "status": status, "code": code})
+}
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}

@@ -1,0 +1,47 @@
+name: 基础检查与开发环境集成
+on:
+  pull_request:
+  push:
+    branches: [master, 'feat/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: src/device-server/go.mod
+          cache-dependency-path: src/device-server/go.sum
+      - name: 安装固定 Rust 工具链
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+      - name: 安装固定契约测试依赖
+        run: |
+          python3 -m venv "$RUNNER_TEMP/peerloom-python"
+          "$RUNNER_TEMP/peerloom-python/bin/pip" install -r scripts/requirements-contracts.txt
+          echo "$RUNNER_TEMP/peerloom-python/bin" >> "$GITHUB_PATH"
+      - name: 单元测试与静态检查
+        run: ./scripts/check.sh
+      - name: 生成隔离开发秘密并验证 Compose
+        run: |
+          python3 scripts/generate-dev-secrets.py
+          ./scripts/check-compose.sh --integration
+      - name: PostgreSQL 迁移与 Compose 启停集成
+        run: ./scripts/test-compose.sh
+      - name: 构建可下载检查产物
+        run: ./scripts/build.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-foundation-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: 删除本次作业秘密
+        if: always()
+        run: rm -rf .secrets
