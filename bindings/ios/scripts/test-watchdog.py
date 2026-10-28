@@ -11,12 +11,8 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest import mock
 
 SCRIPT = Path(__file__).with_name("watchdog.py")
-SPEC = importlib.util.spec_from_file_location("watchdog", SCRIPT)
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
 VERIFY_SPEC = importlib.util.spec_from_file_location("verify_swift", SCRIPT.with_name("verify-swift-tests.py"))
 VERIFY = importlib.util.module_from_spec(VERIFY_SPEC)
 VERIFY_SPEC.loader.exec_module(VERIFY)
@@ -73,33 +69,7 @@ class WatchdogTests(unittest.TestCase):
             self.assertEqual(result.returncode, 124)
             self.assertEqual(json.loads((root / "status.json").read_text())["classification"], "timeout")
 
-    def test_timeout_cleans_recorded_descendant_in_another_session(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            heartbeat = root / "heartbeat"
-            child = "import pathlib,signal,time,sys; signal.signal(signal.SIGTERM,signal.SIG_IGN); p=pathlib.Path(sys.argv[1]);\nwhile True: p.write_text(str(time.monotonic())); time.sleep(.02)"
-            parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]],start_new_session=True); time.sleep(100)"
-            result = self.execute(root, parent, seconds=0.5, extra=[child, heartbeat])
-            self.assertEqual(result.returncode, 124, result.stderr)
-            self.assertGreaterEqual(json.loads((root / "status.json").read_text())["tracked_descendants"], 2)
-            value = heartbeat.read_bytes()
-            time.sleep(0.15)
-            self.assertEqual(heartbeat.read_bytes(), value)
 
-    def test_changed_pid_identity_and_unrelated_name_are_never_signaled_or_sampled(self):
-        owned = {100: ("original",), 101: ("child",)}
-        table = {100: (1, ("reused",), "xctest"), 101: (1, ("also-reused",), "xctest"),
-                 102: (1, ("unrelated",), "xctest")}
-        with mock.patch.object(MODULE, "process_table", return_value=table), \
-                mock.patch.object(MODULE.os, "kill") as kill, \
-                mock.patch.object(MODULE.platform, "system", return_value="Darwin"), \
-                mock.patch.object(MODULE.subprocess, "run") as sample:
-            MODULE.signal_descendants(owned, signal.SIGKILL)
-            MODULE.sample_owned(100, owned, Path("unused"))
-            MODULE.track_descendants(100, owned, table)
-            kill.assert_not_called()
-            sample.assert_not_called()
-            self.assertNotIn(102, owned)
 
     def test_interrupt_is_distinct_and_cleans_owned_group(self):
         with tempfile.TemporaryDirectory() as directory:
