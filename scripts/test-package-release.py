@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import os
+from contextlib import nullcontext
 from pathlib import Path
 import tempfile
 import tarfile
@@ -52,11 +54,24 @@ class PackageTests(unittest.TestCase):
         for line in entries:
             expected, name = line.split('  ', 1); names.add(name)
             self.assertEqual(m.digest(self.output/name), expected)
-        self.assertEqual(names, {str(p.relative_to(self.output)) for p in self.output.rglob('*') if p.is_file()}-{'SHA256SUMS'})
+        self.assertEqual(names, {p.relative_to(self.output).as_posix() for p in self.output.rglob('*') if p.is_file()}-{'SHA256SUMS'})
 
     def test_linux_tar_preserves_executable_and_internal_checksums(self):
         self.library.chmod(0o755)
-        self.finish()
+        native_stat = Path.stat
+        def fixture_posix_stat(path, *args, **kwargs):
+            result = native_stat(path, *args, **kwargs)
+            if path in (self.library, self.output/'sdk/lib/library.so'):
+                fields = list(result)
+                fields[0] = (fields[0] & ~0o777) | 0o755
+                return os.stat_result(fields)
+            return result
+        # NTFS chmod does not model POSIX executable bits. Only these fixture
+        # files get POSIX stat metadata; real copy/tar/checksum logic still runs.
+        # POSIX runners continue to exercise real on-disk executable bits.
+        context = patch.object(Path, 'stat', fixture_posix_stat) if os.name == 'nt' else nullcontext()
+        with context:
+            self.finish()
         self.assertFalse((self.output/'sdk').exists())
         with tarfile.open(self.output/'peerloom-linux-x86_64.tar.gz', 'r:gz') as archive:
             members = archive.getmembers()
@@ -131,9 +146,17 @@ class PackageTests(unittest.TestCase):
                 self.finish()
 
     def test_reserved_windows_name_rejected(self):
-        (self.proof/'CON.txt').write_text('ambiguous', encoding='utf-8')
-        self.evidence('collected-not-legally-reviewed')
-        with self.assertRaisesRegex(m.PackageError, 'AMBIGUOUS'): self.finish()
+        if os.name != 'nt':
+            (self.proof/'CON.txt').write_text('ambiguous', encoding='utf-8')
+            self.evidence('collected-not-legally-reviewed')
+            with self.assertRaisesRegex(m.PackageError, 'AMBIGUOUS'): self.finish()
+            (self.proof/'CON.txt').unlink()
+            self.evidence('collected-not-legally-reviewed')
+        # Windows routes this spelling to a device, not an ordinary file.
+        # A hostile listing tests the same production name guard on every OS.
+        entries = [*self.proof.rglob('*'), self.proof/'CON.txt']
+        with patch.object(Path, 'rglob', return_value=iter(entries)):
+            with self.assertRaisesRegex(m.PackageError, 'AMBIGUOUS'): self.finish()
 
     def test_owned_status_is_incrementally_checksummed(self):
         producer.write_status(self.proof, 0)
