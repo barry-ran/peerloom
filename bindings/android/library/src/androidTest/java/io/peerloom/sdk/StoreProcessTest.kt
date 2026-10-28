@@ -29,6 +29,10 @@ class StoreProbeService : Service() {
                     android.os.Process.killProcess(android.os.Process.myPid())
                 } else {
                     val kind = message.what
+                    android.util.Log.i(
+                        "PeerloomTestDiag",
+                        "store-probe-request kind=$kind pid=${android.os.Process.myPid()}",
+                    )
                     val reply = message.replyTo
                     val data = Bundle(message.data)
                     work.execute {
@@ -58,14 +62,30 @@ class StoreProbeService : Service() {
                                 while (SystemClock.elapsedRealtime() < start) {
                                     Thread.sleep(1)
                                 }
+                                android.util.Log.i(
+                                    "PeerloomTestDiag",
+                                    "store-probe-cas-start pid=${android.os.Process.myPid()}",
+                                )
                                 IdentityStore(this).execute(JSONObject(data.getString("request")!!))
+                                android.util.Log.i(
+                                    "PeerloomTestDiag",
+                                    "store-probe-cas-success pid=${android.os.Process.myPid()}",
+                                )
                                 result.arg1 = 0
                                 reply.send(result)
                             }
                         } catch (_: IdentityStore.Conflict) {
+                            android.util.Log.i(
+                                "PeerloomTestDiag",
+                                "store-probe-cas-conflict pid=${android.os.Process.myPid()}",
+                            )
                             result.arg1 = 11
                             reply.send(result)
-                        } catch (_: Exception) {
+                        } catch (error: Exception) {
+                            android.util.Log.i(
+                                "PeerloomTestDiag",
+                                "store-probe-error category=${error.javaClass.simpleName} pid=${android.os.Process.myPid()}",
+                            )
                             result.arg1 = 255
                             reply.send(result)
                         }
@@ -75,7 +95,13 @@ class StoreProbeService : Service() {
             }
         )
 
-    override fun onBind(intent: Intent): IBinder = handler.binder
+    override fun onBind(intent: Intent): IBinder {
+        android.util.Log.i(
+            "PeerloomTestDiag",
+            "store-probe-bound pid=${android.os.Process.myPid()}",
+        )
+        return handler.binder
+    }
 
     override fun onDestroy() {
         work.shutdownNow()
@@ -87,6 +113,7 @@ class StoreProbeService : Service() {
 class StoreProcessTest {
     @Test
     fun crossProcessCasAndKilledLockOwner() {
+        val started = System.currentTimeMillis()
         val context = ApplicationProvider.getApplicationContext<Context>()
         val instrumentation =
             context.packageManager.getInstrumentationInfo(
@@ -161,7 +188,24 @@ class StoreProcessTest {
                 } catch (_: IdentityStore.Conflict) {
                     11
                 }
-            val other = responses.poll(10, TimeUnit.SECONDS)!!
+            val other = responses.poll(10, TimeUnit.SECONDS)
+            if (other == null) {
+                // Own package/UID only; no trace, description, credential or arbitrary log text.
+                val activity = context.getSystemService(android.app.ActivityManager::class.java)
+                for (exit in activity.getHistoricalProcessExitReasons(context.packageName, 0, 8)) {
+                    if (
+                        exit.processName == context.packageName + ":storeProbe" &&
+                            exit.timestamp >= started
+                    ) {
+                        android.util.Log.i(
+                            "PeerloomTestDiag",
+                            "store-probe-exit pid=${exit.pid} reason=${exit.reason} status=${exit.status} importance=${exit.importance}",
+                        )
+                    }
+                }
+                fail("probe CAS response deadline; disconnected=${disconnected.count == 0L}")
+                return
+            }
             assertEquals(1, other.first)
             assertTrue(
                 "probe must be a distinct process",

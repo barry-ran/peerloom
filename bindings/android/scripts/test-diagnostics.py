@@ -31,6 +31,11 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(module.sanitize('TLS fixture trust policy=android-ca-store outcome=trusted secret'), 'TLS fixture trust policy=android-ca-store outcome=trusted')
         self.assertEqual(module.sanitize('TLS test server rejected: SSLHandshakeException; cause=null secret'), 'TLS test server rejected: SSLHandshakeException; cause=null')
 
+    def test_own_probe_exit_reasons_are_numeric_only(self):
+        self.assertEqual(module.sanitize('store-probe-exit pid=4723 reason=3 status=9 importance=100 description=secret'), 'store-probe-exit pid=4723 reason=3 status=9 importance=100')
+        self.assertEqual(module.sanitize('store-probe-cas-start pid=4723 payload=secret'), 'store-probe-cas-start pid=4723')
+        self.assertIsNone(module.sanitize('store-probe-exit description=private trace=private'))
+
     def test_native_and_checkjni_categories(self):
         self.assertEqual(module.sanitize('Fatal signal 6 (SIGABRT), code -1, secret'), 'native fatal signal=6 category=SIGABRT')
         self.assertEqual(module.sanitize('JNI DETECTED ERROR IN APPLICATION: secret'), 'CheckJNI detected an error')
