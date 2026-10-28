@@ -2373,14 +2373,13 @@
       "post": {
         "summary": "创建grant-only应用",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "201": {
@@ -2460,19 +2459,19 @@
               }
             }
           }
-        }
+        },
+        "x-required-admin-scope": "admin"
       },
       "get": {
         "summary": "分页列出当前租户应用",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -2533,21 +2532,21 @@
             },
             "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       }
     },
     "/admin/api/v1/applications/{id}": {
       "get": {
         "summary": "读取当前租户应用",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -2598,19 +2597,19 @@
               "format": "uuid"
             }
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       },
       "patch": {
         "summary": "部分更新应用；禁用时关闭会话",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -2699,21 +2698,21 @@
               }
             }
           }
-        }
+        },
+        "x-required-admin-scope": "admin"
       }
     },
     "/admin/api/v1/registration-grants": {
       "post": {
         "summary": "签发短期一次性注册grant",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "201": {
@@ -2793,21 +2792,21 @@
               }
             }
           }
-        }
+        },
+        "x-required-admin-scope": "admin"
       }
     },
     "/admin/api/v1/devices": {
       "get": {
         "summary": "按应用、在线与标签过滤设备",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -2896,21 +2895,21 @@
             },
             "description": "URL编码JSON对象，原始query值最多8192字节；按jsonb包含匹配。"
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       }
     },
     "/admin/api/v1/devices/{id}": {
       "get": {
         "summary": "读取设备及可用的实时在线状态",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -2961,19 +2960,19 @@
               "format": "uuid"
             }
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       },
       "patch": {
         "summary": "部分更新公共设备属性；不改身份或状态",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3062,21 +3061,21 @@
               }
             }
           }
-        }
+        },
+        "x-required-admin-scope": "admin"
       }
     },
     "/admin/api/v1/devices/{id}/revoke": {
       "post": {
         "summary": "不可逆撤销设备与全部凭证并关闭会话",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3155,21 +3154,21 @@
               "type": "string"
             }
           }
-        ]
+        ],
+        "x-required-admin-scope": "admin"
       }
     },
     "/admin/api/v1/connection-grants": {
       "post": {
         "summary": "创建同租户定向连接授权",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "201": {
@@ -3256,19 +3255,19 @@
               }
             }
           }
-        }
+        },
+        "x-required-admin-scope": "admin"
       },
       "get": {
         "summary": "分页读取连接授权",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3329,21 +3328,21 @@
             },
             "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       }
     },
     "/admin/api/v1/connection-grants/{id}": {
       "get": {
         "summary": "读取连接授权",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3394,19 +3393,19 @@
               "format": "uuid"
             }
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       },
       "delete": {
         "summary": "撤销连接授权并关闭相关会话；保留记录",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3485,21 +3484,21 @@
               "type": "string"
             }
           }
-        ]
+        ],
+        "x-required-admin-scope": "admin"
       }
     },
     "/admin/api/v1/sessions": {
       "get": {
         "summary": "分页读取持久化会话状态",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3560,21 +3559,21 @@
             },
             "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       }
     },
     "/admin/api/v1/sessions/{id}": {
       "get": {
         "summary": "读取会话，不隐式续租或授权SDP",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3625,21 +3624,21 @@
               "format": "uuid"
             }
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       }
     },
     "/admin/api/v1/sessions/{id}/terminate": {
       "post": {
         "summary": "终止会话",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3718,21 +3717,21 @@
               "type": "string"
             }
           }
-        ]
+        ],
+        "x-required-admin-scope": "admin"
       }
     },
     "/admin/api/v1/audit-events": {
       "get": {
         "summary": "分页读取当前租户审计",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3793,21 +3792,21 @@
             },
             "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       }
     },
     "/admin/api/v1/relay-nodes": {
       "get": {
         "summary": "分页读取本租户中继节点（不含运维共享节点）",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -3868,19 +3867,19 @@
             },
             "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       },
       "post": {
         "summary": "创建运维注册表已批准的租户中继节点",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "201": {
@@ -3960,21 +3959,21 @@
               }
             }
           }
-        }
+        },
+        "x-required-admin-scope": "admin"
       }
     },
     "/admin/api/v1/relay-nodes/{id}": {
       "get": {
         "summary": "读取本租户中继节点",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "read",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -4025,19 +4024,19 @@
               "format": "uuid"
             }
           }
-        ]
+        ],
+        "x-required-admin-scope": "read"
       },
       "patch": {
         "summary": "部分更新中继节点并递增revision",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -4126,19 +4125,19 @@
               }
             }
           }
-        }
+        },
+        "x-required-admin-scope": "admin"
       },
       "delete": {
         "summary": "软禁用中继节点；不撤回已经签发的TURN凭证",
         "tags": [
-          "租户管理"
+          "浏览器管理"
         ],
         "security": [
           {
             "AdminSession": []
           }
         ],
-        "x-required-service-scope": "admin",
         "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
         "responses": {
           "200": {
@@ -4217,7 +4216,8 @@
               "type": "string"
             }
           }
-        ]
+        ],
+        "x-required-admin-scope": "admin"
       }
     }
   },

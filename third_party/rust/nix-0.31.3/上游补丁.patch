@@ -1,0 +1,262 @@
+From f9ba3ed0698255d93240b07ecbf39ecb05a8a5cd Mon Sep 17 00:00:00 2001
+From: xtqqczze <45661989+xtqqczze@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 16:26:38 +0100
+Subject: [PATCH] fix: mark macOS-only items (#2821)
+
+---
+ src/sys/ptrace/bsd.rs     | 16 ++++++++--------
+ src/sys/ptrace/mod.rs     |  4 ++--
+ src/sys/socket/addr.rs    | 16 ++++++++--------
+ src/sys/socket/mod.rs     |  4 ++--
+ src/sys/socket/sockopt.rs |  8 ++++----
+ test/sys/mod.rs           |  2 +-
+ test/sys/test_socket.rs   |  2 +-
+ test/sys/test_sockopt.rs  |  2 +-
+ 8 files changed, 27 insertions(+), 27 deletions(-)
+
+diff --git a/src/sys/ptrace/bsd.rs b/src/sys/ptrace/bsd.rs
+index 3dd486210c..32a53085af 100644
+--- a/src/sys/ptrace/bsd.rs
++++ b/src/sys/ptrace/bsd.rs
+@@ -9,7 +9,7 @@ use std::ptr;
+ pub type RequestType = c_int;
+ 
+ cfg_if! {
+-    if #[cfg(any(freebsdlike, apple_targets, target_os = "openbsd"))] {
++    if #[cfg(any(freebsdlike, target_os = "macos", target_os = "openbsd"))] {
+         #[doc(hidden)]
+         pub type AddressType = *mut ::libc::c_char;
+     } else {
+@@ -26,26 +26,26 @@ libc_enum! {
+         PT_TRACE_ME,
+         PT_READ_I,
+         PT_READ_D,
+-        #[cfg(apple_targets)]
++        #[cfg(target_os = "macos")]
+         PT_READ_U,
+         PT_WRITE_I,
+         PT_WRITE_D,
+-        #[cfg(apple_targets)]
++        #[cfg(target_os = "macos")]
+         PT_WRITE_U,
+         PT_CONTINUE,
+         PT_KILL,
+-        #[cfg(any(any(freebsdlike, apple_targets),
++        #[cfg(any(any(freebsdlike, target_os = "macos"),
+                   all(target_os = "openbsd", target_arch = "x86_64"),
+                   all(target_os = "netbsd", any(target_arch = "x86_64",
+                                                 target_arch = "powerpc"))))]
+         PT_STEP,
+         PT_ATTACH,
+         PT_DETACH,
+-        #[cfg(apple_targets)]
++        #[cfg(target_os = "macos")]
+         PT_SIGEXC,
+-        #[cfg(apple_targets)]
++        #[cfg(target_os = "macos")]
+         PT_THUPDATE,
+-        #[cfg(apple_targets)]
++        #[cfg(target_os = "macos")]
+         PT_ATTACHEXC
+     }
+ }
+@@ -149,7 +149,7 @@ pub fn kill(pid: Pid) -> Result<()> {
+ /// }
+ /// ```
+ #[cfg(any(
+-    any(freebsdlike, apple_targets),
++    any(freebsdlike, target_os = "macos"),
+     all(target_os = "openbsd", target_arch = "x86_64"),
+     all(
+         target_os = "netbsd",
+diff --git a/src/sys/ptrace/mod.rs b/src/sys/ptrace/mod.rs
+index c059797df9..b35af5e177 100644
+--- a/src/sys/ptrace/mod.rs
++++ b/src/sys/ptrace/mod.rs
+@@ -6,8 +6,8 @@ mod linux;
+ #[cfg(linux_android)]
+ pub use self::linux::*;
+ 
+-#[cfg(bsd)]
++#[cfg(any(bsd_without_apple, target_os = "macos"))]
+ mod bsd;
+ 
+-#[cfg(bsd)]
++#[cfg(any(bsd_without_apple, target_os = "macos"))]
+ pub use self::bsd::*;
+diff --git a/src/sys/socket/addr.rs b/src/sys/socket/addr.rs
+index 09be1d68b5..4d7716921a 100644
+--- a/src/sys/socket/addr.rs
++++ b/src/sys/socket/addr.rs
+@@ -16,7 +16,7 @@ use crate::errno::Errno;
+ use crate::sys::socket::addr::alg::AlgAddr;
+ #[cfg(linux_android)]
+ use crate::sys::socket::addr::netlink::NetlinkAddr;
+-#[cfg(all(feature = "ioctl", apple_targets))]
++#[cfg(all(feature = "ioctl", target_os = "macos"))]
+ use crate::sys::socket::addr::sys_control::SysControlAddr;
+ use crate::{NixPath, Result};
+ use cfg_if::cfg_if;
+@@ -1134,7 +1134,7 @@ pub union SockaddrStorage {
+     dl: LinkAddr,
+     #[cfg(linux_android)]
+     nl: NetlinkAddr,
+-    #[cfg(all(feature = "ioctl", apple_targets))]
++    #[cfg(all(feature = "ioctl", target_os = "macos"))]
+     #[cfg_attr(docsrs, doc(cfg(feature = "ioctl")))]
+     sctl: SysControlAddr,
+     #[cfg(feature = "net")]
+@@ -1216,7 +1216,7 @@ impl SockaddrLike for SockaddrStorage {
+                 libc::AF_PACKET => unsafe {
+                     LinkAddr::from_raw(addr, l).map(|dl| Self { dl })
+                 },
+-                #[cfg(all(feature = "ioctl", apple_targets))]
++                #[cfg(all(feature = "ioctl", target_os = "macos"))]
+                 libc::AF_SYSTEM => unsafe {
+                     SysControlAddr::from_raw(addr, l).map(|sctl| Self { sctl })
+                 },
+@@ -1375,7 +1375,7 @@ impl SockaddrStorage {
+     accessors! {as_netlink_addr, as_netlink_addr_mut, NetlinkAddr,
+     AddressFamily::Netlink, libc::sockaddr_nl, nl}
+ 
+-    #[cfg(all(feature = "ioctl", apple_targets))]
++    #[cfg(all(feature = "ioctl", target_os = "macos"))]
+     #[cfg_attr(docsrs, doc(cfg(feature = "ioctl")))]
+     accessors! {as_sys_control_addr, as_sys_control_addr_mut, SysControlAddr,
+     AddressFamily::System, libc::sockaddr_ctl, sctl}
+@@ -1413,7 +1413,7 @@ impl fmt::Display for SockaddrStorage {
+                 #[cfg(any(linux_android, target_os = "fuchsia"))]
+                 #[cfg(feature = "net")]
+                 libc::AF_PACKET => self.dl.fmt(f),
+-                #[cfg(apple_targets)]
++                #[cfg(target_os = "macos")]
+                 #[cfg(feature = "ioctl")]
+                 libc::AF_SYSTEM => self.sctl.fmt(f),
+                 libc::AF_UNIX => self.su.fmt(f),
+@@ -1475,7 +1475,7 @@ impl Hash for SockaddrStorage {
+                 #[cfg(any(linux_android, target_os = "fuchsia"))]
+                 #[cfg(feature = "net")]
+                 libc::AF_PACKET => self.dl.hash(s),
+-                #[cfg(apple_targets)]
++                #[cfg(target_os = "macos")]
+                 #[cfg(feature = "ioctl")]
+                 libc::AF_SYSTEM => self.sctl.hash(s),
+                 libc::AF_UNIX => self.su.hash(s),
+@@ -1505,7 +1505,7 @@ impl PartialEq for SockaddrStorage {
+                 #[cfg(any(linux_android, target_os = "fuchsia"))]
+                 #[cfg(feature = "net")]
+                 (libc::AF_PACKET, libc::AF_PACKET) => self.dl == other.dl,
+-                #[cfg(apple_targets)]
++                #[cfg(target_os = "macos")]
+                 #[cfg(feature = "ioctl")]
+                 (libc::AF_SYSTEM, libc::AF_SYSTEM) => self.sctl == other.sctl,
+                 (libc::AF_UNIX, libc::AF_UNIX) => self.su == other.su,
+@@ -1727,7 +1727,7 @@ pub mod alg {
+ 
+ feature! {
+ #![feature = "ioctl"]
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ pub mod sys_control {
+     use crate::sys::socket::addr::AddressFamily;
+     use libc::{self, c_uchar};
+diff --git a/src/sys/socket/mod.rs b/src/sys/socket/mod.rs
+index 229cbb0ddb..5dbbb7defc 100644
+--- a/src/sys/socket/mod.rs
++++ b/src/sys/socket/mod.rs
+@@ -62,7 +62,7 @@ pub use self::addr::{SockaddrIn, SockaddrIn6};
+ pub use crate::sys::socket::addr::alg::AlgAddr;
+ #[cfg(linux_android)]
+ pub use crate::sys::socket::addr::netlink::NetlinkAddr;
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ #[cfg(feature = "ioctl")]
+ pub use crate::sys::socket::addr::sys_control::SysControlAddr;
+ #[cfg(any(linux_android, apple_targets))]
+@@ -136,7 +136,7 @@ pub enum SockProtocol {
+     Raw = libc::IPPROTO_RAW,
+     /// Allows applications to configure and control a KEXT
+     /// ([ref](https://developer.apple.com/library/content/documentation/Darwin/Conceptual/NKEConceptual/control/control.html))
+-    #[cfg(apple_targets)]
++    #[cfg(target_os = "macos")]
+     KextControl = libc::SYSPROTO_CONTROL,
+     /// Receives routing and link updates and may be used to modify the routing tables (both IPv4 and IPv6), IP addresses, link
+     // parameters, neighbor setups, queueing disciplines, traffic classes and packet classifiers
+diff --git a/src/sys/socket/sockopt.rs b/src/sys/socket/sockopt.rs
+index cc5ed20051..4c22f783ab 100644
+--- a/src/sys/socket/sockopt.rs
++++ b/src/sys/socket/sockopt.rs
+@@ -6,7 +6,7 @@ use crate::sys::time::TimeVal;
+ use crate::{errno::Errno, Result};
+ use cfg_if::cfg_if;
+ use libc::{self, c_int, c_void, socklen_t};
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ use std::ffi::CString;
+ use std::ffi::{CStr, OsStr, OsString};
+ use std::mem::{self, MaybeUninit};
+@@ -1297,7 +1297,7 @@ sockopt_impl!(
+     libc::IPV6_DONTFRAG,
+     bool
+ );
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ #[cfg(feature = "net")]
+ sockopt_impl!(
+     /// Get the utun interface name.
+@@ -2005,14 +2005,14 @@ impl<'a> Set<'a, OsString> for SetOsString<'a> {
+ }
+ 
+ /// Getter for a `CString` value.
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ #[cfg(feature = "net")]
+ struct GetCString<T: AsMut<[u8]>> {
+     len: socklen_t,
+     val: MaybeUninit<T>,
+ }
+ 
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ #[cfg(feature = "net")]
+ impl<T: AsMut<[u8]>> Get<CString> for GetCString<T> {
+     fn uninit() -> Self {
+diff --git a/test/sys/mod.rs b/test/sys/mod.rs
+index 1188b39266..82ba15c6a1 100644
+--- a/test/sys/mod.rs
++++ b/test/sys/mod.rs
+@@ -52,7 +52,7 @@ mod test_fanotify;
+ mod test_inotify;
+ mod test_pthread;
+ 
+-#[cfg(any(linux_android, freebsdlike, netbsdlike, apple_targets))]
++#[cfg(any(linux_android, freebsdlike, netbsdlike, target_os = "macos"))]
+ mod test_ptrace;
+ #[cfg(linux_android)]
+ mod test_timerfd;
+diff --git a/test/sys/test_socket.rs b/test/sys/test_socket.rs
+index 9f309b42db..8afdafd41f 100644
+--- a/test/sys/test_socket.rs
++++ b/test/sys/test_socket.rs
+@@ -1777,7 +1777,7 @@ pub fn test_unnamed_unixdomain_autobind() {
+ }
+ 
+ // Test creating and using named system control sockets
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ #[test]
+ pub fn test_syscontrol() {
+     use nix::errno::Errno;
+diff --git a/test/sys/test_sockopt.rs b/test/sys/test_sockopt.rs
+index c3e1d5ed07..d08a28b412 100644
+--- a/test/sys/test_sockopt.rs
++++ b/test/sys/test_sockopt.rs
+@@ -952,7 +952,7 @@ fn test_ktls() {
+ }
+ 
+ #[test]
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ fn test_utun_ifname() {
+     skip_if_not_root!("test_utun_ifname");
+ 

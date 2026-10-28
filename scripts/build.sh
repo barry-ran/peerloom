@@ -50,3 +50,12 @@ python3 "$root/scripts/package-third-party.py"
 mkdir -p "$root/dist/third-party/admin-web-build"
 cp -R "$root/third_party/admin-web-build/." "$root/dist/third-party/admin-web-build/"
 cp "$root/src/admin-web/package-lock.json" "$root/dist/third-party/admin-web-build/package-lock.json"
+# path回移依赖仍标incomplete；同时携带原第三方许可与固定补丁来源，不改为项目MIT。
+python3 "$root/scripts/test-vendored-nix.py"
+mkdir -p "$root/dist/third-party/vendor/nix-0.31.3"
+cp "$root/third_party/rust/nix-0.31.3/crate/LICENSE" \
+  "$root/third_party/rust/nix-0.31.3/来源.json" \
+  "$root/third_party/rust/nix-0.31.3/上游补丁.patch" \
+  "$root/third_party/rust/nix-0.31.3/应用补丁.patch" \
+  "$root/third_party/rust/nix-0.31.3/回移说明.md" \
+  "$root/dist/third-party/vendor/nix-0.31.3/"

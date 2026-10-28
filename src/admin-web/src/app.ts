@@ -100,7 +100,7 @@ function renderShell(): void {
     const apply = el('button', 'button', t('filter')); apply.type = 'submit'; filters.append(appWrap, onlineWrap, apply);
     filters.addEventListener('submit', event => { event.preventDefault(); if (busyMutation) return; appFilter = app.value.trim(); onlineFilter = online.value; cursor = ''; void loadRows(); }); main.append(filters);
   }
-  const tableArea = el('section', 'table-panel'); tableArea.id = 'table-area'; tableArea.setAttribute('aria-live', 'polite'); main.append(tableArea);
+  const tableArea = el('section', 'table-panel'); tableArea.id = 'table-area'; tableArea.setAttribute('aria-live', 'polite'); tableArea.setAttribute('aria-label', t(resource)); tableArea.tabIndex = 0; main.append(tableArea);
   const paging = el('div', 'row pagination'); paging.append(button(t('first'), () => { if (!busyMutation) { cursor = ''; void loadRows(); } }), button(t('next'), () => { if (!busyMutation && nextCursor) { cursor = nextCursor; void loadRows(); } })); paging.lastElementChild!.id = 'next-page'; main.append(paging);
   layout.append(aside, main); root.append(layout); void loadRows();
 }

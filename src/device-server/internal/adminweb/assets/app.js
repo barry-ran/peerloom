@@ -251,6 +251,8 @@ function renderShell() {
     const tableArea = el('section', 'table-panel');
     tableArea.id = 'table-area';
     tableArea.setAttribute('aria-live', 'polite');
+    tableArea.setAttribute('aria-label', t(resource));
+    tableArea.tabIndex = 0;
     main.append(tableArea);
     const paging = el('div', 'row pagination');
     paging.append(button(t('first'), () => { if (!busyMutation) {

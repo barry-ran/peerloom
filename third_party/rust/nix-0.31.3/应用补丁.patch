@@ -1,0 +1,22 @@
+--- a/src/sys/socket/mod.rs
++++ b/src/sys/socket/mod.rs
+@@ -137,7 +137,7 @@
+     Raw = libc::IPPROTO_RAW,
+     /// Allows applications to configure and control a KEXT
+     /// ([ref](https://developer.apple.com/library/content/documentation/Darwin/Conceptual/NKEConceptual/control/control.html))
+-    #[cfg(apple_targets)]
++    #[cfg(target_os = "macos")]
+     KextControl = libc::SYSPROTO_CONTROL,
+     /// Receives routing and link updates and may be used to modify the routing tables (both IPv4 and IPv6), IP addresses, link
+     // parameters, neighbor setups, queueing disciplines, traffic classes and packet classifiers
+--- a/src/sys/socket/sockopt.rs
++++ b/src/sys/socket/sockopt.rs
+@@ -1280,7 +1280,7 @@
+     libc::IPV6_DONTFRAG,
+     bool
+ );
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ #[cfg(feature = "net")]
+ sockopt_impl!(
+     /// Get the utun interface name.

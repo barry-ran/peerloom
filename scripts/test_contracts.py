@@ -87,6 +87,11 @@ class ContractTests(unittest.TestCase):
             '/v1/relay-nodes': {'get', 'post'}, '/v1/relay-nodes/{id}': {'get', 'patch', 'delete'},
             '/v1/device-sessions/{id}/ice-servers': {'get'},
         }
+        browser_resources = {'applications', 'registration-grants', 'devices', 'connection-grants', 'sessions', 'audit-events', 'relay-nodes'}
+        for path, methods in list(expected.items()):
+            if path.startswith('/v1/') and path.split('/')[2] in browser_resources:
+                expected['/admin/api' + path] = methods
+        expected.update({'/admin/api/auth/login': {'post'}, '/admin/api/auth/session': {'get'}, '/admin/api/auth/logout': {'post'}})
         self.assertEqual(set(api['paths']), set(expected))
         for name, methods in expected.items():
             self.assertEqual(set(api['paths'][name]), methods)
@@ -145,6 +150,30 @@ class ContractTests(unittest.TestCase):
                     self.assertTrue(parameter['required'])
                     self.assertEqual(parameter['schema']['format'], 'uuid')
         self.assertEqual(operations, 22)
+
+    def test_browser_cookie_csrf_and_role_contracts(self):
+        api = json.loads((ROOT / 'api/openapi.json').read_text())
+        scheme = api['components']['securitySchemes']['AdminSession']
+        self.assertEqual((scheme['type'], scheme['in'], scheme['name']), ('apiKey', 'cookie', '__Host-peerloom_admin'))
+        self.assertEqual(api['paths']['/admin/api/auth/login']['post']['security'], [])
+        operations = 0
+        for path, methods in api['paths'].items():
+            if not path.startswith('/admin/api/') or path == '/admin/api/auth/login':
+                continue
+            for method, operation in methods.items():
+                self.assertEqual(operation['security'], [{'AdminSession': []}])
+                if path.startswith('/admin/api/v1/'):
+                    operations += 1
+                    self.assertEqual(operation['x-required-admin-scope'], 'read' if method == 'get' else 'admin')
+                    self.assertNotIn('x-required-service-scope', operation)
+                    if method != 'get':
+                        self.assertTrue(next(p for p in operation['parameters'] if p['name'] == 'Idempotency-Key')['required'])
+                if method != 'get':
+                    self.assertTrue(next(p for p in operation['parameters'] if p['name'] == 'X-CSRF-Token')['required'])
+        self.assertEqual(operations, 22)
+        view = api['components']['schemas']['AdminSessionView']['properties']
+        self.assertNotIn('token', view)
+        self.assertNotIn('service_credential', view)
 
     def test_management_patch_preserves_null_and_rejects_empty(self):
         device = self.management_validator('ManagementDevicePatch')

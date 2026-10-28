@@ -6,6 +6,7 @@ python3 scripts/test-dev-secrets.py
 python3 scripts/test-compose-script.py
 python3 scripts/test-turn-script.py
 python3 scripts/test-turn-refresh-script.py
+python3 scripts/test-vendored-nix.py
 python3 scripts/test_contracts.py
 python3 scripts/test-package-third-party.py
 (
