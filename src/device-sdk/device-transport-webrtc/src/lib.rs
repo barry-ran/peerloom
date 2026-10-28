@@ -19,6 +19,26 @@ use webrtc::peer_connection::{
 
 pub use webrtc::peer_connection::RTCSessionDescription as SessionDescription;
 
+/// 只暴露实际选中候选的类别，不暴露地址、凭证或完整统计。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateKind {
+    Unknown,
+    Host,
+    ServerReflexive,
+    PeerReflexive,
+    Relay,
+}
+fn candidate_kind(value: rtc::peer_connection::transport::RTCIceCandidateType) -> CandidateKind {
+    use rtc::peer_connection::transport::RTCIceCandidateType as T;
+    match value {
+        T::Host => CandidateKind::Host,
+        T::Srflx => CandidateKind::ServerReflexive,
+        T::Prflx => CandidateKind::PeerReflexive,
+        T::Relay => CandidateKind::Relay,
+        _ => CandidateKind::Unknown,
+    }
+}
+
 /// 不实现 Debug，避免 TURN 凭证通过配置日志泄漏。
 #[derive(Clone)]
 pub struct TransportConfig {
@@ -242,6 +262,35 @@ pub struct PeerTransport {
 }
 
 impl PeerTransport {
+    /// 直接读取底层 ICE transport 的真实选中对；未选中时为 None。
+    /// 不依赖 0.21.1 stats 中缺失的 remote-candidate 条目或不一致的 ID 前缀。
+    pub async fn selected_candidate_types(
+        &self,
+    ) -> Result<Option<(CandidateKind, CandidateKind)>, TransportError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TransportError::Closed);
+        }
+        tokio::time::timeout(self.config.operation_timeout, async {
+            let Some(sctp) = self.peer.sctp().await else {
+                return Ok(None);
+            };
+            let pair = sctp
+                .transport()
+                .ice_transport()
+                .get_selected_candidate_pair()
+                .await
+                .map_err(classify_backend)?;
+            Ok(pair.map(|pair| {
+                (
+                    candidate_kind(pair.local().typ),
+                    candidate_kind(pair.remote().typ),
+                )
+            }))
+        })
+        .await
+        .map_err(|_| TransportError::Timeout)?
+    }
+
     pub async fn new(config: TransportConfig) -> Result<Self, TransportError> {
         config.validate()?;
         let (gather_tx, gather_rx) = watch::channel(false);

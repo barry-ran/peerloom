@@ -1,0 +1,17 @@
+[package]
+name = "device-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "=0.1.89"
+tokio = { version = "=1.52.3", features = ["sync"] }
+zeroize = "=1.9.1"
+
+[dev-dependencies]
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }

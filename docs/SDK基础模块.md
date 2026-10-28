@@ -1,11 +1,11 @@
 # SDK 基础模块
 
-本文说明 `src/device-sdk` 中的 `device-protocol` 和 `device-core`。新增真实传输适配见[原生传输模块](原生传输模块.md)，仍不是完整平台 SDK。Rust 1.99.1，workspace 锁文件入库；这两个基础模块无第三方运行时依赖，传输模块另有固定依赖。
+本文说明 `src/device-sdk` 中的 `device-protocol` 和 `device-core`。新增真实传输适配见[原生传输模块](原生传输模块.md)，仍不是完整平台 SDK。Rust 1.99.1，workspace 锁文件入库；协议与队列子模块本身不依赖网络运行时；device-core 新增身份与信令依赖见[SDK身份与信令模块](SDK身份与信令模块.md)。
 
 ```mermaid
 flowchart LR
     Protocol[协议枚举 错误码 状态转换] --> Core[单一拥有者有界发送队列]
-    Core --> Future[后续 actor 与 webrtc-rs 传输适配]
+    Core --> Future[身份 信令与 webrtc-rs 传输适配]
 ```
 
 协议模块提供会话状态、路径/通道/溢出类型与稳定错误码，中英展示文案分离。终态不可恢复，WSS 断开不自动等于会话关闭；这不是 REST/WSS 编解码器。
@@ -16,6 +16,6 @@ flowchart LR
 
 入队获得字节所有权；成功只表示本地排队。超大消息不得驱逐既有数据，算术与时钟回退均显式检查。关闭幂等且不可逆。单次成功返回过期数，累计 `expired_messages_total()` 即便随后入队失败也保留清理统计，采用饱和计数防回绕。
 
-队列没有内部锁或回调，上层并发需要 actor/锁串行化。客户回调、运行时取消、身份安全存储、完整 SDK、C ABI 和五端封装尚未实现。
+队列没有内部锁或回调，上层并发需要 actor/锁串行化。客户端取消与可注入存储在身份模块单独实现；平台安全存储、完整 SDK facade、C ABI 和五端封装尚未实现。
 
 当前 19 项测试覆盖状态转换矩阵、中英错误码、FIFO、大小与条数上限、TTL、三种溢出、可靠流终止、关闭、时钟、算术和循环记账；fmt、严格 clippy、release 构建通过。运行 `make check`，不可用这些基础测试替代 P2P/TURN 和授权端到端验收。

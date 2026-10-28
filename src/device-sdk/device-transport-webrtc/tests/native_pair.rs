@@ -1,6 +1,6 @@
 //! 需要 UDP socket 的网络集成；CI 显式运行 --ignored，与默认离线单测分开。
 use device_protocol::{ChannelMode, ConnectionPolicy};
-use device_transport_webrtc::{PeerTransport, TransportConfig, TransportError};
+use device_transport_webrtc::{CandidateKind, PeerTransport, TransportConfig, TransportError};
 use std::time::Duration;
 
 fn local_config() -> TransportConfig {
@@ -46,6 +46,14 @@ async fn exercise_pair(include_low_latency: bool) {
         sender.wait_open().await?;
         receiver.wait_open().await?;
         sender.wait_open().await?; // 重复等待不得丢弃之后的数据。
+        assert_eq!(
+            a.selected_candidate_types().await?,
+            Some((CandidateKind::Host, CandidateKind::Host))
+        );
+        assert_eq!(
+            b.selected_candidate_types().await?,
+            Some((CandidateKind::Host, CandidateKind::Host))
+        );
         assert_eq!(
             sender.send(&vec![0; 65537]).await,
             Err(TransportError::MessageTooLarge)
