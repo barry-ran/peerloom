@@ -20,5 +20,5 @@ mkdir -p "$root/dist"
   cargo build --workspace --release --locked
   mkdir -p "$root/dist/rust-host"
   # 仅当前构建主机 Rust 库，不冒充五端 SDK 安装包或稳定 C ABI。
-  cp target/release/libdevice_core.rlib target/release/libdevice_protocol.rlib "$root/dist/rust-host/"
+  cp target/release/libdevice_core.rlib target/release/libdevice_protocol.rlib target/release/libdevice_transport_webrtc.rlib "$root/dist/rust-host/"
 )
