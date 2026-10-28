@@ -76,6 +76,7 @@ class ServiceSafety(unittest.TestCase):
             self.assertEqual(str(raised.exception), 'dependency HTTP status 403')
             self.assertNotIn(secret, str(raised.exception))
             self.assertFalse((Path(temporary) / 'archive').exists())
+            self.assertTrue(error.closed)
 
     def test_tar_rejects_traversal_and_links_preserves_release_timestamps(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -93,6 +94,36 @@ class ServiceSafety(unittest.TestCase):
                 stream.addfile(item, io.BytesIO(b'x'))
             source = SERVICE.unpack(archive, root / 'good-out')
             self.assertEqual((source / 'generated.c').stat().st_mtime, 1234567890)
+
+    def test_only_exact_pinned_nonbuild_links_are_excluded_never_created(self):
+        link = 'release/nonbuild/CLAUDE.md'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); archive = root / 'archive'
+            with tarfile.open(archive, 'w') as stream:
+                item = tarfile.TarInfo('release/src/server.c'); item.size = 1
+                stream.addfile(item, io.BytesIO(b'x'))
+                item = tarfile.TarInfo(link); item.type = tarfile.SYMTYPE; item.linkname = 'AGENTS.md'
+                stream.addfile(item)
+            spec = {'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+                    'excluded_nonbuild_symlinks': {link: 'AGENTS.md'}}
+            with self.assertRaisesRegex(SERVICE.Failure, 'unsafe dependency archive entry'):
+                SERVICE.unpack(archive, root / 'default-reject')
+            source = SERVICE.unpack(archive, root / 'pinned', spec)
+            self.assertEqual((source / 'src/server.c').read_bytes(), b'x')
+            self.assertFalse((source / 'nonbuild/CLAUDE.md').exists())
+            self.assertFalse(any(path.is_symlink() for path in source.rglob('*')))
+            with self.assertRaisesRegex(SERVICE.Failure, 'matching archive checksum'):
+                SERVICE.unpack(archive, root / 'bad-checksum', {**spec, 'sha256': '0' * 64})
+            with self.assertRaisesRegex(SERVICE.Failure, 'unexpected excluded metadata'):
+                SERVICE.unpack(archive, root / 'bad-target', {**spec, 'excluded_nonbuild_symlinks': {link: '../outside'}})
+            with self.assertRaisesRegex(SERVICE.Failure, 'metadata entry missing'):
+                SERVICE.unpack(archive, root / 'missing', {**spec, 'excluded_nonbuild_symlinks': {link: 'AGENTS.md', 'release/missing': 'none'}})
+            with tarfile.open(archive, 'a') as stream:
+                item = tarfile.TarInfo('release/unknown-link'); item.type = tarfile.SYMTYPE; item.linkname = 'src/server.c'
+                stream.addfile(item)
+            updated = {**spec, 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}
+            with self.assertRaisesRegex(SERVICE.Failure, 'unsafe dependency archive entry'):
+                SERVICE.unpack(archive, root / 'unknown-link', updated)
 
     def test_cache_links_must_resolve_inside_owned_prefix(self):
         with tempfile.TemporaryDirectory() as temporary:

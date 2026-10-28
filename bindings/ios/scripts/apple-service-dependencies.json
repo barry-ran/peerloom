@@ -9,6 +9,11 @@
     "version": "8.10.3",
     "url": "https://download.redis.io/releases/redis-8.10.3.tar.gz",
     "sha256": "edde778f6bdee7581e42fc139ca9e07e2822212092f7501f99989656e3629d02",
-    "checksum_source": "https://raw.githubusercontent.com/redis/redis-hashes/master/README"
+    "checksum_source": "https://raw.githubusercontent.com/redis/redis-hashes/master/README",
+    "excluded_nonbuild_symlinks": {
+      "redis-8.10.3/modules/redisearch/src/.claude/skills": "../.skills",
+      "redis-8.10.3/modules/redisearch/src/CLAUDE.md": "AGENTS.md"
+    },
+    "exclusion_reason": "Only exact checksum-pinned upstream AI-assistant metadata links; not used by explicit redis-server/redis-cli targets. Never create archive symlinks."
   }
 }

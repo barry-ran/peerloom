@@ -91,7 +91,9 @@ def download(spec, path):
     try:
         response = opener.open(request, timeout=30)
     except urllib.error.HTTPError as error:
-        raise Failure('dependency HTTP status ' + str(int(error.code))) from None
+        status = int(error.code)
+        error.close()
+        raise Failure('dependency HTTP status ' + str(status)) from None
     with response, path.open('xb') as out:
         final = urllib.parse.urlsplit(response.url)
         if final.scheme != 'https' or final.hostname not in ALLOWED_HOSTS:
@@ -106,7 +108,13 @@ def download(spec, path):
         raise Failure('dependency checksum mismatch')
 
 
-def unpack(archive, destination):
+def unpack(archive, destination, spec=None):
+    # A pinned release may contain non-build metadata links. Exclude only the
+    # manifest's exact path/target pairs; never materialize symlinks or hardlinks.
+    excluded = (spec or {}).get('excluded_nonbuild_symlinks', {})
+    if excluded and (not spec.get('sha256') or hashlib.sha256(archive.read_bytes()).hexdigest() != spec['sha256']):
+        raise Failure('excluded metadata requires matching archive checksum')
+    skipped = set()
     total = 0
     count = 0
     destination.mkdir(mode=0o700)
@@ -114,8 +122,14 @@ def unpack(archive, destination):
         for member in source:
             path = PurePosixPath(member.name)
             count += 1
-            if (path.is_absolute() or '..' in path.parts or '\\' in member.name or
-                    not (member.isdir() or member.isfile()) or member.size > 32 * 1024 * 1024):
+            if path.is_absolute() or '..' in path.parts or '\\' in member.name:
+                raise Failure('unsafe dependency archive path')
+            if member.name in excluded:
+                if not member.issym() or member.linkname != excluded[member.name] or member.name in skipped:
+                    raise Failure('unexpected excluded metadata entry')
+                skipped.add(member.name)
+                continue
+            if not (member.isdir() or member.isfile()) or member.size > 32 * 1024 * 1024:
                 raise Failure('unsafe dependency archive entry')
             total += member.size
             if total > 512 * 1024 * 1024 or count > 30000:
@@ -130,6 +144,8 @@ def unpack(archive, destination):
                     shutil.copyfileobj(data, out)
                 target.chmod(0o700 if member.mode & 0o111 else 0o600)
                 os.utime(target, (member.mtime, member.mtime), follow_symlinks=False)
+    if skipped != set(excluded):
+        raise Failure('pinned excluded metadata entry missing')
     children = list(destination.iterdir())
     if len(children) != 1 or not children[0].is_dir():
         raise Failure('dependency archive requires one root')
@@ -208,7 +224,7 @@ def dependencies(cache):
             temporary = Path(temporary)
             archive = temporary / 'archive'
             download(spec, archive)
-            source = unpack(archive, temporary / 'source')
+            source = unpack(archive, temporary / 'source', spec)
             if name == 'postgresql':
                 run([str(source / 'configure'), '--prefix=' + str(prefix), '--without-icu',
                      '--without-readline', '--without-zlib'], cwd=source, timeout=180)
