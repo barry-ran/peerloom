@@ -1,0 +1,4 @@
+# 仅 CI 测试覆盖层：数据库端口只绑定 runner 回环地址。
+services:
+  postgres:
+    ports: ['127.0.0.1:15432:5432']

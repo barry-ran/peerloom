@@ -1,0 +1,12 @@
+[package]
+name = "device-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+device-protocol = { path = "../device-protocol" }

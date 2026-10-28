@@ -1,0 +1,118 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Peerloom 工程基础接口",
+    "version": "0.1.0-dev",
+    "description": "仅列 M0 实际健康端点。业务 REST、WSS 和 SDK 尚未交付。"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "进程存活，不代表产品可用",
+        "responses": {
+          "200": {
+            "description": "进程存活，不代表产品可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "alive"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "仅 PostgreSQL schema 就绪，不代表信令或中继可用",
+        "responses": {
+          "200": {
+            "description": "仅 PostgreSQL schema 就绪，不代表信令或中继可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "scope"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "ready"
+                    },
+                    "scope": {
+                      "const": "postgres_schema"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "停止中或数据库 schema 未就绪",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "内部 Prometheus 指标，网关不得对外代理",
+        "responses": {
+          "200": {
+            "description": "HTTP 请求计数",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Problem": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

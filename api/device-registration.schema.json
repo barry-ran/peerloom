@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "设备注册输入草案",
+  "description": "M1 待接入运行时；本 schema 不承担认证、公钥持有证明或限流。metadata 首期仅允许有限标量字段。HTTP 原始请求体另限 16 KiB。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "application_id",
+    "platform",
+    "installation_public_key"
+  ],
+  "properties": {
+    "application_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "platform": {
+      "enum": [
+        "windows",
+        "macos",
+        "linux",
+        "android",
+        "ios",
+        "web"
+      ]
+    },
+    "installation_public_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "registration_grant": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "sdk_version": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "metadata": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string",
+            "maxLength": 1024
+          },
+          {
+            "type": [
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+.git
+.secrets
+.env
+**/target
+dist
+*.log
