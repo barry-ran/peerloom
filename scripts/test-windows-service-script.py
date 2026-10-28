@@ -73,6 +73,28 @@ class ProcessTest(unittest.TestCase):
             self.assertEqual(stop.call_args.args[0], ['taskkill.exe', '/PID', '12345', '/T', '/F'])
             child.wait.assert_called_once_with(timeout=10)
 
+    def test_owned_wsl_import_only_reports_codes_in_utf8_and_utf16(self):
+        for encoding in ('utf-8', 'utf-16-le'):
+            child = Mock(returncode=1)
+            child.communicate.return_value = (('private/path secret WSL_E_WSL1_NOT_SUPPORTED 0x8007019e').encode(encoding), b'private stderr')
+            args = ['wsl.exe', '--import', 'PeerloomCI-' + 'a'*32, 'owned', 'archive', '--version', '1']
+            with patch.object(service.subprocess, 'Popen', return_value=child), patch('sys.stderr', new_callable=io.StringIO) as output:
+                with self.assertRaisesRegex(RuntimeError, 'child command failed'):
+                    service.run(args, import_diagnostic=True)
+                text = output.getvalue()
+            self.assertIn('WSL_E_WSL1_NOT_SUPPORTED', text)
+            self.assertIn('0x8007019e', text)
+            self.assertNotIn('private', text)
+            self.assertNotIn('secret', text)
+
+    def test_other_process_stderr_stays_private(self):
+        child = Mock(returncode=1)
+        child.communicate.return_value = (b'private stdout', b'private stderr')
+        with patch.object(service.subprocess, 'Popen', return_value=child), patch('sys.stderr', new_callable=io.StringIO) as output:
+            with self.assertRaises(RuntimeError):
+                service.run(['postgres', 'private'], import_diagnostic=True)
+            self.assertEqual(output.getvalue(), '')
+
     def test_unconfirmed_tree_cleanup_is_not_success(self):
         child = Mock(pid=12345)
         child.communicate.side_effect = service.subprocess.TimeoutExpired('cargo', 1)

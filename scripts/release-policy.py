@@ -2,11 +2,17 @@
 """发布证据纯校验；不访问网络、不解包、不执行产物。"""
 import hashlib
 import json
+import importlib.util
 import plistlib
+from pathlib import Path
 import re
 import stat
 import tarfile
 import zipfile
+
+_gap_spec = importlib.util.spec_from_file_location('license_gap_policy', Path(__file__).with_name('license-gap-policy.py'))
+GAPS = importlib.util.module_from_spec(_gap_spec)
+_gap_spec.loader.exec_module(GAPS)
 
 REPO = 'barry-ran/peerloom'
 WORKFLOWS = {
@@ -89,8 +95,15 @@ def metadata(data, platform, commit, version):
             value.get('commit') == commit and value.get('version') == version and
             value.get('build_profile') == 'release' and value.get('cargo_features') == 'default', 'PACKAGE_IDENTITY_MISMATCH')
     keys = {'cargo_go', 'maven'} if platform == 'android' else {'cargo_go'}
-    require(value.get('release_evidence_complete') is True and
-            value.get('evidence') == {key: 'collected-not-legally-reviewed' for key in keys}, 'INCOMPLETE_EVIDENCE')
+    evidence = value.get('evidence')
+    require(isinstance(evidence, dict) and set(evidence) == keys and
+            evidence['cargo_go'] in (GAPS.COMPLETE, GAPS.DOCUMENTED) and
+            (platform != 'android' or evidence['maven'] == GAPS.COMPLETE), 'INCOMPLETE_EVIDENCE')
+    complete = all(status == GAPS.COMPLETE for status in evidence.values())
+    require(value.get('release_evidence_complete') is complete, 'MISREPRESENTED_EVIDENCE_COMPLETENESS')
+    if not complete:
+        require(value.get('release_delivery_eligible') is True and isinstance(value.get('documented_gaps'), list)
+                and value['documented_gaps'], 'DOCUMENTED_GAPS_REQUIRED')
     return value
 
 def verify_linux_tar(stream, outer_hashes, meta):
@@ -164,9 +177,23 @@ def verify_zip(filename, platform, commit, version):
             proofs.append('third-party/maven-configurations')
         for prefix in proofs:
             require({prefix + '/report.json', prefix + '/sbom.cdx.json', prefix + '/SHA256SUMS'} <= entries.keys(), 'PROOF_MISSING')
+            require(entries[prefix + '/SHA256SUMS'].file_size <= 4 * 1024**2, 'CHECKSUM_LIST_TOO_LARGE')
+            nested = {name[len(prefix)+1:]: value for name, value in hashes.items() if name.startswith(prefix + '/') and name != prefix + '/SHA256SUMS'}
+            checksum_manifest(archive.read(entries[prefix + '/SHA256SUMS']), nested)
             require(entries[prefix + '/report.json'].file_size <= MAX_JSON, 'REPORT_TOO_LARGE')
             report = json.loads(archive.read(entries[prefix + '/report.json']))
-            require(report.get('evidence_status') == 'collected-not-legally-reviewed', 'INCOMPLETE_EVIDENCE')
+            if prefix.endswith('cargo-go-all-lock-candidates'):
+                status, gaps = GAPS.classify(report)
+                for package in report.get('packages', []):
+                    for notice in package.get('files', []):
+                        notice_path = prefix + '/' + path_name(notice['file'])
+                        require(hashes.get(notice_path) == notice.get('sha256'), 'LICENSE_NOTICE_MISSING_OR_CHANGED')
+                require(status in (GAPS.COMPLETE, GAPS.DOCUMENTED) and
+                        meta['evidence']['cargo_go'] == status and meta.get('documented_gaps', []) == gaps,
+                        'UNBOUND_OR_UNKNOWN_LICENSE_GAPS')
+            else:
+                require(report.get('evidence_status') == GAPS.COMPLETE, 'INCOMPLETE_EVIDENCE')
+
         if platform == 'linux-x86_64':
             payload = 'peerloom-linux-x86_64.tar.gz'
             require(meta.get('installation_payload') == payload and payload in entries, 'LINUX_PAYLOAD_REQUIRED')

@@ -91,10 +91,24 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE):
+def wsl_import_diagnostic(returncode, output, errors):
+    codes = set()
+    for data in (output, errors):
+        if not data:
+            continue
+        bounded = data[-8192:]
+        encoding = 'utf-16-le' if bounded.count(b'\x00') > len(bounded) // 8 else 'utf-8'
+        text = bounded.decode(encoding, errors='replace')
+        codes.update(re.findall(r'\b(?:0x[0-9A-Fa-f]{8}|(?:WSL|HCS)_E_[A-Z0-9_]{1,100})\b', text))
+    # Only numeric status and recognized public error identifiers; never echo a
+    # command, path, environment, server log, or arbitrary localized message.
+    return 'Owned WSL1 import diagnostic: exit=' + str(int(returncode)) + ' codes=' + ','.join(sorted(codes)[:8])
+
+
+def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import_diagnostic=False):
     process = subprocess.Popen(argv, env=env, cwd=cwd, stdout=stdout, stderr=subprocess.PIPE)
     try:
-        output, _ = process.communicate(timeout=timeout)
+        output, errors = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         # Keep the admitted parent alive until Windows can identify its descendant
         # tree. subprocess.run would kill cargo first and orphan the Rust test.
@@ -114,6 +128,8 @@ def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE):
             raise RuntimeError('owned child tree cleanup unconfirmed') from None
         raise TimeoutError('owned command deadline') from None
     if process.returncode:
+        if import_diagnostic and len(argv) == 7 and argv[:2] == ['wsl.exe', '--import'] and argv[-2:] == ['--version', '1']:
+            print(wsl_import_diagnostic(process.returncode, output, errors), file=sys.stderr)
         # Never include command/environment or arbitrary server stderr in CI logs.
         raise RuntimeError('child command failed')
     return output
@@ -200,7 +216,7 @@ def main():
         STAGE = 'import-owned-wsl1'
         imported = True  # An uncertain result is checked/cleaned; import is never repeated.
         run(['wsl.exe', '--import', args.distro, str(directory / 'wsl'),
-             str(directory / 'ubuntu_base.archive'), '--version', '1'], timeout=180)
+             str(directory / 'ubuntu_base.archive'), '--version', '1'], timeout=180, import_diagnostic=True)
         # No default distribution/version/network setting is changed.
         STAGE = 'build-real-redis-in-owned-wsl1'
         wsl('/bin/bash', '-ec', 'mkdir -m 700 /root/peerloom-ci; apt-get update; '

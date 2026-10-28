@@ -17,6 +17,7 @@ python3 scripts/test_contracts.py
 python3 scripts/test-package-third-party.py
 python3 scripts/test-package-release.py
 python3 scripts/test-release-admin.py
+python3 scripts/test-license-gap-policy.py
 python3 scripts/test-postgres-backup.py
 python3 scripts/test-tls-compose-script.py
 python3 scripts/test-windows-service-script.py

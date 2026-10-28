@@ -30,7 +30,8 @@ class PackageTests(unittest.TestCase):
         self.output = self.root / 'package'
 
     def evidence(self, status):
-        (self.proof / 'report.json').write_text(json.dumps({'evidence_status':status}))
+        record = {'ecosystem': 'cargo', 'name': 'fixture', 'version': '1.0.0', 'archive_sha256': 'a'*64, 'purl': 'pkg:cargo/fixture@1.0.0', 'issues': [] if status == 'collected-not-legally-reviewed' else ['LICENSE_TEXT_MISSING'], 'files': [{'file':'第三方告知.md','source_path':'LICENSE','sha256': m.hashlib.sha256(b'original evidence').hexdigest()}]}
+        (self.proof / 'report.json').write_text(json.dumps({'format_version':1, 'issues':[], 'packages':[record], 'evidence_status':status}))
         (self.proof / 'sbom.cdx.json').write_text('{}')
         (self.proof / '第三方告知.md').write_text('original evidence')
         (self.proof / 'SHA256SUMS').write_text(''.join(f'{m.digest(p)}  {p.name}\n' for p in sorted(self.proof.iterdir()) if p.name != 'SHA256SUMS'))
@@ -76,6 +77,24 @@ class PackageTests(unittest.TestCase):
     def test_tampered_report_rejected(self):
         (self.proof/'report.json').write_text('{}')
         with self.assertRaisesRegex(m.PackageError, 'CHECKSUM'): self.finish()
+
+    def test_exact_documented_gap_keeps_original_report_and_incomplete_flag(self):
+        (name, version), (checksum, provenance) = next(iter(m.GAPS.KNOWN.items()))
+        record = {'ecosystem':'cargo','name':name,'version':version,'purl':f'pkg:cargo/{name}@{version}',
+                  'archive_sha256':checksum,'provenance':provenance,'declared_license':'Apache-2.0/MIT',
+                  'issues':['LICENSE_TEXT_MISSING'],'files':[]}
+        report = {'format_version':1,'evidence_status':'incomplete','issues':[],'packages':[record]}
+        raw = json.dumps(report).encode()
+        (self.proof/'report.json').write_bytes(raw)
+        (self.proof/'SHA256SUMS').write_text(''.join(f'{m.digest(p)}  {p.name}\n' for p in sorted(self.proof.iterdir()) if p.name != 'SHA256SUMS'))
+        self.finish()
+        meta = json.loads((self.output/'release-metadata.json').read_text())
+        self.assertFalse(meta['release_evidence_complete'])
+        self.assertTrue(meta['release_delivery_eligible'])
+        self.assertEqual(meta['evidence']['cargo_go'], m.GAPS.DOCUMENTED)
+        self.assertEqual(meta['documented_gaps'][0]['archive_sha256'], checksum)
+        self.assertEqual((self.output/'third-party/cargo-go-all-lock-candidates/report.json').read_bytes(), raw)
+        self.assertEqual(meta['legal_review'], 'not-performed')
 
     def test_symlink_input_rejected(self):
         self.library.unlink(); self.library.symlink_to(self.root/'LICENSE')

@@ -31,7 +31,8 @@ def package(platform='android'):
     scopes = ['cargo-go-all-lock-candidates'] + (['maven-configurations'] if platform == 'android' else [])
     for scope in scopes:
         prefix = 'third-party/' + scope + '/'
-        proof = {'report.json': b'{"evidence_status":"collected-not-legally-reviewed"}', 'sbom.cdx.json': b'{}'}
+        record = {'ecosystem':'cargo', 'name':'fixture', 'version':'1', 'archive_sha256':'a'*64, 'issues':[], 'files':[{'file':'LICENSE','source_path':'LICENSE','sha256':hashlib.sha256(b'license fixture').hexdigest()}]}
+        proof = {'report.json': json.dumps({'evidence_status':'collected-not-legally-reviewed', 'format_version':1, 'issues':[], 'packages':[record]}).encode(), 'sbom.cdx.json': b'{}', 'LICENSE': b'license fixture'}
         files.update({prefix + n: v for n, v in proof.items()})
         files[prefix + 'SHA256SUMS'] = sums(proof)
     if platform == 'android':
@@ -141,6 +142,64 @@ class PolicyTests(unittest.TestCase):
         stream.seek(0)
         with self.assertRaisesRegex(P.Rejected, 'SPECIAL'):
             P.verify_linux_tar(stream, {}, {})
+
+class DocumentedGapPackageTests(unittest.TestCase):
+    def fixture(self):
+        files, meta = package()
+        (name, version), (checksum, provenance) = next(iter(P.GAPS.KNOWN.items()))
+        record = {'ecosystem':'cargo','name':name,'version':version,'purl':f'pkg:cargo/{name}@{version}',
+                  'archive_sha256':checksum,'provenance':provenance,'declared_license':'Apache-2.0/MIT',
+                  'issues':['LICENSE_TEXT_MISSING'],'files':[]}
+        report = {'format_version':1,'evidence_status':'incomplete','issues':[],'packages':[record]}
+        status, gaps = P.GAPS.classify(report)
+        meta.update(evidence={'cargo_go':status,'maven':P.GAPS.COMPLETE}, release_evidence_complete=False,
+                    release_delivery_eligible=True, documented_gaps=gaps)
+        files['release-metadata.json'] = json.dumps(meta).encode()
+        files['third-party/cargo-go-all-lock-candidates/report.json'] = json.dumps(report).encode()
+        return files, meta, report
+
+    def verify(self, files):
+        # Model a producer with internally consistent byte manifests so negative
+        # cases reach the semantic gap/notice guard rather than stale hashes.
+        for prefix in ('third-party/cargo-go-all-lock-candidates/', 'third-party/maven-configurations/'):
+            nested = {name[len(prefix):]: value for name, value in files.items() if name.startswith(prefix) and name != prefix + 'SHA256SUMS'}
+            files[prefix + 'SHA256SUMS'] = sums(nested)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'package.zip'
+            write_zip(path, files)
+            return P.verify_zip(path, 'android', SHA, '0.1.0')
+
+    def test_exact_gap_delivery_is_not_evidence_complete(self):
+        files, meta, _ = self.fixture()
+        self.verify(files)
+        self.assertFalse(meta['release_evidence_complete'])
+
+    def test_metadata_claim_cannot_hide_unknown_gap(self):
+        files, _, report = self.fixture()
+        report['packages'][0]['issues'] = ['ARCHIVE_MISSING']
+        files['third-party/cargo-go-all-lock-candidates/report.json'] = json.dumps(report).encode()
+        with self.assertRaisesRegex(P.Rejected, 'UNKNOWN_LICENSE_GAPS'):
+            self.verify(files)
+
+    def test_forged_documented_gap_metadata_rejected(self):
+        files, meta, _ = self.fixture()
+        meta['documented_gaps'][0]['archive_sha256'] = '0'*64
+        files['release-metadata.json'] = json.dumps(meta).encode()
+        with self.assertRaisesRegex(P.Rejected, 'UNKNOWN_LICENSE_GAPS'):
+            self.verify(files)
+
+    def test_report_notice_deletion_rejected_even_if_outer_list_resealed(self):
+        files, _ = package()
+        del files['third-party/cargo-go-all-lock-candidates/LICENSE']
+        with self.assertRaisesRegex(P.Rejected, 'NOTICE_MISSING'):
+            self.verify(files)
+
+    def test_incomplete_maven_is_not_cargo_exception(self):
+        files, meta, _ = self.fixture()
+        meta['evidence']['maven'] = P.GAPS.DOCUMENTED
+        files['release-metadata.json'] = json.dumps(meta).encode()
+        with self.assertRaisesRegex(P.Rejected, 'INCOMPLETE_EVIDENCE'):
+            self.verify(files)
 
 class ApplePackageTests(unittest.TestCase):
     def fixture(self):

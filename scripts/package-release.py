@@ -6,6 +6,7 @@ import gzip
 import stat
 import tarfile
 import json
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -13,6 +14,10 @@ import shutil
 import subprocess
 import sys
 import tomllib
+
+_gap_spec = importlib.util.spec_from_file_location('license_gap_policy', Path(__file__).with_name('license-gap-policy.py'))
+GAPS = importlib.util.module_from_spec(_gap_spec)
+_gap_spec.loader.exec_module(GAPS)
 
 class PackageError(Exception):
     pass
@@ -118,7 +123,8 @@ def finish(root, output, platform, commit, sources, maven=None):
         for path in sorted(vendor.iterdir()):
             if path.is_file():
                 tree_copy(path, output / 'third-party/vendor' / vendor.name / path.name)
-    evidence = {'cargo_go': report['evidence_status']}
+    delivery_status, documented_gaps = GAPS.classify(report)
+    evidence = {'cargo_go': delivery_status}
     if maven:
         check_evidence(maven)
         maven_report = json.loads((maven / 'report.json').read_text())
@@ -129,7 +135,9 @@ def finish(root, output, platform, commit, sources, maven=None):
     meta = {'format_version': 1, 'version': version, 'commit': commit, 'platform': platform,
             'build_profile': 'release', 'cargo_features': 'default',
             'cargo_lock_sha256': digest(root / 'src/device-sdk/Cargo.lock'),
-            'evidence': evidence, 'release_evidence_complete': all(v == 'collected-not-legally-reviewed' for v in evidence.values()),
+            'evidence': evidence, 'release_evidence_complete': all(v == GAPS.COMPLETE for v in evidence.values()),
+            'release_delivery_eligible': all(v in (GAPS.COMPLETE, GAPS.DOCUMENTED) for v in evidence.values()),
+            'documented_gaps': documented_gaps,
             'legal_review': 'not-performed', 'signed_distribution': False,
             'inventory_scope': 'Cargo lock and Go MVS all-platform candidates; Maven resolved configurations where present; not exact binary linkage inventory'}
     if platform == 'linux-x86_64':
@@ -169,7 +177,13 @@ def finish(root, output, platform, commit, sources, maven=None):
                 shutil.rmtree(owned)
         outer = [f'{digest(p)}  {p.relative_to(output).as_posix()}\n' for p in sorted(output.rglob('*')) if p.is_file() and p != output / 'SHA256SUMS']
         (output / 'SHA256SUMS').write_text(''.join(outer))
-    print('Release-profile package created; evidence ' + ('collected, legal review pending' if meta['release_evidence_complete'] else 'INCOMPLETE: final Release forbidden'))
+    if meta['release_evidence_complete']:
+        message = 'collected, legal review pending'
+    elif meta['release_delivery_eligible']:
+        message = GAPS.DOCUMENTED + ': exact documented gaps retained; legal review pending'
+    else:
+        message = 'INCOMPLETE: unknown or unbound evidence gaps block final Release'
+    print('Release-profile package created; evidence ' + message)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

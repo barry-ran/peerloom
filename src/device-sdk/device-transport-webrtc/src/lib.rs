@@ -2,6 +2,11 @@
 //! 使用前必须由控制面验证 SDP 对端身份和会话权限；此处不实现业务授权。
 //! 目前采用完整 ICE 收集的 SDP 交换；trickle ICE、重协商和自动重连尚未集成。
 
+#[cfg(feature = "test-diagnostics")]
+mod diagnostics;
+#[cfg(feature = "test-diagnostics")]
+use diagnostics::{Phase, Trace};
+
 pub mod stream;
 pub use stream::{ByteStream, StreamError};
 
@@ -279,6 +284,8 @@ fn reserve_channel(count: &AtomicUsize, max: usize) -> Result<(), TransportError
 #[async_trait]
 impl PeerConnectionEventHandler for Handler {
     async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        #[cfg(feature = "test-diagnostics")]
+        eprintln!("PeerloomTestDiag gathering state={state:?}");
         if state == RTCIceGatheringState::Complete {
             self.gathered.send_replace(true);
         }
@@ -588,8 +595,12 @@ impl PeerTransport {
     }
 
     async fn gathered_description(&self) -> Result<SessionDescription, TransportError> {
+        #[cfg(feature = "test-diagnostics")]
+        let mut diagnostic = Trace::new(Phase::GatherLock);
         tokio::time::timeout(self.config.operation_timeout, async {
             let mut gathered = self.gathered.lock().await;
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter(Phase::GatherWait);
             loop {
                 if *gathered.borrow_and_update() {
                     break;
@@ -599,12 +610,18 @@ impl PeerTransport {
                     .await
                     .map_err(|_| TransportError::Closed)?;
             }
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter(Phase::GatherReadLocal);
             let description = self
                 .peer
                 .local_description()
                 .await
                 .ok_or(TransportError::WebRtc)?;
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter(Phase::GatherValidate);
             validate_remote_sdp(&self.config, &description)?;
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter(Phase::GatherDone);
             Ok(description)
         })
         .await
@@ -616,9 +633,17 @@ impl PeerTransport {
         self.negotiation
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| TransportError::NegotiationAlreadyStarted)?;
+        #[cfg(feature = "test-diagnostics")]
+        let mut diagnostic = Trace::new(Phase::OfferCreate);
         let offer = self.bounded(self.peer.create_offer(None)).await?;
+        #[cfg(feature = "test-diagnostics")]
+        diagnostic.enter(Phase::OfferSetLocal);
         self.bounded(self.peer.set_local_description(offer)).await?;
+        #[cfg(feature = "test-diagnostics")]
+        diagnostic.enter(Phase::OfferGather);
         let description = self.gathered_description().await?;
+        #[cfg(feature = "test-diagnostics")]
+        diagnostic.enter(Phase::OfferDone);
         self.negotiation.store(2, Ordering::Release);
         Ok(description)
     }
