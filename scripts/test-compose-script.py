@@ -13,6 +13,20 @@ import sys
 MOCK = r'''#!/usr/bin/env python3
 import json, os, pathlib, stat, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
+if name == "test-managed-relay.sh":
+    p = pathlib.Path(sys.argv[sys.argv.index("--pair-fixture")+1])
+    secret = pathlib.Path(sys.argv[sys.argv.index("--shared-secret-file")+1])
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600 and stat.S_IMODE(secret.stat().st_mode) == 0o600
+    registry = pathlib.Path(os.environ["PEERLOOM_TEST_RELAY_REGISTRY_FILE"])
+    assert stat.S_IMODE(registry.stat().st_mode) == 0o444 and stat.S_IMODE(registry.parent.stat().st_mode) == 0o700
+    assert json.loads(registry.read_text())["bindings"]["ci-managed-relay"]["secret"] == secret.read_text()
+    pathlib.Path("relay-private-proof").write_text(secret.read_text())
+    record = pathlib.Path("fixture-paths")
+    previous = record.read_text().splitlines()
+    assert str(p) not in previous and all(not pathlib.Path(old).exists() for old in previous)
+    record.write_text("\n".join(previous + [str(p)]))
+    pathlib.Path("relay-test-invoked").touch()
+    sys.exit(7 if os.environ["TEST_FAIL_TARGET"] == "relay" else 0)
 if name == "python3":
     if len(sys.argv) > 1 and sys.argv[1].endswith("run-service.py"):
         p = pathlib.Path(os.environ["TEST_SIGNAL_FIXTURE_FILE"])
@@ -88,8 +102,8 @@ class ComposeScriptTest(unittest.TestCase):
             (root / ".secrets/redis_password").write_text(password)
             script = root / "scripts/test-compose.sh"
             shutil.copyfile(Path(__file__).with_name("test-compose.sh"), script)
-            for name in ("docker", "curl", "go", "cargo", "python3"):
-                executable = root / "bin" / name
+            for name in ("docker", "curl", "go", "cargo", "python3", "test-managed-relay.sh"):
+                executable = root / ("scripts" if name == "test-managed-relay.sh" else "bin") / name
                 executable.write_text(MOCK.replace("#!/usr/bin/env python3", "#!" + sys.executable, 1))
                 executable.chmod(0o700)
             env = {**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"],
@@ -98,23 +112,30 @@ class ComposeScriptTest(unittest.TestCase):
             self.assertEqual(result.returncode, exit_code, result.stderr)
             self.assertTrue((root / "identity-test-invoked").exists())
             self.assertTrue((root / "cleanup-completed").exists())
-            if exit_code == 0 or fail_target in ("pair", "sdk", "management", "managed_sdk", "ffi"):
+            if exit_code == 0 or fail_target in ("pair", "sdk", "management", "managed_sdk", "ffi", "relay"):
                 self.assertTrue((root / "pair-test-invoked").exists())
-            if exit_code == 0 or fail_target in ("sdk", "management", "managed_sdk", "ffi"):
+            if exit_code == 0 or fail_target in ("sdk", "management", "managed_sdk", "ffi", "relay"):
                 self.assertTrue((root / "sdk-test-invoked").exists())
-                self.assertEqual(len((root / "fixture-paths").read_text().splitlines()), 5 if exit_code == 0 or fail_target == "ffi" else 4 if fail_target == "managed_sdk" else 3)
-            if exit_code == 0 or fail_target in ("management", "managed_sdk", "ffi"):
+                self.assertEqual(len((root / "fixture-paths").read_text().splitlines()), 6 if exit_code == 0 or fail_target == "relay" else 5 if fail_target == "ffi" else 4 if fail_target == "managed_sdk" else 3)
+            if exit_code == 0 or fail_target in ("management", "managed_sdk", "ffi", "relay"):
                 self.assertTrue((root / "management-test-invoked").exists())
-            if exit_code == 0 or fail_target in ("managed_sdk", "ffi"):
+            if exit_code == 0 or fail_target in ("managed_sdk", "ffi", "relay"):
                 self.assertTrue((root / "managed_sdk-test-invoked").exists())
-            if exit_code == 0 or fail_target == "ffi":
+            if exit_code == 0 or fail_target in ("ffi", "relay"):
                 self.assertTrue((root / "ffi-test-invoked").exists())
+            if exit_code == 0 or fail_target == "relay":
+                self.assertTrue((root / "relay-test-invoked").exists())
+                self.assertNotIn((root / "relay-private-proof").read_text(), result.stdout + result.stderr)
+            self.assertEqual(list((root / ".secrets").glob("relay-fixture.*")), [])
             self.assertNotIn(password, result.stdout + result.stderr)
             self.assertNotIn(grant, result.stdout + result.stderr)
             self.assertEqual(list((root / ".secrets").glob("identity-fixture.*")), [])
 
     def test_success_cleans_fixture_without_logging_secrets(self):
         self.run_script(0)
+
+    def test_failed_relay_still_cleans_credentials(self):
+        self.run_script(7, "relay")
 
     def test_failed_ffi_still_cleans_credentials(self):
         self.run_script(7, "ffi")

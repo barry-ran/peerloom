@@ -16,11 +16,10 @@ use tokio::sync::{Mutex, mpsc, watch};
 use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit};
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
-    RTCIceGatheringState, RTCIceServer, RTCIceTransportPolicy, RTCPeerConnectionState,
-    SettingEngineBuilder,
+    RTCIceGatheringState, RTCIceTransportPolicy, RTCPeerConnectionState, SettingEngineBuilder,
 };
 
-pub use webrtc::peer_connection::RTCSessionDescription as SessionDescription;
+pub use webrtc::peer_connection::{RTCIceServer, RTCSessionDescription as SessionDescription};
 
 /// 只暴露实际选中候选的类别，不暴露地址、凭证或完整统计。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

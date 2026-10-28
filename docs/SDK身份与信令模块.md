@@ -19,6 +19,28 @@ flowchart LR
     Gate --> Worker
 ```
 
+## 托管 TURN 与初始 ICE 配置
+
+`SdkConfig.managed_relays` 默认 `true`。在同租户会话获准、目标接受（或应用明确配置免确认）后，Auto/RelayOnly 的传输子任务使用当前设备凭据调用 `GET /v1/device-sessions/{id}/ice-servers`，然后才创建 PeerConnection。HTTP复用身份客户端的系统TLS验证、禁止redirect/proxy、无自动重试、10秒超时及64KiB响应上限；不会在actor/UI线程等待网络。
+
+```mermaid
+flowchart LR
+    Accept[已接受的会话与双端租约] --> Fetch[可取消的会话ICE请求]
+    Fetch --> Check[session ID / gen1 / 最多4节点 / expiry校验]
+    Check --> Gate[再次检查独立授权gate]
+    Gate --> Peer[创建PeerConnection与完整ICE SDP]
+    Peer --> Selected[RelayOnly核验本地实际选中Relay候选]
+    Selected --> Ready[ConnectionReady]
+```
+
+- DirectOnly 不请求托管TURN。Auto收到明确的空 `ice_servers` 可继续直连；RelayOnly空数组则明确失败 `RelayRequired`。鉴权拒绝、限额、服务不可用、传输错误或畸形响应不会被当作空数组，也不静默改为直连。
+- 托管响应只接受匹配会话、`negotiation_generation=1`、最多4个单URL TURN条目、未来整秒RFC3339 expiry、有限用户名与密码。过期/异常超长TTL拒绝；客户端允许的未来上限为11分钟（服务端最大10分钟，留有限时钟偏差），不是延长实际TURN认证期限。准备创建transport前再次检查expiry及SDK授权gate。
+- RelayOnly在DataChannel就绪后还读取实际选中候选，要求本地候选为Relay，才向应用发Ready。对端可以采用其他合法策略，不错误要求混合策略双方都必须配置RelayOnly。
+- 需要人工配置 `transport.ice_servers` 的集成方必须显式设置 `managed_relays=false`。托管Auto/RelayOnly与非空人工ICE配置互斥，避免隐式混合不同来源的凭据。旧的人工配置代码需要明确选择此兼容模式。
+- Close/租约到期可取消尚未完成的HTTP获取；迟到响应无法恢复已关闭gate。HTTP token只作敏感字符串快照，不写日志；身份轮换与原有存储CAS逻辑不受此路径改变。
+
+这仍然只是 **gen1初次协商**，不实现持续TURN凭据替换、ICE restart或网络切换恢复。凭据REST到期不等于既有allocation立即失效，不能将TURN expiry当成P2P撤销计时器；连接仍由独立SDK授权租约限制。新的授权连接会重新获取配置，不把上一会话的TURN凭据当作通用客户端缓存。TURN服务器范围、既有allocation Refresh的实际边界见[中继服务模块](中继服务模块.md)。
+
 ## DeviceSdk 与 Connection
 
 | API | 当前含义 |
@@ -144,3 +166,14 @@ cargo test --locked -p device-core --test sdk_service -- --ignored --nocapture
 fixture 必须是 0600 私有文件；不把凭证放入命令行参数、日志或仓库。当前新增阶段的远端 CI 尚需按准确提交确认，不能以本地结果替代。
 
 尚未完成的验收包括授权业务链路中的自动 TURN 回退、网络切换/休眠恢复、24 小时级凭证生命周期与长期续租压力、多连接多通道 facade、五端安全存储、稳定 C ABI 与 Android/iOS 原生绑定。底层可靠字节流即使单独通过传输测试，也不等于已接入当前可靠消息 facade。接口和测试不得把这些目标写成已交付能力。
+
+托管中继的真实验收使用新的一对设备夹具（权限0600，经过目标批准的定向grant），服务端已配置批准的coturn REST节点：
+
+```sh
+TEST_MANAGED_RELAY=1 \
+TEST_IDENTITY_BASE_URL=http://127.0.0.1:58080 \
+TEST_SIGNAL_FIXTURE_FILE=/private/fresh-pair.json \
+  cargo test -p device-core --test sdk_service --locked -- --ignored --nocapture
+```
+
+该模式不向SDK传入静态TURN用户名或密码；双方只有平台注册凭据，从已授权会话接口获取配置，按RelayOnly连接并检查本地实际Relay候选后才Ready。测试覆盖双向二进制消息、设备凭据轮换/WSS重建、主动租约续期与关闭；会旋转source凭据，不可复用旧夹具。无该环境变量时仍跑DirectOnly回归，两种验证不可相互替代。初次取得TURN配置的实际成功不代表网络切换/ICE restart或任意长度的稳定性验收。

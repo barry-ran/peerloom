@@ -4,6 +4,8 @@ cd "$(dirname "$0")/.."
 python3 scripts/test-admin-deployment.py
 python3 scripts/test-dev-secrets.py
 python3 scripts/test-compose-script.py
+python3 scripts/test-managed-relay-script.py
+python3 scripts/test-managed-relay-helper.py
 python3 scripts/test-turn-script.py
 python3 scripts/test-turn-refresh-script.py
 python3 scripts/test-vendored-nix.py

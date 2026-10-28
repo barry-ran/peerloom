@@ -3,6 +3,7 @@
 
 pub mod identity;
 pub mod lease;
+pub mod relay;
 pub mod sdk;
 pub mod signaling;
 mod tls;

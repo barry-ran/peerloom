@@ -1,0 +1,10 @@
+# 仅scripts/test-compose.sh随机隔离项目；不能用于生产或默认开发启动。
+services:
+  device-server:
+    environment:
+      RELAY_REGISTRY_FILE: /run/secrets/ci_relay_registry
+      RELAY_DEVELOPMENT_LOOPBACK: 'true'
+    secrets: [ci_relay_registry]
+secrets:
+  ci_relay_registry:
+    file: ${PEERLOOM_TEST_RELAY_REGISTRY_FILE:?isolated test registry required}

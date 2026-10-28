@@ -3,7 +3,7 @@
   "info": {
     "title": "Peerloom 服务接口",
     "version": "0.1.0-dev",
-    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap、tenant service-key管理API及托管TURN节点/会话凭证接口；含内建浏览器管理员登录；不包含OIDC、direct注册或webhook管理。SDK自动ICE凭证拉取与restart尚未接入。生产入口必须TLS。"
+    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap、tenant service-key管理API及托管TURN节点/会话凭证接口；含内建浏览器管理员登录；不包含OIDC、direct注册或webhook管理。SDK已在接受会话后自动获取gen1初始ICE配置；ICE restart尚未接入。生产入口必须TLS。"
   },
   "paths": {
     "/healthz": {
@@ -2188,7 +2188,7 @@
             "DeviceCredential": []
           }
         ],
-        "description": "重新验证设备Bearer、参与者、目标已接受、双端租约与grant。无配置返回ice_servers=[]；最多4节点，租户优先。固定协商generation=1。持久缓存与tenant/device/session分钟窗口限制；Cache-Control:no-store。不接收query或body。短期凭证到期不代表现有allocation/P2P强制断开；当前SDK自动拉取/ICE restart尚未接入。",
+        "description": "重新验证设备Bearer、参与者、目标已接受、双端租约与grant。无配置返回ice_servers=[]；最多4节点，租户优先。固定协商generation=1。持久缓存与tenant/device/session分钟窗口限制；Cache-Control:no-store。不接收query或body。短期凭证到期不代表现有allocation/P2P强制断开；SDK已在接受会话后自动拉取初始配置；ICE restart与持续凭据替换尚未接入。",
         "parameters": [
           {
             "name": "id",

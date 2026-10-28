@@ -7,10 +7,11 @@ use crate::{
     lease::LeaseGuard,
     signaling::{Envelope, SignalClient, SignalError},
 };
-use device_protocol::ChannelMode;
-use device_storage::{IdentityStore, StoredIdentity};
+use device_protocol::{ChannelMode, ConnectionPolicy};
+use device_storage::{IdentityStore, SecretString, StoredIdentity};
 use device_transport_webrtc::{
-    MessageChannel, PeerTransport, SessionDescription, TransportConfig, TransportError,
+    CandidateKind, MessageChannel, PeerTransport, SessionDescription, TransportConfig,
+    TransportError,
 };
 use serde_json::json;
 use std::{
@@ -31,6 +32,9 @@ pub struct SdkConfig {
     pub application_id: String,
     pub development_loopback: bool,
     pub transport: TransportConfig,
+    /// Auto/RelayOnly fetch approved TURN servers for each accepted session.
+    /// Set false only for an explicitly supplied static ICE configuration.
+    pub managed_relays: bool,
     pub max_connections: usize,
     pub max_channels_per_connection: usize,
     pub auto_reconnect: bool,
@@ -42,6 +46,7 @@ impl SdkConfig {
             application_id,
             development_loopback: false,
             transport: TransportConfig::default(),
+            managed_relays: true,
             max_connections: 1,
             max_channels_per_connection: 1,
             auto_reconnect: true,
@@ -255,7 +260,7 @@ impl DeviceSdk {
         if config.max_connections != 1 || config.max_channels_per_connection != 1 {
             return Err(SdkError::InvalidConfiguration);
         }
-        config.transport.validate().map_err(SdkError::Transport)?;
+        validate_transport_configuration(config)?;
         let client = IdentityClient::new(
             &config.origin,
             config.development_loopback,
@@ -971,10 +976,30 @@ impl Actor {
         let gate = session.gate.clone();
         let mut config = self.config.transport.clone();
         config.max_channels = 1;
+        let managed_relay =
+            if self.config.managed_relays && config.policy != ConnectionPolicy::DirectOnly {
+                Some(ManagedRelayRequest {
+                    client: self.identity_client.clone(),
+                    credential: self.stored.device_credential.clone(),
+                })
+            } else {
+                None
+            };
         let events = self.internal_tx.clone();
         let sdk = self.commands.clone();
         let task = tokio::spawn(async move {
-            transport_worker(id, gate, config, offer, answers, stopped, events, sdk).await;
+            transport_worker(
+                id,
+                gate,
+                config,
+                managed_relay,
+                offer,
+                answers,
+                stopped,
+                events,
+                sdk,
+            )
+            .await;
         });
         session.worker = Some(Worker {
             control,
@@ -1104,17 +1129,72 @@ fn valid_message_metadata(metadata: &device_transport_webrtc::ChannelMetadata) -
         && metadata.is_reliable_ordered()
 }
 
+fn validate_transport_configuration(config: &SdkConfig) -> Result<(), SdkError> {
+    if config.managed_relays && config.transport.policy != ConnectionPolicy::DirectOnly {
+        if !config.transport.ice_servers.is_empty() {
+            return Err(SdkError::InvalidConfiguration);
+        }
+        // Validate all resource limits now. RelayOnly's required TURN nodes can
+        // only be checked after the authorized session HTTP result arrives.
+        let mut deferred = config.transport.clone();
+        deferred.policy = ConnectionPolicy::Auto;
+        deferred.validate().map_err(SdkError::Transport)
+    } else {
+        config.transport.validate().map_err(SdkError::Transport)
+    }
+}
+
+struct ManagedRelayRequest {
+    client: IdentityClient,
+    credential: SecretString,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn transport_worker(
     id: String,
     gate: Arc<Gate>,
-    config: TransportConfig,
+    mut config: TransportConfig,
+    managed_relay: Option<ManagedRelayRequest>,
     offer: Option<SessionDescription>,
     mut answers: mpsc::Receiver<SessionDescription>,
     mut stop: oneshot::Receiver<()>,
     events: mpsc::Sender<Internal>,
     sdk: mpsc::Sender<Command>,
 ) {
+    if let Some(relay) = managed_relay {
+        let fetch = async {
+            gate.check()?;
+            let configuration = relay
+                .client
+                .session_ice_servers(&id, &relay.credential)
+                .await
+                .map_err(SdkError::Identity)?;
+            gate.check()?;
+            configuration
+                .into_live_servers()
+                .map_err(SdkError::Identity)
+        };
+        let fetched = tokio::select! {
+            biased;
+            _ = &mut stop => {
+                gate.close();
+                // The actor may already be awaiting this worker during close.
+                // Do not wait for space in its own full internal event queue.
+                let _ = events.try_send(Internal::Closed(id.clone(), SdkError::Closed));
+                return;
+            },
+            result = fetch => result,
+        };
+        match fetched {
+            Ok(servers) => config.ice_servers = servers,
+            Err(error) => {
+                gate.close();
+                let _ = events.send(Internal::Closed(id, error)).await;
+                return;
+            }
+        }
+    }
+    let requires_relay = config.policy == ConnectionPolicy::RelayOnly;
     let peer = match PeerTransport::new(config).await {
         Ok(peer) => peer,
         Err(error) => {
@@ -1125,6 +1205,7 @@ async fn transport_worker(
         }
     };
     let operation = async {
+        gate.check()?;
         let mut channel: MessageChannel = if let Some(offer) = offer {
             let answer = peer
                 .answer_offer(offer)
@@ -1167,6 +1248,16 @@ async fn transport_worker(
             return Err(SdkError::Transport(TransportError::UnsupportedChannel));
         }
         channel.wait_open().await.map_err(SdkError::Transport)?;
+        if requires_relay
+            && !matches!(
+                peer.selected_candidate_types()
+                    .await
+                    .map_err(SdkError::Transport)?,
+                Some((CandidateKind::Relay, _))
+            )
+        {
+            return Err(SdkError::Transport(TransportError::RelayRequired));
+        }
         gate.check()?;
         let (send, mut sends) = mpsc::channel::<SendRequest>(32);
         let (receive, messages) = mpsc::channel(32);
@@ -1227,6 +1318,149 @@ async fn transport_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn managed_relay_policy_defers_only_missing_nodes_and_rejects_mixed_configuration() {
+        let mut config = SdkConfig::new(
+            "https://server.example".into(),
+            uuid::Uuid::nil().to_string(),
+        );
+        config.transport.policy = ConnectionPolicy::RelayOnly;
+        assert!(validate_transport_configuration(&config).is_ok());
+        config.managed_relays = false;
+        assert_eq!(
+            validate_transport_configuration(&config),
+            Err(SdkError::Transport(TransportError::RelayRequired))
+        );
+        config
+            .transport
+            .ice_servers
+            .push(device_transport_webrtc::RTCIceServer {
+                urls: vec!["turn:relay.example:3478".into()],
+                username: "test".into(),
+                credential: "test".into(),
+            });
+        assert!(validate_transport_configuration(&config).is_ok());
+        config.managed_relays = true;
+        assert_eq!(
+            validate_transport_configuration(&config),
+            Err(SdkError::InvalidConfiguration)
+        );
+        config.transport.policy = ConnectionPolicy::DirectOnly;
+        assert_eq!(
+            validate_transport_configuration(&config),
+            Err(SdkError::Transport(TransportError::RelayForbidden))
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_ice_fetch_is_cancellable_before_transport_creation() {
+        for prefill in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let client = IdentityClient::new(
+                &format!("http://{}", listener.local_addr().unwrap()),
+                true,
+                Duration::from_secs(10),
+            )
+            .unwrap();
+            let gate = Arc::new(Gate {
+                closed: AtomicBool::new(false),
+                deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
+                changed: tokio::sync::Notify::new(),
+            });
+            let (stop, stopped) = oneshot::channel();
+            let (_answers, answers) = mpsc::channel(1);
+            let (events, mut received) = mpsc::channel(1);
+            if prefill {
+                assert!(
+                    events
+                        .try_send(Internal::Closed("queued".into(), SdkError::Closed))
+                        .is_ok()
+                );
+            }
+            let (sdk, _commands) = mpsc::channel(1);
+            let task = tokio::spawn(transport_worker(
+                uuid::Uuid::nil().to_string(),
+                gate.clone(),
+                TransportConfig::default(),
+                Some(ManagedRelayRequest {
+                    client,
+                    credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
+                }),
+                None,
+                answers,
+                stopped,
+                events,
+                sdk,
+            ));
+            let (_socket, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            stop.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(gate.check().is_err());
+            assert!(matches!(
+                received.recv().await,
+                Some(Internal::Closed(_, SdkError::Closed))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_ice_response_after_authorization_expiry_cannot_start_transport() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = IdentityClient::new(
+            &format!("http://{}", listener.local_addr().unwrap()),
+            true,
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let id = uuid::Uuid::nil().to_string();
+        let body = json!({"session_id":id,"negotiation_generation":1,"ice_servers":[]}).to_string();
+        let gate = Arc::new(Gate {
+            closed: AtomicBool::new(false),
+            deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
+            changed: tokio::sync::Notify::new(),
+        });
+        let server_gate = gate.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            assert!(socket.read(&mut bytes).await.unwrap() > 0);
+            server_gate.update(Some(Instant::now()));
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        });
+        let (_stop, stopped) = oneshot::channel();
+        let (_answers, answers) = mpsc::channel(1);
+        let (events, mut received) = mpsc::channel(4);
+        let (sdk, _commands) = mpsc::channel(1);
+        transport_worker(
+            id,
+            gate.clone(),
+            TransportConfig::default(),
+            Some(ManagedRelayRequest {
+                client,
+                credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
+            }),
+            None,
+            answers,
+            stopped,
+            events,
+            sdk,
+        )
+        .await;
+        server.await.unwrap();
+        assert!(matches!(
+            received.recv().await,
+            Some(Internal::Closed(_, SdkError::AuthorizationExpired))
+        ));
+        assert!(gate.check().is_err());
+    }
+
     #[test]
     fn facade_rejects_wrong_label_protocol_and_unreliable_channels() {
         let mut metadata = device_transport_webrtc::ChannelMetadata {

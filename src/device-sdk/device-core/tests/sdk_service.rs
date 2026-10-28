@@ -38,7 +38,11 @@ async fn sdk(origin: &str, device: Device) -> DeviceSdk {
         .unwrap();
     let mut config = SdkConfig::new(origin.into(), device.application_id);
     config.development_loopback = true;
-    config.transport.policy = ConnectionPolicy::DirectOnly;
+    config.transport.policy = if std::env::var("TEST_MANAGED_RELAY").as_deref() == Ok("1") {
+        ConnectionPolicy::RelayOnly
+    } else {
+        ConnectionPolicy::DirectOnly
+    };
     config.transport.bind_address = "127.0.0.1:0".parse().unwrap();
     config.transport.include_loopback = true;
     DeviceSdk::load(config, store).await.unwrap()
@@ -73,6 +77,9 @@ async fn facade_connect_message_rotation_and_close() {
     let bytes = zeroize::Zeroizing::new(std::fs::read(path).unwrap());
     let fixture: Fixture = serde_json::from_slice(&bytes).unwrap();
     let origin = std::env::var("TEST_IDENTITY_BASE_URL").unwrap();
+    if std::env::var("TEST_MANAGED_RELAY").as_deref() == Ok("1") {
+        println!("facade integration mode: managed TURN, RelayOnly, no static ICE credentials");
+    }
     let mut a = sdk(&origin, fixture.source).await;
     let mut b = sdk(&origin, fixture.target).await;
     assert!(matches!(next(&mut a).await, SdkEvent::Online));

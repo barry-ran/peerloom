@@ -5,15 +5,35 @@ set -euo pipefail
 umask 077
 cd "$(dirname "$0")/.."
 project="peerloom-test-${RANDOM}-${RANDOM}"
-compose=(docker compose -p "$project" -f infra/compose.yaml -f infra/compose.ci.yaml)
+compose=(docker compose -p "$project" -f infra/compose.yaml -f infra/compose.ci.yaml -f infra/compose.ci-relay.yaml)
 fixture=""
 management_fixture=""
+relay_fixture=""
 cleanup() {
+  result=$?
   if [ -n "$fixture" ]; then rm -f -- "$fixture"; fi
   if [ -n "$management_fixture" ]; then rm -rf -- "$management_fixture"; fi
-  "${compose[@]}" down --volumes --remove-orphans
+  "${compose[@]}" down --volumes --remove-orphans || result=$?
+  if [ -n "$relay_fixture" ]; then rm -rf -- "$relay_fixture"; fi
+  return "$result"
 }
 trap cleanup EXIT
+relay_fixture="$(mktemp -d "$PWD/.secrets/relay-fixture.XXXXXX")"
+export PEERLOOM_TEST_RELAY_REGISTRY_FILE="$relay_fixture/registry.json"
+python3 - "$relay_fixture" <<'REGISTRY'
+from pathlib import Path
+import json
+import secrets
+import sys
+p = Path(sys.argv[1])
+secret = secrets.token_hex(32)
+(p / 'shared-secret').write_text(secret)
+(p / 'shared-secret').chmod(0o600)
+(p / 'registry.json').write_text(json.dumps({'bindings': {'ci-managed-relay': {
+    'tenant_id': '', 'secret': secret, 'urls': ['turn:127.0.0.1:53478?transport=udp']}}}))
+# Compose bind-secret必须可由容器非root用户读取；父目录0700限制宿主访问。
+(p / 'registry.json').chmod(0o444)
+REGISTRY
 "${compose[@]}" config --quiet
 "${compose[@]}" build
 "${compose[@]}" up -d --wait postgres redis
@@ -159,6 +179,17 @@ except Exception:
 PAIR
 TEST_IDENTITY_BASE_URL=http://127.0.0.1:18080 TEST_SIGNAL_FIXTURE_FILE="$fixture" \
   python3 src/device-sdk/device-ffi/tests/run-service.py
+rm -f -- "$fixture"
+fixture=""
+# 新pair通过控制面自动取得REST凭证，不能复用已轮换的设备，也不向SDK提供静态TURN秘密。
+"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
+  relay-set-shared --offline --node-id 88888888-8888-4888-8888-888888888888 \
+  --name ci-managed-relay --endpoint 'turn:127.0.0.1:53478?transport=udp' --secret-ref ci-managed-relay > /dev/null
+fixture="$(mktemp "$PWD/.secrets/identity-fixture.XXXXXX")"
+chmod 600 "$fixture"
+"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-bootstrap device-server --development --pair > "$fixture"
+./scripts/test-managed-relay.sh --shared-secret-file "$relay_fixture/shared-secret" \
+  --pair-fixture "$fixture" --base-url http://127.0.0.1:18080
 rm -f -- "$fixture"
 fixture=""
 "${compose[@]}" restart device-server

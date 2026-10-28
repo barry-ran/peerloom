@@ -168,7 +168,7 @@ impl IdentityClient {
             tls_config,
         })
     }
-    async fn request(
+    pub(crate) async fn request(
         &self,
         method: Method,
         path: &str,
