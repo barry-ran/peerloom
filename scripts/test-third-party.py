@@ -2,6 +2,7 @@
 """纯本地归档夹具测试；不下载依赖、不修改仓库锁文件。"""
 import base64
 import hashlib
+import gzip
 import importlib.util
 import io
 import json
@@ -112,10 +113,14 @@ class ThirdPartyTests(unittest.TestCase):
 
     def test_tar_declared_expansion_is_rejected_before_read(self):
         path = self.root / "oversize.crate"
-        with tarfile.open(path, "w:gz") as archive:
-            member = tarfile.TarInfo("demo-1.2.3/oversize")
-            member.size = gen.MAX_EXPANDED + 1
-            archive.addfile(member)  # 仅头部，不写入巨大内容。
+        member = tarfile.TarInfo("demo-1.2.3/oversize")
+        member.size = gen.MAX_EXPANDED + 1
+        # 写真实 tar 头，故意省略巨量 payload；3.14 addfile 要求非空 fileobj。
+        # 生产解析器必须在读取声明内容前拒绝展开量，不能靠构造器提前失败。
+        with gzip.open(path, "wb") as archive:
+            archive.write(member.tobuf(format=tarfile.USTAR_FORMAT))
+            archive.write(b"\0" * 1024)
+        self.assertLess(path.stat().st_size, 4096)
         with self.assertRaisesRegex(gen.EvidenceError, "RESOURCE_LIMIT"):
             gen.cargo_archive(gen.package("cargo", "demo", "1.2.3"), path, gen.digest(path.read_bytes()), {})
 

@@ -360,7 +360,7 @@ class PostgreSQLDiagnosticTest(unittest.TestCase):
 
     def test_pg_init_failure_precedes_and_prevents_wsl_import_or_build(self):
         with tempfile.TemporaryDirectory() as temp:
-            base=Path(temp);name='PeerloomCI-'+'a'*32;private=base/name;private.mkdir();public=base/(name+'-public');public.mkdir()
+            base=Path(temp).resolve();name='PeerloomCI-'+'a'*32;private=base/name;private.mkdir();public=base/(name+'-public');public.mkdir()
             args=['windows-service.py','--directory',str(private),'--distro',name,'--public-directory',str(public)]
             calls=[]
             def fail_init(argv,**kwargs):
