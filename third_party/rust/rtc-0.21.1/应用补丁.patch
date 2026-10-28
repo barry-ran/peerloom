@@ -1,0 +1,293 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -61,190 +61,42 @@
+ name = "rtc"
+ path = "src/lib.rs"
+ 
+-[[example]]
+-name = "bandwidth-estimation-from-disk"
+-path = "examples/bandwidth-estimation-from-disk/bandwidth-estimation-from-disk.rs"
+-bench = false
+-
+-[[example]]
+-name = "broadcast"
+-path = "examples/broadcast/broadcast.rs"
+-bench = false
+-
+-[[example]]
+-name = "data-channels"
+-path = "examples/data-channels/data-channels.rs"
+-bench = false
+-
+-[[example]]
+-name = "data-channels-answer"
+-path = "examples/data-channels-offer-answer/data-channels-answer.rs"
+-bench = false
+-
+-[[example]]
+-name = "data-channels-close"
+-path = "examples/data-channels-close/data-channels-close.rs"
+-bench = false
+-
+-[[example]]
+-name = "data-channels-create"
+-path = "examples/data-channels-create/data-channels-create.rs"
+-bench = false
+-
+-[[example]]
+-name = "data-channels-flow-control"
+-path = "examples/data-channels-flow-control/data-channels-flow-control.rs"
+-bench = false
+-
+-[[example]]
+-name = "data-channels-offer"
+-path = "examples/data-channels-offer-answer/data-channels-offer.rs"
+-bench = false
+-
+-[[example]]
+-name = "data-channels-simple"
+-path = "examples/data-channels-simple/data-channels-simple.rs"
+-bench = false
+-
+-[[example]]
+-name = "ice-restart"
+-path = "examples/ice-restart/ice-restart.rs"
+-bench = false
+-
+-[[example]]
+-name = "ice-tcp"
+-path = "examples/ice-tcp/ice-tcp.rs"
+-bench = false
+-
+-[[example]]
+-name = "ice-tcp-active-offer"
+-path = "examples/ice-tcp-active-passive/ice-tcp-active-offer.rs"
+-bench = false
+-
+-[[example]]
+-name = "ice-tcp-passive-answer"
+-path = "examples/ice-tcp-active-passive/ice-tcp-passive-answer.rs"
+-bench = false
+-
+-[[example]]
+-name = "insertable-streams"
+-path = "examples/insertable-streams/insertable-streams.rs"
+-bench = false
+-
+-[[example]]
+-name = "mdns-query-and-gather"
+-path = "examples/mdns-query-and-gather/mdns-query-and-gather.rs"
+-bench = false
+-
+-[[example]]
+-name = "perfect-negotiation"
+-path = "examples/perfect-negotiation/perfect-negotiation.rs"
+-bench = false
+-
+-[[example]]
+-name = "play-from-disk-fec"
+-path = "examples/play-from-disk-fec/play-from-disk-fec.rs"
+-bench = false
+-
+-[[example]]
+-name = "play-from-disk-h26x"
+-path = "examples/play-from-disk-h26x/play-from-disk-h26x.rs"
+-bench = false
+-
+-[[example]]
+-name = "play-from-disk-playlist-control"
+-path = "examples/play-from-disk-playlist-control/play-from-disk-playlist-control.rs"
+-bench = false
+-
+-[[example]]
+-name = "play-from-disk-renegotiation"
+-path = "examples/play-from-disk-renegotiation/play-from-disk-renegotiation.rs"
+-bench = false
+-
+-[[example]]
+-name = "play-from-disk-vpx"
+-path = "examples/play-from-disk-vpx/play-from-disk-vpx.rs"
+-bench = false
+-
+-[[example]]
+-name = "reflect"
+-path = "examples/reflect/reflect.rs"
+-bench = false
+-
+-[[example]]
+-name = "rtcp-processing"
+-path = "examples/rtcp-processing/rtcp-processing.rs"
+-bench = false
+-
+-[[example]]
+-name = "rtp-forwarder"
+-path = "examples/rtp-forwarder/rtp-forwarder.rs"
+-bench = false
+-
+-[[example]]
+-name = "rtp-to-webrtc"
+-path = "examples/rtp-to-webrtc/rtp-to-webrtc.rs"
+-bench = false
+-
+-[[example]]
+-name = "save-to-disk-av1"
+-path = "examples/save-to-disk-av1/save-to-disk-av1.rs"
+-bench = false
+-
+-[[example]]
+-name = "save-to-disk-fec"
+-path = "examples/save-to-disk-fec/save-to-disk-fec.rs"
+-bench = false
+-
+-[[example]]
+-name = "save-to-disk-h26x"
+-path = "examples/save-to-disk-h26x/save-to-disk-h26x.rs"
+-bench = false
+-
+-[[example]]
+-name = "save-to-disk-vpx"
+-path = "examples/save-to-disk-vpx/save-to-disk-vpx.rs"
+-bench = false
+-
+-[[example]]
+-name = "simulcast"
+-path = "examples/simulcast/simulcast.rs"
+-bench = false
+-
+-[[example]]
+-name = "simulcast_bidirection"
+-path = "examples/simulcast_bidirection/simulcast_bidirection.rs"
+-bench = false
+-
+-[[example]]
+-name = "stats"
+-path = "examples/stats/stats.rs"
+-bench = false
+-
+-[[example]]
+-name = "swap-tracks"
+-path = "examples/swap-tracks/swap-tracks.rs"
+-bench = false
+-
+-[[example]]
+-name = "trickle-ice"
+-path = "examples/trickle-ice/trickle-ice.rs"
+-bench = false
+-
+-[[example]]
+-name = "trickle-ice-host"
+-path = "examples/trickle-ice-host/trickle-ice-host.rs"
+-bench = false
+-
+-[[example]]
+-name = "trickle-ice-relay"
+-path = "examples/trickle-ice-relay/trickle-ice-relay.rs"
+-bench = false
+-
+-[[example]]
+-name = "trickle-ice-srflx"
+-path = "examples/trickle-ice-srflx/trickle-ice-srflx.rs"
+-bench = false
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
+ 
+ [[test]]
+ name = "answer_preserves_extmap_allow_mixed"
+@@ -329,10 +181,6 @@
+ [[test]]
+ name = "dtls_disable_fingerprint_verification"
+ path = "tests/dtls_disable_fingerprint_verification.rs"
+-
+-[[test]]
+-name = "dtls_rsa_certificate"
+-path = "tests/dtls_rsa_certificate.rs"
+ 
+ [[test]]
+ name = "firefox_simulcast_interop"
+--- a/src/data_channel/internal.rs
++++ b/src/data_channel/internal.rs
+@@ -3,7 +3,7 @@
+ use crate::data_channel::state::RTCDataChannelState;
+ use datachannel::data_channel::DataChannelConfig;
+ use sansio::Protocol;
+-use sctp::{PayloadProtocolIdentifier, StreamId};
++use sctp::{PayloadProtocolIdentifier, ReliabilityType, StreamId};
+ use shared::error::{Error, Result};
+ use std::time::Instant;
+ 
+@@ -162,10 +162,29 @@
+ 
+         let data_channel_config = data_channel.config();
+ 
+-        let (unordered, _reliability_type) =
++        let (unordered, reliability_type) =
+             ::datachannel::data_channel::DataChannel::get_reliability_params(
+                 data_channel_config.channel_type,
+             );
++
++        // Preserve DCEP partial-reliability metadata rather than reporting every
++        // inbound channel as fully reliable. Reject values the u16 API cannot express.
++        let (max_retransmits, max_packet_life_time) = match reliability_type {
++            ReliabilityType::Reliable => (None, None),
++            ReliabilityType::Rexmit => (
++                Some(u16::try_from(data_channel_config.reliability_parameter).map_err(|_| {
++                    Error::OtherDataChannelErr("DCEP retransmit limit exceeds u16".into())
++                })?),
++                None,
++            ),
++            ReliabilityType::Timed => (
++                None,
++                Some(u16::try_from(data_channel_config.reliability_parameter).map_err(|_| {
++                    Error::OtherDataChannelErr("DCEP lifetime exceeds u16".into())
++                })?),
++            ),
++            _ => return Err(Error::OtherDataChannelErr("unknown DCEP reliability type".into())),
++        };
+ 
+         // `negotiated: None` — the peer opened this channel in-band over DCEP, so it is not an
+         // out-of-band channel however well-known its stream id now is. The stream id is set
+@@ -174,8 +193,8 @@
+             label: data_channel_config.label.clone(),
+             protocol: data_channel_config.protocol.clone(),
+             ordered: !unordered,
+-            max_packet_life_time: None,
+-            max_retransmits: None,
++            max_packet_life_time,
++            max_retransmits,
+             negotiated: None,
+         });
+         // Known from the wire: no deferral needed, and it must be registered so locally

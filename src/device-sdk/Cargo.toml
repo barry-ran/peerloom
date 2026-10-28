@@ -18,3 +18,4 @@ all = "warn"
 # 最小官方Apple cfg回移，来源与完整逐文件校验见third_party/rust。
 [patch.crates-io]
 nix = { path = "../../third_party/rust/nix-0.31.3/crate" }
+rtc = { path = "../../third_party/rust/rtc-0.21.1/crate" }

@@ -2,12 +2,13 @@
 //! `write` 返回已接纳字节数，BufferFull 表示未接纳，调用者不得丢旧/丢新。
 //! 取消正在发送的 future 后该流失败关闭，不能猜测或重放不确定字节。
 
-use crate::{MessageChannel, PeerTransport, TransportError, reserve_channel};
+use crate::{IncomingChannel, MessageChannel, PeerTransport, TransportError, reserve_channel};
 use std::sync::atomic::Ordering;
 use webrtc::data_channel::RTCDataChannelInit;
 
-const PROTOCOL: &str = "peerloom.stream.v1";
+pub(crate) const PROTOCOL: &str = "peerloom.stream.v1";
 const HEADER: usize = 17;
+pub(crate) const MIN_MESSAGE_BYTES: usize = HEADER + 4;
 const MAX_CHUNK: usize = 16 << 10;
 const MAGIC: &[u8; 4] = b"PLS1";
 const DATA: u8 = 1;
@@ -78,26 +79,23 @@ impl PeerTransport {
 
     /// 接收专用 stream 协议；错误类型通道被关闭，不把不可靠通道当字节流。
     pub async fn accept_stream(&self) -> Result<ByteStream, StreamError> {
-        let channel = self.accept_channel().await?;
-        let valid = tokio::time::timeout(self.config.operation_timeout, async {
-            Ok::<_, webrtc::error::Error>(
-                channel.channel.protocol().await? == PROTOCOL
-                    && channel.channel.ordered().await?
-                    && channel.channel.max_retransmits().await?.is_none()
-                    && channel.channel.max_packet_life_time().await?.is_none(),
-            )
-        })
-        .await;
-        if !matches!(valid, Ok(Ok(true))) || channel.max_message_bytes < HEADER + 4 {
-            let _ = channel.close().await;
-            return Err(StreamError::Protocol);
+        match self.accept_incoming().await {
+            Ok(IncomingChannel::ReliableStream(stream)) => Ok(stream),
+            Ok(
+                IncomingChannel::ReliableMessage(channel)
+                | IncomingChannel::LowLatencyMessage(channel),
+            ) => {
+                let _ = channel.close().await;
+                Err(StreamError::Protocol)
+            }
+            Err(TransportError::UnsupportedChannel) => Err(StreamError::Protocol),
+            Err(error) => Err(error.into()),
         }
-        Ok(ByteStream::new(channel))
     }
 }
 
 impl ByteStream {
-    fn new(channel: MessageChannel) -> Self {
+    pub(crate) fn new(channel: MessageChannel) -> Self {
         let max_chunk = MAX_CHUNK.min(channel.max_message_bytes - HEADER);
         Self {
             channel,

@@ -30,6 +30,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends dbus-x11 gnome-keyring
+      - name: 校验固定 rtc 入站元数据补丁来源
+        run: python3 scripts/test-vendored-rtc.py
       - name: 单元测试与静态检查
         run: ./scripts/check.sh
       - name: Linux Secret Service 真实持久化与失效关闭
@@ -52,6 +54,12 @@ jobs:
         timeout-minutes: 2
         working-directory: src/device-sdk
         run: cargo test -p device-transport-webrtc --test stream_pair --locked -- --ignored --nocapture
+      - name: 原生 WebRTC 混合通道与六种 DCEP 元数据
+        timeout-minutes: 2
+        working-directory: src/device-sdk
+        run: |
+          cargo test -p device-transport-webrtc --test mixed_channels --locked -- --ignored --nocapture
+          cargo test -p device-transport-webrtc --lib actual_dcep_metadata_preserves_all_six_wire_types --locked -- --ignored --nocapture
       - name: 构建可下载检查产物
         run: ./scripts/build.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -209,6 +209,35 @@ fn channel_options(mode: ChannelMode) -> Result<RTCDataChannelInit, TransportErr
     }
 }
 
+/// 单个接收循环按元数据分派；不要并发调用不同 accept API 抢同一队列。
+/// 不依据 label 猜测类型；流保留既有 peerloom.stream.v1 帧协议。
+pub enum IncomingChannel {
+    ReliableMessage(MessageChannel),
+    ReliableStream(ByteStream),
+    LowLatencyMessage(MessageChannel),
+}
+
+fn incoming_mode(
+    protocol: &str,
+    ordered: bool,
+    max_retransmits: Option<u16>,
+    max_packet_life_time: Option<u16>,
+) -> Result<ChannelMode, TransportError> {
+    match (protocol, ordered, max_retransmits, max_packet_life_time) {
+        ("", true, None, None) => Ok(ChannelMode::ReliableMessage),
+        ("", false, Some(0), None) => Ok(ChannelMode::LowLatencyMessage),
+        (stream::PROTOCOL, true, None, None) => Ok(ChannelMode::ReliableStream),
+        _ => Err(TransportError::UnsupportedChannel),
+    }
+}
+
+struct IncomingQueue {
+    receiver: mpsc::Receiver<Arc<dyn DataChannel>>,
+    // Retain ownership across cancellable metadata awaits. A cancelled accept
+    // resumes classification of this exact channel instead of abandoning it.
+    pending: Option<Arc<dyn DataChannel>>,
+}
+
 struct Handler {
     gathered: watch::Sender<bool>,
     states: watch::Sender<RTCPeerConnectionState>,
@@ -257,7 +286,7 @@ pub struct PeerTransport {
     config: TransportConfig,
     gathered: Mutex<watch::Receiver<bool>>,
     states: watch::Receiver<RTCPeerConnectionState>,
-    incoming: Mutex<mpsc::Receiver<Arc<dyn DataChannel>>>,
+    incoming: Mutex<IncomingQueue>,
     channel_count: Arc<AtomicUsize>,
     closed: AtomicBool,
     negotiation: AtomicU8,
@@ -343,7 +372,10 @@ impl PeerTransport {
             config,
             gathered: Mutex::new(gather_rx),
             states: state_rx,
-            incoming: Mutex::new(incoming_rx),
+            incoming: Mutex::new(IncomingQueue {
+                receiver: incoming_rx,
+                pending: None,
+            }),
             channel_count: count,
             closed: AtomicBool::new(false),
             negotiation: AtomicU8::new(0),
@@ -408,10 +440,72 @@ impl PeerTransport {
         }
     }
 
+    /// 混合通道唯一接收入口。调用者接收 enum 后交给各自有界驱动，不另起
+    /// accept_stream/accept_channel 消费者。未知协议或不匹配可靠性失败关闭。
+    pub async fn accept_incoming(&self) -> Result<IncomingChannel, TransportError> {
+        self.ensure_open()?;
+        let mut incoming =
+            tokio::time::timeout(self.config.operation_timeout, self.incoming.lock())
+                .await
+                .map_err(|_| TransportError::Timeout)?;
+        if incoming.pending.is_none() {
+            incoming.pending = Some(
+                tokio::time::timeout(self.config.operation_timeout, incoming.receiver.recv())
+                    .await
+                    .map_err(|_| TransportError::Timeout)?
+                    .ok_or(TransportError::Closed)?,
+            );
+        }
+        let channel = self.wrap_channel(
+            incoming
+                .pending
+                .as_ref()
+                .expect("pending receive populated")
+                .clone(),
+        );
+        let mode = channel.metadata().await.and_then(|metadata| {
+            incoming_mode(
+                &metadata.protocol,
+                metadata.ordered,
+                metadata.max_retransmits,
+                metadata.max_packet_life_time,
+            )
+        });
+        match mode {
+            Ok(ChannelMode::ReliableMessage) => {
+                incoming.pending.take();
+                Ok(IncomingChannel::ReliableMessage(channel))
+            }
+            Ok(ChannelMode::LowLatencyMessage) => {
+                incoming.pending.take();
+                Ok(IncomingChannel::LowLatencyMessage(channel))
+            }
+            Ok(ChannelMode::ReliableStream)
+                if channel.max_message_bytes >= stream::MIN_MESSAGE_BYTES =>
+            {
+                incoming.pending.take();
+                Ok(IncomingChannel::ReliableStream(ByteStream::new(channel)))
+            }
+            other => {
+                let error = other.err().unwrap_or(TransportError::UnsupportedChannel);
+                // Retain the slot while rejection closes the channel too: cancelling
+                // this await must not abandon a live, unclassified channel.
+                let _ = channel.close().await;
+                incoming.pending.take();
+                Err(error)
+            }
+        }
+    }
+
+    /// 兼容原始消息接口，不验证应用协议。混合通道应改用 accept_incoming。
     pub async fn accept_channel(&self) -> Result<MessageChannel, TransportError> {
         self.ensure_open()?;
         let channel = tokio::time::timeout(self.config.operation_timeout, async {
-            self.incoming.lock().await.recv().await
+            let mut incoming = self.incoming.lock().await;
+            match incoming.pending.take() {
+                Some(channel) => Some(channel),
+                None => incoming.receiver.recv().await,
+            }
         })
         .await
         .map_err(|_| TransportError::Timeout)?
@@ -677,6 +771,129 @@ mod tests {
         let lossy = channel_options(ChannelMode::LowLatencyMessage).unwrap();
         assert!(!lossy.ordered);
         assert_eq!(lossy.max_retransmits, Some(0));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local UDP sockets"]
+    async fn actual_dcep_metadata_preserves_all_six_wire_types() {
+        let config = TransportConfig {
+            policy: ConnectionPolicy::DirectOnly,
+            include_loopback: true,
+            bind_address: "127.0.0.1:0".parse().unwrap(),
+            operation_timeout: Duration::from_secs(10),
+            ..TransportConfig::default()
+        };
+        let a = Arc::new(PeerTransport::new(config.clone()).await.unwrap());
+        let b = Arc::new(PeerTransport::new(config).await.unwrap());
+        let source = a.clone();
+        let target = b.clone();
+        let mut task = tokio::spawn(async move {
+            let mut channels = Vec::new();
+            for (index, (ordered, retransmits, lifetime)) in [
+                (true, None, None),
+                (false, None, None),
+                (true, Some(1), None),
+                (false, Some(0), None),
+                (true, None, Some(u16::MAX)),
+                (false, None, Some(7)),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let channel = source
+                    .peer
+                    .create_data_channel(
+                        "wire metadata",
+                        Some(RTCDataChannelInit {
+                            ordered,
+                            max_retransmits: retransmits,
+                            max_packet_life_time: lifetime,
+                            ..Default::default()
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                if index == 0 {
+                    let answer = target
+                        .answer_offer(source.create_offer().await.unwrap())
+                        .await
+                        .unwrap();
+                    source.apply_answer(answer).await.unwrap();
+                }
+                let received = target
+                    .accept_channel()
+                    .await
+                    .unwrap_or_else(|error| panic!("DCEP type {index}: {error}"));
+                let metadata = received.metadata().await.unwrap();
+                assert_eq!(
+                    (
+                        metadata.ordered,
+                        metadata.max_retransmits,
+                        metadata.max_packet_life_time
+                    ),
+                    (ordered, retransmits, lifetime),
+                    "DCEP type {index} lost metadata"
+                );
+                if retransmits.is_some() || lifetime.is_some() || !ordered {
+                    assert_eq!(
+                        incoming_mode(
+                            stream::PROTOCOL,
+                            metadata.ordered,
+                            metadata.max_retransmits,
+                            metadata.max_packet_life_time
+                        ),
+                        Err(TransportError::UnsupportedChannel)
+                    );
+                }
+                let mut channel = source.wrap_channel(channel);
+                channel.wait_open().await.unwrap();
+                channels.push((channel, received));
+            }
+            for (channel, _) in channels {
+                channel.close().await.unwrap();
+            }
+        });
+        let outcome = tokio::time::timeout(Duration::from_secs(40), &mut task).await;
+        if outcome.is_err() {
+            task.abort();
+            let _ = task.await;
+        }
+        a.close().await.unwrap();
+        b.close().await.unwrap();
+        outcome
+            .expect("bounded metadata pair")
+            .expect("metadata assertions");
+    }
+
+    #[test]
+    fn typed_incoming_requires_exact_protocol_and_reliability() {
+        assert_eq!(
+            incoming_mode("", true, None, None),
+            Ok(ChannelMode::ReliableMessage)
+        );
+        assert_eq!(
+            incoming_mode("", false, Some(0), None),
+            Ok(ChannelMode::LowLatencyMessage)
+        );
+        assert_eq!(
+            incoming_mode(stream::PROTOCOL, true, None, None),
+            Ok(ChannelMode::ReliableStream)
+        );
+        for (protocol, ordered, retransmits, lifetime) in [
+            ("unknown", true, None, None),
+            (stream::PROTOCOL, false, None, None),
+            (stream::PROTOCOL, true, Some(0), None),
+            (stream::PROTOCOL, true, None, Some(1)),
+            ("", false, None, None),
+            ("", true, Some(0), None),
+            ("", false, Some(1), None),
+            ("", false, Some(0), Some(1)),
+        ] {
+            assert_eq!(
+                incoming_mode(protocol, ordered, retransmits, lifetime),
+                Err(TransportError::UnsupportedChannel)
+            );
+        }
     }
 
     #[test]
