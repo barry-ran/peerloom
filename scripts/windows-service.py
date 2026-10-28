@@ -231,6 +231,50 @@ def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import
     return output
 
 
+def start_private_postgres(directory, port, env, known_secrets, timeout=180):
+    """Wait for owned pg_ctl, not EOF on handles inherited by its server."""
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError('invalid PostgreSQL port')
+    argv = [str(directory / 'postgresql/pgsql/bin/pg_ctl.exe'), '-D', str(directory / 'data'),
+            '-l', str(directory / 'postgres.log'), '-o', f'-h 127.0.0.1 -p {port}', '-w', 'start']
+    # Exclusive files remain inside the existing protected host directory. Never
+    # read the server log; only this fixed startup invocation's bounded output.
+    with (directory / 'pg-start.stdout').open('x+b') as output, (directory / 'pg-start.stderr').open('x+b') as errors:
+        process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=errors)
+        timed_out = False
+        taskkill_confirmed = False
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            code = process.poll()
+            if code is None:
+                taskkill_confirmed = False
+                if sys.platform == 'win32':
+                    try:
+                        result = subprocess.run(['taskkill.exe', '/PID', str(process.pid), '/T', '/F'],
+                                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                                timeout=20, check=False)
+                        taskkill_confirmed = result.returncode == 0
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=10)
+        if timed_out or code:
+            output.seek(0)
+            errors.seek(0)
+            if hasattr(sys.stderr, 'reconfigure'):
+                sys.stderr.reconfigure(encoding='utf-8', errors='strict')
+            print('Owned PostgreSQL start wait: timeout=' + str(timed_out)
+                  + ' parent_exit=' + str(code) + ' taskkill_confirmed=' + str(taskkill_confirmed), file=sys.stderr)
+            print(postgres_startup_diagnostic('start', code if code is not None else -1,
+                                             output.read(8193), errors.read(8193), directory, known_secrets), file=sys.stderr)
+            if timed_out:
+                raise TimeoutError('owned PostgreSQL start deadline')
+            raise RuntimeError('owned PostgreSQL start failed')
+
+
 def redis_config(port, password):
     if type(port) is not int or not 1 <= port <= 65535 or not re.fullmatch(r'[A-Za-z0-9_-]{43}', password):
         raise ValueError('invalid private Redis configuration inputs')
@@ -418,9 +462,7 @@ def main():
             postgres_diagnostic=('initdb', directory, pg_diagnostic_secrets))
         STAGE = 'start-private-native-postgresql'
         pg_started = True
-        run([str(pg / 'pg_ctl.exe'), '-D', str(directory / 'data'), '-l', str(directory / 'postgres.log'),
-             '-o', f'-h 127.0.0.1 -p {pgport}', '-w', 'start'], env=env,
-            postgres_diagnostic=('start', directory, pg_diagnostic_secrets))
+        start_private_postgres(directory, pgport, env, pg_diagnostic_secrets)
         STAGE = 'prepare-owned-wsl-tar'
         prepare_wsl_tar(public / 'ubuntu_base.archive', public / 'ubuntu_base.tar', dependencies['ubuntu_base'])
         STAGE = 'import-owned-wsl1'

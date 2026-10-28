@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-only negative tests; no Windows features, WSL, processes or services are changed."""
+"""Host fixture tests; no OS features or services; one bounded owned subprocess test."""
 import hashlib
 import gzip
 import tarfile
@@ -16,6 +16,92 @@ ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('windows_service', ROOT / 'windows-service.py')
 service = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(service)
+
+
+class PostgresStartWaitTest(unittest.TestCase):
+    def test_actual_descendant_output_does_not_block_parent_wait(self):
+        import subprocess
+        import sys
+        real = subprocess.Popen
+        children = []
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            ready, release, done = [directory/name for name in ('ready','release','done')]
+            descendant = ("import pathlib,time,os; base=pathlib.Path(%r); "
+                          "(base/'ready').touch(); deadline=time.monotonic()+15\n"
+                          "while not (base/'release').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+                          "os.close(1); os.close(2); (base/'done').touch()") % temp
+            parent = ("import subprocess,sys,pathlib,time; subprocess.Popen([sys.executable,'-c',%r]); "
+                      "ready=pathlib.Path(%r); deadline=time.monotonic()+5\n"
+                      "while not ready.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+                      "sys.exit(0 if ready.exists() else 2)") % (descendant,str(ready))
+            def spawn(argv, **kwargs):
+                self.assertEqual(Path(argv[0]).name, 'pg_ctl.exe')
+                self.assertEqual(argv[-1], 'start')
+                self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
+                process = real([sys.executable, '-c', parent], **kwargs)
+                children.append(process)
+                return process
+            try:
+                with patch.object(service.subprocess, 'Popen', side_effect=spawn):
+                    service.start_private_postgres(directory,15432,dict(service.os.environ),[],timeout=5)
+                self.assertEqual(children[0].returncode,0)
+                self.assertTrue(ready.exists())
+                self.assertFalse(done.exists(), 'descendant must still hold output before release')
+            finally:
+                release.touch()
+                deadline=service.time.monotonic()+10
+                while not done.exists() and service.time.monotonic()<deadline:
+                    service.time.sleep(.01)
+                self.assertTrue(done.exists(), 'owned descendant output handles must close')
+
+    def test_nonzero_is_redacted_and_handles_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory=Path(temp); process=Mock();process.wait.return_value=7
+            opened=[]
+            def spawn(argv, **kwargs):
+                opened.extend([kwargs['stdout'],kwargs['stderr']])
+                kwargs['stderr'].write(b'known-secret failure')
+                kwargs['stderr'].flush()
+                return process
+            output=io.StringIO()
+            with patch.object(service.subprocess,'Popen',side_effect=spawn),patch.object(service.sys,'stderr',output),self.assertRaisesRegex(RuntimeError,'start failed'):
+                service.start_private_postgres(directory,15432,{},['known-secret'])
+            self.assertNotIn('known-secret',output.getvalue())
+            self.assertIn('exit=7',output.getvalue())
+            self.assertTrue(all(f.closed for f in opened))
+            process.wait.assert_called_once_with(timeout=180)
+
+    def test_timeout_exited_parent_still_fails_without_killing_unrelated_process(self):
+        with tempfile.TemporaryDirectory() as temp:
+            process=Mock();process.wait.side_effect=service.subprocess.TimeoutExpired('owned',180);process.poll.return_value=0
+            with patch.object(service.subprocess,'Popen',return_value=process),patch.object(service.subprocess,'run') as kill,patch.object(service.sys,'stderr',io.StringIO()),self.assertRaises(TimeoutError):
+                service.start_private_postgres(Path(temp),15432,{},[])
+            kill.assert_not_called();process.kill.assert_not_called()
+
+    def test_live_parent_timeout_stays_failed_and_handles_close(self):
+        with tempfile.TemporaryDirectory() as temp:
+            process=Mock();process.wait.side_effect=[service.subprocess.TimeoutExpired('owned',180),0]
+            process.poll.return_value=None;handles=[]
+            def spawn(*args,**kwargs):
+                handles.extend([kwargs['stdout'],kwargs['stderr']]);return process
+            with patch.object(service.subprocess,'Popen',side_effect=spawn),patch.object(service.sys,'platform','win32'),patch.object(service.subprocess,'run',return_value=Mock(returncode=1)) as stop,patch.object(service.sys,'stderr',io.StringIO()) as output,self.assertRaises(TimeoutError):
+                service.start_private_postgres(Path(temp),15432,{},[])
+            self.assertIn('taskkill_confirmed=False',output.getvalue())
+            process.kill.assert_called_once();self.assertTrue(all(f.closed for f in handles))
+            self.assertEqual(stop.call_args.args[0][:2],['taskkill.exe','/PID'])
+
+    def test_spawn_failure_closes_files_and_existing_output_is_not_adopted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory=Path(temp); handles=[]
+            def spawn(*args,**kwargs):
+                handles.extend([kwargs['stdout'],kwargs['stderr']]);raise OSError('spawn failed')
+            with patch.object(service.subprocess,'Popen',side_effect=spawn),self.assertRaises(OSError):
+                service.start_private_postgres(directory,15432,{},[])
+            self.assertTrue(all(f.closed for f in handles))
+            with patch.object(service.subprocess,'Popen') as spawn,self.assertRaises(FileExistsError):
+                service.start_private_postgres(directory,15432,{},[])
+            spawn.assert_not_called()
 
 
 class ScopeTest(unittest.TestCase):
