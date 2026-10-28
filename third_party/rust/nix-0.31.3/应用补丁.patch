@@ -11,6 +11,15 @@
      // parameters, neighbor setups, queueing disciplines, traffic classes and packet classifiers
 --- a/src/sys/socket/sockopt.rs
 +++ b/src/sys/socket/sockopt.rs
+@@ -6,7 +6,7 @@
+ use crate::{errno::Errno, Result};
+ use cfg_if::cfg_if;
+ use libc::{self, c_int, c_void, socklen_t};
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ use std::ffi::CString;
+ use std::ffi::{CStr, OsStr, OsString};
+ use std::mem::{self, MaybeUninit};
 @@ -1280,7 +1280,7 @@
      libc::IPV6_DONTFRAG,
      bool
@@ -20,3 +29,20 @@
  #[cfg(feature = "net")]
  sockopt_impl!(
      /// Get the utun interface name.
+@@ -1978,14 +1978,14 @@
+ }
+ 
+ /// Getter for a `CString` value.
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ #[cfg(feature = "net")]
+ struct GetCString<T: AsMut<[u8]>> {
+     len: socklen_t,
+     val: MaybeUninit<T>,
+ }
+ 
+-#[cfg(apple_targets)]
++#[cfg(target_os = "macos")]
+ #[cfg(feature = "net")]
+ impl<T: AsMut<[u8]>> Get<CString> for GetCString<T> {
+     fn uninit() -> Self {

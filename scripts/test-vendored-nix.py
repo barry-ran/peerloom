@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核验固定 nix 原包与两个官方 cfg 回移；校验通过不等于 Apple 编译/运行通过。"""
+"""核验固定 nix 原包与五处官方 cfg 回移；校验通过不等于 Apple 编译/运行通过。"""
 import difflib
 import hashlib
 import json
@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'third_party/rust/nix-0.31.3'
-MANIFEST_SHA = 'aae87372c776e42ad1b8e756fa20c707266a99e6b884d08a4b0d7acd258c1054'
+MANIFEST_SHA = 'd8b3339019d02a41f5adada077dbe59962fb7a4d29a64de01b0ae853b0cbff72'
 ARCHIVE_SHA = 'cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d'
 UPSTREAM_PATCH_SHA = '2b7e32002378680ad31b55c6a0e601c0668dab3121ea938a8d4bf970b1ee7e25'
 
@@ -27,7 +27,7 @@ def verify(base):
     assert manifest['upstream_patch']['sha256'] == UPSTREAM_PATCH_SHA
     assert manifest['package'] == {'name': 'nix', 'version': '0.31.3', 'declared_license': 'MIT'}
     assert sha((base / '上游补丁.patch').read_bytes()) == UPSTREAM_PATCH_SHA
-    assert len(manifest['modifications']) == 2
+    assert len(manifest['modifications']) == 5
     crate = base / 'crate'
     paths = list(crate.rglob('*'))
     assert not any(p.is_symlink() for p in paths), 'symlink in source tree'
@@ -35,7 +35,9 @@ def verify(base):
     expected = {record['path'] for record in manifest['files']}
     assert actual == expected and 'LICENSE' in actual, 'source file inventory mismatch'
     original = {}
-    changes = {entry['path']: entry for entry in manifest['modifications']}
+    changes = {}
+    for entry in manifest['modifications']:
+        changes.setdefault(entry['path'], []).append(entry)
     assert set(changes) == {'src/sys/socket/mod.rs', 'src/sys/socket/sockopt.rs'}
     for entry in manifest['files']:
         path = PurePosixPath(entry['path'])
@@ -43,15 +45,15 @@ def verify(base):
         content = (crate / path).read_bytes()
         assert sha(content) == entry['sha256'], 'source content changed'
         if entry['path'] in changes:
-            change = changes[entry['path']]
             text = content.decode()
-            assert text.count(change['new']) == 1
-            content = text.replace(change['new'], change['old']).encode()
+            for change in changes[entry['path']]:
+                assert text.count(change['new']) == 1
+                text = text.replace(change['new'], change['old'])
+            content = text.encode()
         assert sha(content) == entry['upstream_sha256'], 'change outside approved backport'
         original[entry['path']] = content
     applied = ''
-    for entry in manifest['modifications']:
-        path = entry['path']
+    for path in changes:
         applied += ''.join(difflib.unified_diff(original[path].decode().splitlines(keepends=True),
                              (crate / path).read_text().splitlines(keepends=True), fromfile='a/' + path, tofile='b/' + path))
     assert (base / '应用补丁.patch').read_text() == applied
@@ -59,7 +61,7 @@ def verify(base):
 
 
 class VendoredNixTests(unittest.TestCase):
-    def test_verified_original_license_and_exact_two_source_changes(self):
+    def test_verified_original_license_and_exact_five_cfg_changes(self):
         verify(BASE)
 
     def altered(self, action):

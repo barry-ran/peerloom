@@ -93,13 +93,30 @@ func TestBrowserConsoleChromium(t *testing.T) {
 		t.Fatal("actual Chromium console gate failed; inspect retained browser artifacts")
 	}
 	var applications, grants, audit, grantAudit, sessions int
-	err = pool.QueryRow(ctx, `SELECT
+	err = pool.QueryRow(ctx, browserEvidenceQuery, tenant, owner).Scan(&applications, &grants, &audit, &grantAudit, &sessions)
+	if err != nil {
+		t.Fatalf("browser database evidence query failed: %v", err)
+	}
+	if applications != 2 || grants != 2 || audit != 2 || grantAudit != 2 || sessions != 0 {
+		t.Fatalf("browser database evidence mismatch: applications=%d grants=%d owner_audits=%d grant_audits=%d owner_sessions=%d", applications, grants, audit, grantAudit, sessions)
+	}
+}
+
+const browserEvidenceQuery = `SELECT
 (SELECT count(*) FROM applications WHERE tenant_id=$1),
 (SELECT count(*) FROM registration_grants WHERE tenant_id=$1),
-(SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND actor_type='admin_user' AND actor_id=$2 AND action='application.create'),
-(SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND actor_type='admin_user' AND actor_id=$2 AND action='registration_grant.issue'),
-(SELECT count(*) FROM admin_sessions WHERE tenant_id=$1 AND user_id=$2)`, tenant, owner).Scan(&applications, &grants, &audit, &grantAudit, &sessions)
-	if err != nil || applications != 2 || grants != 2 || audit != 2 || grantAudit != 2 || sessions != 0 {
-		t.Fatalf("browser database evidence mismatch: applications=%d grants=%d owner_audits=%d grant_audits=%d owner_sessions=%d", applications, grants, audit, grantAudit, sessions)
+(SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND actor_type='admin_user' AND actor_id=$2::uuid::text AND action='application.create'),
+(SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND actor_type='admin_user' AND actor_id=$2::uuid::text AND action='registration_grant.issue'),
+(SELECT count(*) FROM admin_sessions WHERE tenant_id=$1 AND user_id=$2::uuid)`
+
+func TestBrowserEvidenceParameterTypes(t *testing.T) {
+	pool := testPool(t)
+	var values [5]int
+	err := pool.QueryRow(context.Background(), browserEvidenceQuery, "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002").Scan(&values[0], &values[1], &values[2], &values[3], &values[4])
+	if err != nil {
+		t.Fatalf("typed UUID/text evidence query failed: %v", err)
+	}
+	if values != [5]int{} {
+		t.Fatalf("empty fixture has unexpected evidence: %v", values)
 	}
 }

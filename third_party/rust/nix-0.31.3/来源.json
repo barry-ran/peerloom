@@ -1,8 +1,8 @@
 {
   "applied_patch": {
     "file": "应用补丁.patch",
-    "scope": "Only KextControl and UtunIfname are restricted to target_os=macos; no constants or protocol/security behavior are invented.",
-    "sha256": "b4e81bbf203ebbc5e5be5581cfa720c5f9d24d5ac2f3096dbb90d96d17b283fa"
+    "scope": "Only KextControl, UtunIfname and its CString import/getter struct/impl are restricted to target_os=macos; no constants, lint suppression or protocol/security behavior are invented.",
+    "sha256": "0db79f306eedbafbf2f20ac1c637c1b84efa52c24e9ca6a67bc9c07c53c5df91"
   },
   "archive": {
     "sha256": "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d",
@@ -292,7 +292,7 @@
     },
     {
       "path": "src/sys/socket/sockopt.rs",
-      "sha256": "a0befaeab28318ee772b245d5a4297e3770df647d1e09964f49d6f3604eaa3ba",
+      "sha256": "200df19e250536f67138e28a98a622a22704f6ead3f92735a136eda30d74706b",
       "upstream_sha256": "43d0fc74bf0c7d33ad550e250d05a5c26c3258c372b266fc466df1bb5cf2c6cf"
     },
     {
@@ -651,6 +651,21 @@
     {
       "new": "#[cfg(target_os = \"macos\")]\n#[cfg(feature = \"net\")]\nsockopt_impl!(\n    /// Get the utun interface name.",
       "old": "#[cfg(apple_targets)]\n#[cfg(feature = \"net\")]\nsockopt_impl!(\n    /// Get the utun interface name.",
+      "path": "src/sys/socket/sockopt.rs"
+    },
+    {
+      "new": "#[cfg(target_os = \"macos\")]\nuse std::ffi::CString;",
+      "old": "#[cfg(apple_targets)]\nuse std::ffi::CString;",
+      "path": "src/sys/socket/sockopt.rs"
+    },
+    {
+      "new": "#[cfg(target_os = \"macos\")]\n#[cfg(feature = \"net\")]\nstruct GetCString<T: AsMut<[u8]>> {",
+      "old": "#[cfg(apple_targets)]\n#[cfg(feature = \"net\")]\nstruct GetCString<T: AsMut<[u8]>> {",
+      "path": "src/sys/socket/sockopt.rs"
+    },
+    {
+      "new": "#[cfg(target_os = \"macos\")]\n#[cfg(feature = \"net\")]\nimpl<T: AsMut<[u8]>> Get<CString> for GetCString<T> {",
+      "old": "#[cfg(apple_targets)]\n#[cfg(feature = \"net\")]\nimpl<T: AsMut<[u8]>> Get<CString> for GetCString<T> {",
       "path": "src/sys/socket/sockopt.rs"
     }
   ],
