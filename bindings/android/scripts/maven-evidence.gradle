@@ -39,15 +39,18 @@ tasks.register('collectMavenEvidence') {
                 def id = coordinate(component.id)
                 [(id): [coordinate: id, artifacts: [], pom: null, issues: []]]
             }
-            // Original selected module archives, not AGP transformed class directories.
-            configuration.resolvedConfiguration.resolvedArtifacts.each { artifact ->
-                def id = artifact.moduleVersion.id
-                def key = "${id.group}:${id.name}:${id.version}".toString()
-                if (records.containsKey(key)) {
-                    records.get(key).artifacts.add(fileProof(artifact.file))
-                } else if (!(artifact.id.componentIdentifier instanceof org.gradle.api.artifacts.component.ProjectComponentIdentifier)) {
-                    throw new GradleException('Unknown external artifact requires reviewed inventory')
+            // Do not request ambiguous AGP artifacts of the local :library
+            // project. This is a Maven-only inventory; the full graph below is retained.
+            def mavenArtifacts = configuration.incoming.artifactView { view ->
+                view.componentFilter { component -> component instanceof ModuleComponentIdentifier }
+            }.artifacts.artifacts
+            mavenArtifacts.each { artifact ->
+                def id = artifact.id.componentIdentifier
+                def key = "${id.group}:${id.module}:${id.version}".toString()
+                if (!records.containsKey(key)) {
+                    throw new GradleException('External artifact absent from resolved Maven graph')
                 }
+                records.get(key).artifacts.add(fileProof(artifact.file))
             }
             def query = dependencies.createArtifactResolutionQuery()
                 .forComponents(modules.collect { it.id })

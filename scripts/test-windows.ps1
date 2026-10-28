@@ -59,7 +59,13 @@ foreach ($profile in @('debug', 'release')) {
         # Ask the actual target compiler for required system libraries; do not guess
         # that a static Rust library has no platform link dependencies.
         $notes = & cargo +1.99.1 rustc --manifest-path $manifest -p device-ffi --lib --target $triple --locked @profileArgs -- --print native-static-libs 2>&1
-        if ($LASTEXITCODE -ne 0) { throw 'RUST_STATIC_LINK_METADATA_FAILED' }
+        $metadataExit = $LASTEXITCODE
+        # Captured compiler diagnostics contain build paths, not the runner environment.
+        # Preserve them on failure instead of replacing the actual cause with a label.
+        if ($metadataExit -ne 0) {
+            $notes | ForEach-Object { Write-Output "$_" }
+            throw "RUST_STATIC_LINK_METADATA_FAILED:exit=${metadataExit}:profile=${profile}"
+        }
         $line = ($notes | ForEach-Object { "$_" } | Where-Object { $_ -match 'native-static-libs:' } | Select-Object -Last 1)
         if (-not $line) { throw 'RUST_STATIC_LINK_METADATA_MISSING' }
         $native = ($line -replace '^.*native-static-libs:\s*','')
