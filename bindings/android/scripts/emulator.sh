@@ -12,6 +12,7 @@ root=$(cd "$(dirname "$0")/../../.." && pwd)
 export ANDROID_SERIAL="emulator-$port"
 export PEERLOOM_AVD_NAME="peerloom-ci-$page"
 export ANDROID_AVD_HOME="${RUNNER_TEMP:?CI runner required}/peerloom-avd-$page"
+python3 "$(dirname "$0")/emulator-memory.py"
 # Reject collisions before creating an AVD or launching a process.
 if adb devices | awk 'NR>1 {print $1}' | grep -Fxq "$ANDROID_SERIAL"; then
   echo 'refuse existing emulator serial' >&2
@@ -34,7 +35,7 @@ test ! -e "$ANDROID_AVD_HOME/$PEERLOOM_AVD_NAME.ini"
 mkdir -p "$ANDROID_AVD_HOME"
 echo no | avdmanager create avd -n "$PEERLOOM_AVD_NAME" -k "$image"
 emulator -avd "$PEERLOOM_AVD_NAME" -port "$port" -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
-  -gpu swiftshader_indirect -memory 2048 -cores 2 > "$RUNNER_TEMP/emulator-$page.log" 2>&1 &
+  -gpu swiftshader_indirect -memory 4096 -cores 2 > "$RUNNER_TEMP/emulator-$page.log" 2>&1 &
 pid=$!
 adb_owned() { command adb -s "$ANDROID_SERIAL" "$@"; }
 owned_avd() { [[ $(timeout 5 adb -s "$ANDROID_SERIAL" emu avd name 2>/dev/null | tr -d '\r' | head -n 1) == "$PEERLOOM_AVD_NAME" ]]; }

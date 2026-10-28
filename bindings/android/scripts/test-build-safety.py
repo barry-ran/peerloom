@@ -17,10 +17,26 @@ def module(name):
     spec.loader.exec_module(value)
     return value
 
+memory = module("emulator-memory")
 checksums = module("verify-checksums")
 kvm = module("kvm-access")
 artifacts = module("verify-artifacts")
 ACL = "# file: /dev/kvm\n# owner: root\n# group: kvm\nuser::rw-\ngroup::rw-\nother::---\n"
+
+class EmulatorMemory(unittest.TestCase):
+    def test_fixed_4g_avd_has_readonly_host_memory_admission(self):
+        self.assertEqual(memory.validate("MemTotal: 16777216 kB\nMemAvailable: 8388608 kB\n"), (16384, 8192))
+        script = (ROOT / "emulator.sh").read_text()
+        self.assertIn("-memory 4096 -cores 2", script)
+        self.assertLess(script.index("/emulator-memory.py"), script.index("avdmanager create"))
+
+    def test_low_missing_malformed_or_impossible_ram_is_rejected(self):
+        for text in ("", "MemTotal: 16777216 kB\nMemAvailable: 4194304 kB\n",
+                     "MemTotal: 16777216 kB\nMemAvailable: 8388608 MB\n",
+                     "MemTotal: 4194304 kB\nMemAvailable: 8388608 kB\n",
+                     "MemTotal: 16777216 kB\nMemAvailable: 8388608 kB\nMemAvailable: 8388608 kB\n"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                memory.validate(text)
 
 class Checksums(unittest.TestCase):
     def fixture(self, path):

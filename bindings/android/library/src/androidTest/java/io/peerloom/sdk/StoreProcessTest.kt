@@ -153,6 +153,7 @@ class StoreProcessTest {
                 Context.BIND_AUTO_CREATE,
             )
         )
+        var completed = false
         try {
             assertTrue(connected.await(10, TimeUnit.SECONDS))
             android.util.Log.i(
@@ -190,19 +191,6 @@ class StoreProcessTest {
                 }
             val other = responses.poll(10, TimeUnit.SECONDS)
             if (other == null) {
-                // Own package/UID only; no trace, description, credential or arbitrary log text.
-                val activity = context.getSystemService(android.app.ActivityManager::class.java)
-                for (exit in activity.getHistoricalProcessExitReasons(context.packageName, 0, 8)) {
-                    if (
-                        exit.processName == context.packageName + ":storeProbe" &&
-                            exit.timestamp >= started
-                    ) {
-                        android.util.Log.i(
-                            "PeerloomTestDiag",
-                            "store-probe-exit pid=${exit.pid} reason=${exit.reason} status=${exit.status} importance=${exit.importance}",
-                        )
-                    }
-                }
                 fail("probe CAS response deadline; disconnected=${disconnected.count == 0L}")
                 return
             }
@@ -246,7 +234,39 @@ class StoreProcessTest {
             assertTrue(disconnected.await(10, TimeUnit.SECONDS))
             android.util.Log.i("PeerloomTestDiag", "store-process remote-disconnected")
             assertEquals(3L, store.execute(storageRequest(app, "save", 2)).getLong("revision"))
+            completed = true
         } finally {
+            if (!completed) {
+                // Capture before unbind/runner cleanup can obscure the original failure.
+                // Own UID/package only: no description, trace, arbitrary text or credentials.
+                try {
+                    val activity = context.getSystemService(android.app.ActivityManager::class.java)
+                    val deadline = SystemClock.elapsedRealtime() + 2000
+                    do {
+                        val exits =
+                            activity
+                                .getHistoricalProcessExitReasons(context.packageName, 0, 8)
+                                .filter {
+                                    it.processName == context.packageName + ":storeProbe" &&
+                                        it.timestamp >= started
+                                }
+                        for (exit in exits) {
+                            android.util.Log.i(
+                                "PeerloomTestDiag",
+                                "store-probe-exit pid=${exit.pid} reason=${exit.reason} status=${exit.status} importance=${exit.importance}",
+                            )
+                        }
+                        if (exits.isNotEmpty()) break
+                        Thread.sleep(100)
+                    } while (SystemClock.elapsedRealtime() < deadline)
+                } catch (error: Exception) {
+                    // Diagnostics must not replace the original assertion or trigger a retry.
+                    android.util.Log.i(
+                        "PeerloomTestDiag",
+                        "store-probe-error category=${error.javaClass.simpleName} pid=${android.os.Process.myPid()}",
+                    )
+                }
+            }
             context.unbindService(connection)
         }
     }
