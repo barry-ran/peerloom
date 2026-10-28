@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// Handler only reports this process and its PostgreSQL schema readiness.
-// It does not claim that the future signaling/relay platform is ready.
+// Handler only reports this process and its configured dependency readiness.
+// It does not claim that the relay or all SDK platforms are ready.
 type Handler struct {
 	check    func(context.Context) error
 	stopping atomic.Bool
@@ -55,7 +55,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusServiceUnavailable, "NOT_READY")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ready", "scope": "postgres_schema"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready", "scope": "control_plane_dependencies"})
 	case "/metrics":
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		fmt.Fprintf(w, "# HELP peerloom_http_requests_total HTTP requests handled by this process.\n# TYPE peerloom_http_requests_total counter\npeerloom_http_requests_total %d\n", h.requests.Load())

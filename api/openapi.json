@@ -465,6 +465,31 @@
           }
         }
       }
+    },
+    "/v1/device-signal": {
+      "get": {
+        "summary": "原生设备 WebSocket 信令",
+        "description": "必须通过 Authorization Bearer 鉴权，拒绝 Origin 和 URL query；开发 Compose 仅本机 ws，生产入口必须 TLS/wss。升级后使用 signal-envelope.schema.json。",
+        "security": [
+          {
+            "DeviceCredentialBearer": []
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket upgraded"
+          },
+          "400": {
+            "description": "非原生请求或无效升级"
+          },
+          "401": {
+            "description": "设备凭证无效"
+          },
+          "503": {
+            "description": "容量或依赖不可用"
+          }
+        }
+      }
     }
   },
   "components": {

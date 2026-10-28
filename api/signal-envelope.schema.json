@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "WSS 信令信封草案",
-  "description": "M2/M3 尚未接入；仅验证信封结构，不能替代身份、当前 fencing 所有权、授权、速率、状态及完整 payload 校验。帧字节硬上限由运行时实施；租约消息待 M3 定稿。",
+  "title": "原生 WSS 信令信封",
+  "description": "GET /v1/device-signal，Authorization Bearer；native-only，不接受Origin或URL凭证。单节点路由。客户端hello seq0后严格递增；除hello均需服务器发行的generation与fence。SDP仅完整ICE、generation=1；不支持trickle/ICE restart。运行时每帧128KiB硬上限、服务端重新鉴权与授权。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -28,9 +28,9 @@
         "session.reject",
         "session.offer",
         "session.answer",
-        "session.ice_candidate",
         "session.connected",
-        "session.reconnecting",
+        "session.renew",
+        "session.updated",
         "session.terminate",
         "session.terminated",
         "sync.request",

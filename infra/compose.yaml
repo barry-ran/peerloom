@@ -57,10 +57,13 @@ services:
       DATABASE_URL_FILE: /run/secrets/database_url
       LISTEN_ADDRESS: :8080
       REPLAY_KEY_FILE: /run/secrets/replay_key
-    secrets: [database_url, replay_key]
+      REDIS_ADDRESS: redis:6379
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+    secrets: [database_url, replay_key, redis_password]
     networks: [backend]
     depends_on:
       postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
