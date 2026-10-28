@@ -12,6 +12,7 @@ typedef struct host {
     uint64_t sdk, connection, revision;
     char config[16384], snapshot[16384], incoming[64];
     unsigned online, messages, saves, shutdown, flood_completions;
+    uint64_t accepted_business, accepted_flood, rejected_full;
     uint64_t completions[128]; uint32_t statuses[128]; unsigned count;
 } host;
 static host hosts[2];
@@ -48,6 +49,7 @@ static void callback(uint64_t context, const dp_event *event) {
         break;
     }
     case DP_EVENT_COMPLETE:
+        assert(event->request_id != 0); /* synchronous rejected requests never complete */
         if(event->status==DP_INVALID_ARGUMENT){++h->flood_completions;break;}
         assert(h->count < 128);
         for (unsigned i=0;i<h->count;++i) assert(h->completions[i]!=event->request_id);
@@ -86,8 +88,35 @@ static void complete(host *h,uint64_t id) {
     }
 }
 static uint64_t submit(host *h,uint32_t kind,uint64_t connection,const void *data,size_t len) {
-    uint64_t id; assert(dp_sdk_submit(h->sdk,kind,connection,data,len,&id)==DP_OK && id); return id;
+    struct timespec started;
+    assert(!clock_gettime(CLOCK_MONOTONIC, &started));
+    for (;;) {
+        uint64_t id = 0;
+        const uint32_t status = dp_sdk_submit(h->sdk,kind,connection,data,len,&id);
+        if (status == DP_OK && id) {
+            pthread_mutex_lock(&mutex); ++h->accepted_business; pthread_mutex_unlock(&mutex);
+            return id;
+        }
+        /* The concurrent flood deliberately fills all 32 operation credits. FULL with
+         * id=0 means not admitted, so retrying this call cannot replay a remote mutation.
+         * Never retry an accepted ID, OutcomeUnknown, auth failure or other status. */
+        if (status == DP_BUFFER_FULL && id == 0) {
+            pthread_mutex_lock(&mutex); ++h->rejected_full; pthread_mutex_unlock(&mutex);
+            struct timespec now;
+            assert(!clock_gettime(CLOCK_MONOTONIC, &now));
+            const int64_t elapsed_ns = (int64_t)(now.tv_sec - started.tv_sec) * INT64_C(1000000000)
+                + (int64_t)now.tv_nsec - (int64_t)started.tv_nsec;
+            if (elapsed_ns < INT64_C(5000000000)) {
+                const struct timespec yield = {0, 1000000};
+                nanosleep(&yield, NULL);
+                continue;
+            }
+        }
+        fprintf(stderr, "C ABI submit failed: operation=%u status=%u request=%llu\n", kind, status, (unsigned long long)id);
+        assert(status == DP_OK && id);
+    }
 }
+
 static void *flood(void *unused) {
     (void)unused;
     struct timespec start;clock_gettime(CLOCK_MONOTONIC,&start);
@@ -96,6 +125,10 @@ static void *flood(void *unused) {
         if(received) return NULL;
         uint64_t id;uint32_t status=dp_sdk_submit(hosts[0].sdk,DP_OP_RESPOND,0,(const uint8_t *)"{}",2,&id);
         assert(status==DP_OK||status==DP_BUFFER_FULL);
+        pthread_mutex_lock(&mutex);
+        if(status==DP_OK){assert(id);++hosts[0].accepted_flood;}
+        else {assert(id==0);++hosts[0].rejected_full;}
+        pthread_mutex_unlock(&mutex);
         struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);assert(now.tv_sec-start.tv_sec<45);
     }
 }
@@ -129,6 +162,17 @@ int main(void) {
     assert(dp_sdk_submit(hosts[0].sdk,DP_OP_SEND,hosts[0].connection,message,sizeof(message),&ignored)==DP_CLOSED && !ignored);
     complete(&hosts[0],close);
     for(unsigned i=0;i<2;++i){uint64_t id;assert(dp_sdk_shutdown(hosts[i].sdk,&id)==DP_OK);wait_count(&hosts[i].shutdown,1);uint32_t status=DP_BUSY;for(unsigned n=0;n<10000&&status==DP_BUSY;++n){status=dp_sdk_release(hosts[i].sdk);if(status==DP_BUSY){struct timespec delay={0,1000000};nanosleep(&delay,NULL);}}assert(status==DP_OK);}
+    pthread_mutex_lock(&mutex);
+    for(unsigned i=0;i<2;++i){
+        assert(hosts[i].count==hosts[i].accepted_business);
+        assert(hosts[i].flood_completions==hosts[i].accepted_flood);
+    }
+    assert(hosts[0].messages==1 && hosts[1].messages==2); /* no duplicate business sends */
+    printf("C ABI accounting: business=%llu flood=%llu not-admitted-full=%llu messages=3\n",
+        (unsigned long long)(hosts[0].accepted_business+hosts[1].accepted_business),
+        (unsigned long long)hosts[0].accepted_flood,
+        (unsigned long long)(hosts[0].rejected_full+hosts[1].rejected_full));
+    pthread_mutex_unlock(&mutex);
     puts("C ABI service: real identity/WSS/approval/WebRTC binary echo, host CAS rotation, reconnect, cross-parent handle rejection, immediate close gate PASS");
     return 0;
 }
