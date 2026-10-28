@@ -79,7 +79,7 @@ try await sdk.close()
 
 ## 独立真实服务链验收
 
-`ServiceTests/SwiftServiceTests.swift` 与 `PeerloomSwiftService` scheme 新增一个独立 iOS Simulator 场景，**尚待首次原生 CI 执行**；不替换既有 macOS 14 项/iOS 12 项、TLS 或签名检查。它不注入 MockNative 或内存存储：真实 Go 管理 API 创建三个不同 App 的安装身份及方向性授权，Swift 将身份写入真实默认 DP Keychain 后由 SDK 恢复、认证 WSS、明确接受会话，再验证两条连接、可靠/低延迟消息、256 KiB 字节流、双工读写、FIN 半关闭与父子失效。此场景证明恢复身份链，不冒称首次注册由 Swift 发出。
+`ServiceTests/SwiftServiceTests.swift` 与 `PeerloomSwiftService` scheme 新增一个独立 iOS Simulator 场景，**尚待首次原生 CI 执行**；不替换既有 macOS 14 项/iOS 12 项、TLS 或签名检查。它不注入 MockNative 或内存存储：宿主仅为独立第四个 App 签发一次性注册 grant，不预注册其设备；Swift 先确认该 App 的真实默认 DP Keychain 为空，通过公开 `start(registration:idempotencyKey:)` 首次注册并持久化，关闭后新建 SDK，以 `start()` 恢复且核对同一设备 ID。其后三设备通道场景保持独立：真实 Go 管理 API 创建三个不同 App 的安装身份及方向性授权，Swift 将身份写入真实默认 DP Keychain 后由 SDK 恢复、认证 WSS、明确接受会话，再验证两条连接、可靠/低延迟消息、256 KiB 字节流、双工读写、FIN 半关闭与父子失效。首次注册与恢复断言仍在同一个具名 service case 内，不增加或替换既有 14/12 项原生测试。
 
 仅在 macOS CI 自己的回环地址启动 PostgreSQL、Redis 和 Go；先只读探测预装的精确版本，不匹配时校验官方归档 SHA-256 后在用户私有目录编译。缓存按 runner/镜像、依赖 manifest 与构建脚本区分，恢复后核对文件哈希和实际版本，绝不缓存 PGDATA、配置秘密或测试身份，也不调用 `brew services`、提权或操作已有数据库。依赖原始许可证随构建缓存保留，不代替第三方法律审查。
 

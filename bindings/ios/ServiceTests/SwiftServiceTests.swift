@@ -15,11 +15,18 @@ private struct ServiceDevice: Decodable, Sendable {
         StoredIdentity(deviceID: device_id, deviceCredential: device_credential, expiresAt: expires_at)
     }
 }
+private struct ServiceRegistration: Decodable, Sendable {
+    let application_id: String
+    let registration_grant: String
+    let installation_public_key: String
+    let idempotency_key: String
+}
 private struct ServiceFixture: Decodable, Sendable {
     let origin: String
     let source: ServiceDevice
     let target: ServiceDevice
     let third: ServiceDevice
+    let first_registration: ServiceRegistration
     static func load() throws -> ServiceFixture {
         guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             throw ServiceFailure.fixture
@@ -39,6 +46,14 @@ private struct ServiceFixture: Decodable, Sendable {
         guard Set(devices.map(\.application_id)).count == 3,
               Set(devices.map(\.device_id)).count == 3,
               devices.allSatisfy({ UUID(uuidString: $0.application_id) != nil && UUID(uuidString: $0.device_id) != nil }) else {
+            throw ServiceFailure.fixture
+        }
+        let registration = fixture.first_registration
+        guard UUID(uuidString: registration.application_id) != nil,
+              !devices.contains(where: { $0.application_id == registration.application_id }),
+              !registration.registration_grant.isEmpty, registration.registration_grant.utf8.count <= 4096,
+              !registration.installation_public_key.isEmpty, registration.installation_public_key.utf8.count <= 4096,
+              !registration.idempotency_key.isEmpty, registration.idempotency_key.utf8.count <= 128 else {
             throw ServiceFailure.fixture
         }
         return fixture
@@ -112,8 +127,41 @@ final class SwiftServiceTests: XCTestCase {
         var sdks: [PeerloomSDK] = []
         var pumps: [Task<Void, Never>] = []
         var reverseRead: Task<Data, Error>?
+        var registrationSDK: PeerloomSDK?
         let boxes = [ServiceMailbox(), ServiceMailbox(), ServiceMailbox()]
         do {
+            let first = fixture.first_registration
+            try await Task.detached {
+                let store = try KeychainIdentityStore()
+                let scope = IdentityScope(serverOrigin: fixture.origin, applicationID: first.application_id)
+                let empty = try store.perform(StorageRequest(operation: .load, scope: scope))
+                guard empty.revision == 0, empty.identity == nil else { throw ServiceFailure.fixture }
+            }.value
+            var firstConfig = PeerloomConfiguration(origin: fixture.origin, applicationID: first.application_id)
+            firstConfig.developmentLoopback = true
+            let firstSDK = try await PeerloomSDK.open(configuration: firstConfig)
+            registrationSDK = firstSDK
+            let registeredID = try await firstSDK.start(registration: PeerloomRegistration(
+                installationPublicKey: first.installation_public_key, registrationGrant: first.registration_grant),
+                idempotencyKey: first.idempotency_key)
+            guard UUID(uuidString: registeredID) != nil,
+                  !devices.contains(where: { $0.device_id == registeredID }) else { throw ServiceFailure.mismatch }
+            try await firstSDK.close()
+            registrationSDK = nil
+            try await Task.detached {
+                let store = try KeychainIdentityStore()
+                let scope = IdentityScope(serverOrigin: fixture.origin, applicationID: first.application_id)
+                let saved = try store.perform(StorageRequest(operation: .load, scope: scope))
+                guard saved.revision > 0, saved.identity?.deviceID == registeredID,
+                      saved.identity?.deviceCredential.isEmpty == false else { throw ServiceFailure.mismatch }
+            }.value
+            print("[Swift service] Swift first registration persisted in Keychain")
+            let reopenedSDK = try await PeerloomSDK.open(configuration: firstConfig)
+            registrationSDK = reopenedSDK
+            guard try await reopenedSDK.start() == registeredID else { throw ServiceFailure.mismatch }
+            try await reopenedSDK.close()
+            registrationSDK = nil
+            print("[Swift service] Swift reopen restored the same registered device")
             for (index, device) in devices.enumerated() {
                 try await Task.detached {
                     let store = try KeychainIdentityStore()
@@ -212,6 +260,7 @@ final class SwiftServiceTests: XCTestCase {
         } catch {
             for pump in pumps { pump.cancel() }
             reverseRead?.cancel()
+            if let registrationSDK { try? await registrationSDK.close() }
             for sdk in sdks { try? await sdk.close() }
             if let reverseRead { _ = try? await reverseRead.value }
             for pump in pumps { await pump.value }

@@ -15,6 +15,9 @@ unsafe_op_in_unsafe_fn = "deny"
 [lints.clippy]
 all = "warn"
 
+[features]
+test-diagnostics = ["device-core/test-diagnostics"]
+
 [dependencies]
 device-protocol = { path = "../device-protocol" }
 device-core = { path = "../device-core" }

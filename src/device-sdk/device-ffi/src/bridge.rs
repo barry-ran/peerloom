@@ -134,6 +134,9 @@ async fn close_connections(connections: &mut HashMap<u64, (String, crate::channe
 }
 
 pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Receiver<Operation>) {
+    #[cfg(feature = "test-diagnostics")]
+    let _diagnostic = (std::env::var("TEST_C_SCHEDULER_PROBE").as_deref() == Ok("1"))
+        .then(SchedulerDiagnostic::start);
     let store: Arc<dyn IdentityStore> = if config.storage == "external" {
         Arc::new(ExternalStore(Arc::downgrade(&instance)))
     } else {
@@ -406,6 +409,44 @@ pub fn runtime(instance: Arc<Instance>, config: Config, commands: mpsc::Receiver
         },
         Vec::new(),
     ));
+}
+
+/// Test-only scheduling witness: no application identifiers or payloads.
+#[cfg(feature = "test-diagnostics")]
+struct SchedulerDiagnostic(tokio::task::JoinHandle<()>);
+#[cfg(feature = "test-diagnostics")]
+impl SchedulerDiagnostic {
+    fn start() -> Self {
+        Self(tokio::spawn(async {
+            let period = std::time::Duration::from_millis(20);
+            let mut expected = tokio::time::Instant::now() + period;
+            let mut report = std::time::Instant::now();
+            let mut maximum = 0;
+            let mut samples = 0;
+            loop {
+                tokio::time::sleep_until(expected).await;
+                let now = tokio::time::Instant::now();
+                maximum = maximum.max(now.saturating_duration_since(expected).as_millis());
+                samples += 1;
+                expected = now + period;
+                if report.elapsed() >= std::time::Duration::from_secs(5) {
+                    eprintln!(
+                        "PeerloomTestDiag scheduler samples={} maximum_lag_ms={}",
+                        samples, maximum
+                    );
+                    report = std::time::Instant::now();
+                    maximum = 0;
+                    samples = 0;
+                }
+            }
+        }))
+    }
+}
+#[cfg(feature = "test-diagnostics")]
+impl Drop for SchedulerDiagnostic {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 #[cfg(test)]

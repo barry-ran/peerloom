@@ -15,7 +15,7 @@ if stat.S_IMODE(fixture_path.stat().st_mode) != 0o600:
 fixture = json.loads(fixture_path.read_text())
 origin = os.environ["TEST_IDENTITY_BASE_URL"]
 profile = os.environ.get("CARGO_TEST_PROFILE", "dev")
-subprocess.run(["cargo", "build", "--profile", profile, "--manifest-path", str(root / "Cargo.toml"), "--locked", "-p", "device-ffi"], check=True)
+subprocess.run(["cargo", "build", "--profile", profile, "--manifest-path", str(root / "Cargo.toml"), "--locked", "-p", "device-ffi", *(["--features", "test-diagnostics"] if os.environ.get("TEST_C_DIAGNOSTICS") == "1" else [])], check=True)
 target = Path(os.environ.get("CARGO_TARGET_DIR", root / "target")).resolve()
 output = target / "ffi-tests" / "service"
 output.parent.mkdir(parents=True, exist_ok=True)

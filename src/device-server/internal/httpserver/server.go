@@ -31,8 +31,9 @@ func (h *Handler) Stop() { h.stopping.Store(true) }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.requests.Add(1)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if strings.HasPrefix(r.URL.Path, "/v1/") && h.api != nil {
-		// Shutdown stops accepting connections; existing API requests may drain.
+	if h.api != nil && (strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/")) {
+		// The bound application owns API and administrator route authentication.
+		// Shutdown stops accepting connections; existing requests may drain.
 		h.api.ServeHTTP(w, r)
 		return
 	}

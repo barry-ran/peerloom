@@ -211,14 +211,54 @@ class GatesTests(unittest.TestCase):
 
     def test_event_boundary(self):
         env = {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REPOSITORY': P.REPO, 'GITHUB_REF': 'refs/heads/master', 'GITHUB_SHA': MASTER}
-        event = {'repository': {'full_name': P.REPO}, 'ref': 'refs/heads/master', 'after': MASTER,
-                 'commits': [{'modified': ['release/approved-plan.json']}]}
+        event = {'repository': {'full_name': P.REPO}, 'ref': 'refs/heads/master', 'before': SHA, 'after': MASTER,
+                 'commits': [{'id': MASTER}]}  # Real Actions shape: no file arrays.
         A.context(env, event, {'administration_sha': 'event'})
         for key, value in [('GITHUB_EVENT_NAME', 'pull_request_target'), ('GITHUB_REF', 'refs/heads/feat/test'), ('GITHUB_REPOSITORY', 'fork/repo')]:
             with self.subTest(key=key), self.assertRaises(P.Rejected):
                 A.context(dict(env, **{key: value}), event, {'administration_sha': 'event'})
-        with self.assertRaises(P.Rejected):
-            A.context(env, dict(event, commits=[]), {'administration_sha': 'event'})
+        for change in ({'created': True}, {'forced': True}, {'deleted': True}, {'before': 'bad'}, {'before': '0' * 40}):
+            with self.subTest(change=change), self.assertRaises(P.Rejected):
+                A.context(env, dict(event, **change), {'administration_sha': 'event'})
+
+class PushComparisonTests(unittest.TestCase):
+    def comparison(self):
+        return {'base_commit': {'sha': SHA}, 'merge_base_commit': {'sha': SHA},
+                'status': 'ahead', 'ahead_by': 2, 'behind_by': 0, 'total_commits': 2,
+                'files': [{'filename': 'release/approved-plan.json', 'status': 'modified'}]}
+
+    def call(self, value, event=None):
+        from unittest.mock import Mock
+        api = Mock()
+        api.call.return_value = value
+        A.verify_plan_changed(api, event or {'before': SHA, 'after': MASTER, 'commits': [{'id': MASTER}]}, MASTER)
+        api.call.assert_called_once_with('/repos/' + P.REPO + '/compare/' + SHA + '...' + MASTER + '?per_page=100&page=1')
+
+    def test_real_actions_no_commit_file_arrays_uses_fixed_compare(self):
+        self.call(self.comparison())
+
+    def test_wrong_ancestor_or_non_fast_forward_rejected(self):
+        for change in ({'merge_base_commit': {'sha': TREE}}, {'base_commit': {'sha': TREE}},
+                       {'status': 'diverged'}, {'status': 'identical'}, {'behind_by': 1}, {'total_commits': 999}):
+            with self.subTest(change=change), self.assertRaises(P.Rejected):
+                self.call(dict(self.comparison(), **change))
+
+    def test_absent_renamed_removed_plan_rejected(self):
+        for files in ([{'filename': 'other', 'status': 'modified'}],
+                      [{'filename': 'release/approved-plan.json', 'status': 'removed'}],
+                      [{'filename': 'release/approved-plan.json', 'status': 'renamed', 'previous_filename': 'other'}]):
+            with self.subTest(files=files), self.assertRaises(P.Rejected):
+                self.call(dict(self.comparison(), files=files))
+
+    def test_truncated_or_duplicate_file_inventory_rejected(self):
+        for files in (None, [], self.comparison()['files'] * 2,
+                      self.comparison()['files'] + [{'filename': f'file-{i}', 'status': 'added'} for i in range(299)]):
+            with self.subTest(count=None if files is None else len(files)), self.assertRaises(P.Rejected):
+                self.call(dict(self.comparison(), files=files))
+
+    def test_event_supplied_compare_url_never_used(self):
+        self.call(self.comparison(), {'before': SHA, 'after': MASTER,
+                                      'compare': 'https://untrusted.invalid/collect'})
 
 class CleanupTests(unittest.TestCase):
     def item(self):

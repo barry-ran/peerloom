@@ -109,8 +109,12 @@ class ArchiveTest(unittest.TestCase):
             destination = Path(temp) / 'download'
             data = b'not executable fixture'
             good = {'url': Response.url, 'sha256': hashlib.sha256(data).hexdigest()}
-            with patch.object(service.urllib.request, 'urlopen', return_value=Response(data)):
+            with patch.object(service.urllib.request, 'urlopen', return_value=Response(data)) as fetch:
                 service.download(good, destination)
+                request = fetch.call_args.args[0]
+                self.assertEqual(request.full_url, good['url'])
+                self.assertEqual(request.get_header('User-agent'), 'Peerloom-CI/0.1 (+https://github.com/barry-ran/peerloom)')
+                self.assertEqual(fetch.call_args.kwargs['timeout'], 60)
             self.assertEqual(destination.read_bytes(), data)
             with self.assertRaises(ValueError):
                 service.download({**good, 'url': 'https://other.example/archive'}, destination)
@@ -120,6 +124,16 @@ class ArchiveTest(unittest.TestCase):
             redirected.url = 'https://other.example/archive'
             with patch.object(service.urllib.request, 'urlopen', return_value=redirected), self.assertRaises(ValueError):
                 service.download(good, Path(temp) / 'redirect')
+
+    def test_http_status_diagnostic_has_no_url_body_or_headers(self):
+        error = service.urllib.error.HTTPError('https://example.invalid/?secret=hidden', 403,
+                                               'private body', {'Authorization': 'secret'}, io.BytesIO(b'private'))
+        message = service.failure_summary('download-redis', error)
+        self.assertEqual(message, 'Windows service acceptance failed: stage=download-redis category=HTTPError http_status=403')
+        self.assertNotIn('hidden', message)
+        self.assertNotIn('private', message)
+        self.assertNotIn('Authorization', message)
+        self.assertNotIn('http_status', service.failure_summary('download-redis', ValueError('secret')))
 
     def test_zip_paths_and_links_rejected_before_extraction(self):
         for name, symlink in (('../escape', False), ('C:/escape', False), ('/escape', False), ('pgsql/link', True)):

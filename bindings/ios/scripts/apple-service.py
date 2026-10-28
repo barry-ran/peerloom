@@ -22,6 +22,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -29,6 +30,7 @@ import uuid
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 ALLOWED_HOSTS = {'ftp.postgresql.org', 'download.redis.io'}
+DOWNLOAD_USER_AGENT = 'Peerloom-CI/0.1 (+https://github.com/barry-ran/peerloom)'
 STAGE = 'preflight'
 
 
@@ -85,7 +87,12 @@ def download(spec, path):
     deadline = time.monotonic() + 180
     # No proxy credentials, redirects to other hosts, or unbounded archive reads.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(spec['url'], timeout=30) as response, path.open('xb') as out:
+    request = urllib.request.Request(spec['url'], headers={'User-Agent': DOWNLOAD_USER_AGENT})
+    try:
+        response = opener.open(request, timeout=30)
+    except urllib.error.HTTPError as error:
+        raise Failure('dependency HTTP status ' + str(int(error.code))) from None
+    with response, path.open('xb') as out:
         final = urllib.parse.urlsplit(response.url)
         if final.scheme != 'https' or final.hostname not in ALLOWED_HOSTS:
             raise Failure('unexpected dependency redirect')
@@ -249,6 +256,16 @@ def fixture(client, admin):
             'source_device_id': devices['source']['device_id'], 'target_device_id': devices[role]['device_id'],
             'expires_at': (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat(),
             'expiry_action': 'terminate', 'max_sessions': 1}, key + role + '-connect')
+    # No host-side registration for this fourth App: Swift must exercise its public
+    # first-install API from an empty real Keychain scope, then reopen the identity.
+    app = client.request('POST', '/v1/applications', 201, admin,
+                         {'name': 'swift-first-registration', 'registration_mode': 'grant',
+                          'require_target_approval': True}, key + '-first-app')
+    grant = client.request('POST', '/v1/registration-grants', 201, admin,
+                           {'application_id': app['id'], 'expires_in_seconds': 1200}, key + '-first-grant')
+    devices['first_registration'] = {
+        'application_id': app['id'], 'registration_grant': grant['grant'],
+        'installation_public_key': key + '-first-installation', 'idempotency_key': key + '-first-register'}
     return devices
 
 
@@ -430,7 +447,9 @@ def main():
                         stdout=runtime_log, stderr=subprocess.STDOUT, timeout=300)
             except Failure:
                 test_status = 1
-            allowed = ('fixture loaded', 'Keychain identities loaded and three SDKs online',
+            allowed = ('fixture loaded', 'Swift first registration persisted in Keychain',
+                       'Swift reopen restored the same registered device',
+                       'Keychain identities loaded and three SDKs online',
                        'two explicitly approved sessions ready', 'three typed channels ready',
                        'real Go/WSS + DP Keychain + 3 devices/2 connections + message/low/256KiB stream/duplex/FIN + parent-child gate passed')
             progress = (private_dir / 'runtime.log').read_text(errors='replace')
@@ -451,7 +470,8 @@ def main():
                 raise Failure('named real service XCTest passed evidence missing')
             private(output / 'service-evidence.json', json.dumps({'status': 'passed', 'test_count': 1,
                 'test': 'SwiftServiceTests.testRealGoKeychainThreeDevicesAndThreeChannelModes',
-                'native_sdk': True, 'go_postgresql_redis': True, 'actual_app_host_verified': True, 'storage': 'Simulator DP Keychain',
+                'native_sdk': True, 'swift_first_registration': True, 'swift_reopen_same_identity': True,
+                'go_postgresql_redis': True, 'actual_app_host_verified': True, 'storage': 'Simulator DP Keychain',
                 'transport': 'loopback-development HTTP/WSS and real WebRTC', 'physical_device': False,
                 'production_signing': False, 'original_native_tests_replaced': False}, indent=2))
         finally:

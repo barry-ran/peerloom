@@ -225,13 +225,36 @@ def context(env, event, plan):
     P.require(env.get('GITHUB_EVENT_NAME') == 'push' and env.get('GITHUB_REPOSITORY') == P.REPO and
               env.get('GITHUB_REF') == 'refs/heads/master' and event.get('repository', {}).get('full_name') == P.REPO and
               event.get('ref') == 'refs/heads/master' and event.get('after') == env.get('GITHUB_SHA') and
-              not event.get('deleted') and not event.get('forced'), 'UNTRUSTED_EVENT')
+              not event.get('created') and not event.get('deleted') and not event.get('forced'), 'UNTRUSTED_EVENT')
     commit = P.sha(env.get('GITHUB_SHA'))
-    changed = {p for c in event.get('commits', []) for key in ('added', 'modified') for p in c.get(key, [])}
-    P.require('release/approved-plan.json' in changed, 'PLAN_NOT_CHANGED')
+    before = P.sha(event.get('before'))
+    P.require(before != '0' * 40 and before != commit, 'PUSH_RANGE_REQUIRED')
     P.require(plan.get('administration_sha') == 'event', 'PLAN_EVENT_BINDING_REQUIRED')
     plan = dict(plan, administration_sha=commit)
     return plan, commit
+
+def verify_plan_changed(api, event, commit):
+    # Actions deliberately omits added/removed/modified from commit payloads.
+    # Compare only the already-validated immutable before/after SHAs, not a URL
+    # supplied by the event. GitHub caps comparison files at 300: fail closed at
+    # that boundary rather than pretend the returned inventory is complete.
+    before = P.sha(event.get('before'))
+    commit = P.sha(commit)
+    P.require(before != '0' * 40 and before != commit, 'PUSH_RANGE_REQUIRED')
+    value = api.call('/repos/' + P.REPO + '/compare/' + before + '...' + commit + '?per_page=100&page=1')
+    P.require(value.get('base_commit', {}).get('sha') == before and
+              value.get('merge_base_commit', {}).get('sha') == before and
+              value.get('status') == 'ahead' and value.get('behind_by') == 0 and
+              type(value.get('ahead_by')) is int and value['ahead_by'] > 0 and
+              value.get('total_commits') == value['ahead_by'], 'PUSH_NOT_FAST_FORWARD')
+    files = value.get('files')
+    P.require(isinstance(files, list) and 0 < len(files) < 300, 'COMPARE_FILE_LIST_UNPROVEN')
+    names = [item.get('filename') for item in files]
+    P.require(all(isinstance(name, str) for name in names) and len(names) == len(set(names)), 'COMPARE_FILE_LIST_INVALID')
+    changes = [item for item in files if item['filename'] == 'release/approved-plan.json']
+    P.require(len(changes) == 1 and changes[0].get('status') in ('added', 'modified') and
+              'previous_filename' not in changes[0], 'PLAN_NOT_CHANGED')
+
 
 def execute_delete(command):
     with tempfile.TemporaryDirectory(prefix='peerloom-release-auth-') as directory:
@@ -259,7 +282,9 @@ def main():
     P.require(head == commit, 'CHECKOUT_NOT_TRUSTED_MASTER')
     clean = subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', 'scripts/release-admin.py', 'scripts/release-policy.py', 'release/approved-plan.json', '.github/workflows/release-admin.yml'], cwd=root, capture_output=True)
     P.require(clean.returncode == 0, 'TRUSTED_FILES_MODIFIED')
-    admin = Admin(GitHub(), plan, commit)
+    api = GitHub()
+    verify_plan_changed(api, event, commit)
+    admin = Admin(api, plan, commit)
     deadline = time.monotonic() + 90 * 60
     while True:
         try:

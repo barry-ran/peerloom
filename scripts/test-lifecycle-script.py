@@ -45,6 +45,11 @@ if name == 'python3' and 'prepare-lifecycle-fixture.py' in sys.argv[1]:
     output = pathlib.Path(sys.argv[sys.argv.index('--pair-output') + 1])
     assert not output.exists()
     assert stat.S_IMODE(output.parent.stat().st_mode) == 0o700
+    if output.name == 'diagnostic.json':
+        assert not list(output.parent.glob('reset-*.json'))
+        (root / 'diagnostic-prepared').touch()
+        if os.environ['FAIL'] == 'c-diagnostic-prepare':
+            sys.exit(17)
     direct = '--direct-reset' in sys.argv
     if not direct:
         assert not list(output.parent.glob('reset-*.json'))
@@ -63,12 +68,21 @@ if name == 'python3':
     p = pathlib.Path(os.environ['TEST_SIGNAL_FIXTURE_FILE'])
     assert json.loads(p.read_text())['direct_reset_enabled'] is True
     assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    if p.name == 'diagnostic.json':
+        assert os.environ['TEST_C_DIAGNOSTICS'] == '1'
+        assert os.environ['TEST_C_SCHEDULER_PROBE'] == '0'
+        assert not list(p.parent.glob('reset-*.json'))
+        assert not (root / 'diagnostic-ran').exists()
+        (root / 'diagnostic-ran').touch()
+        sys.exit(13 if os.environ['FAIL'] == 'c-diagnostic' else 0)
+    assert os.environ['TEST_C_DIAGNOSTICS'] == '0'
+    assert os.environ['TEST_C_SCHEDULER_PROBE'] == '0'
     (root / 'c-ran').touch()
     counter = root / 'c-count'
     count = int(counter.read_text()) + 1 if counter.exists() else 1
     counter.write_text(str(count))
     assert p.name == 'reset-' + str(count) + '.json'
-    fail = os.environ['FAIL'] == 'c' or (os.environ['FAIL'] == 'c-round2' and count == 2)
+    fail = os.environ['FAIL'] in ('c', 'c-diagnostic', 'c-diagnostic-prepare') or (os.environ['FAIL'] == 'c-round2' and count == 2)
     sys.exit(7 if fail else 0)
 assert '--recovery' in sys.argv
 p = pathlib.Path(sys.argv[sys.argv.index('--pair-fixture') + 1])
@@ -94,13 +108,20 @@ class LifecycleScriptTests(unittest.TestCase):
                 p = root / relative
                 p.write_text('#!' + sys.executable + '\n' + MOCK)
                 p.chmod(0o700)
-            env = dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'], FAIL=failure)
+            env = dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
+                       FAIL=failure, TEST_C_DIAGNOSTICS='1', TEST_C_SCHEDULER_PROBE='1')
             result = subprocess.run(['bash', '-x', str(root / 'scripts/test-lifecycle.sh'),
                                      '--base-url', 'http://127.0.0.1:18080', '--admin-fixture', 'admin',
                                      '--shared-secret-file', 'secret'], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 7 if failure else 0, result.stderr)
             self.assertFalse(Path((root / 'owned-directory').read_text()).exists())
             self.assertNotIn('never-log-this-secret', result.stdout + result.stderr)
+            if failure in ('c', 'c-round2', 'c-diagnostic', 'c-diagnostic-prepare'):
+                self.assertTrue((root / 'diagnostic-prepared').exists())
+                self.assertEqual((root / 'diagnostic-ran').exists(), failure != 'c-diagnostic-prepare')
+                self.assertFalse((root / 'recovery-ran').exists())
+            else:
+                self.assertFalse((root / 'diagnostic-prepared').exists())
             if failure == 'c-round2':
                 self.assertEqual((root / 'c-count').read_text(), '2')
                 self.assertFalse((root / 'recovery-ran').exists())
@@ -121,6 +142,12 @@ class LifecycleScriptTests(unittest.TestCase):
 
     def test_c_failure_cleanup_and_no_recovery(self):
         self.run_shell('c')
+    def test_diagnostic_failure_cannot_replace_original_status(self):
+        self.run_shell('c-diagnostic')
+
+    def test_diagnostic_prepare_failure_cannot_replace_original_status(self):
+        self.run_shell('c-diagnostic-prepare')
+
     def test_recovery_failure_cleanup(self):
         self.run_shell('recovery')
 

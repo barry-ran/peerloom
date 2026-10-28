@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -42,7 +43,9 @@ def download(spec, destination):
     digest = hashlib.sha256()
     size = 0
     deadline = time.monotonic() + 300
-    with urllib.request.urlopen(spec['url'], timeout=60) as response, destination.open('xb') as out:
+    request = urllib.request.Request(spec['url'], headers={
+        'User-Agent': 'Peerloom-CI/0.1 (+https://github.com/barry-ran/peerloom)'})
+    with urllib.request.urlopen(request, timeout=60) as response, destination.open('xb') as out:
         final = urllib.parse.urlparse(response.url)
         if final.scheme != 'https' or final.hostname not in HOSTS:
             raise ValueError('unexpected download redirect')
@@ -331,9 +334,16 @@ def main():
     evidence.write_text(evidence_payload + 'Owned PostgreSQL/Redis/WSL cleanup: PASS\n')
 
 
+def failure_summary(stage, error):
+    status = ''
+    if isinstance(error, urllib.error.HTTPError) and type(error.code) is int and 100 <= error.code <= 599:
+        status = f' http_status={error.code}'
+    return f'Windows service acceptance failed: stage={stage} category={type(error).__name__}{status}'
+
+
 if __name__ == '__main__':
     try:
         main()
     except Exception as error:
-        print(f'Windows service acceptance failed: stage={STAGE} category={type(error).__name__}', file=sys.stderr)
+        print(failure_summary(STAGE, error), file=sys.stderr)
         sys.exit(1)

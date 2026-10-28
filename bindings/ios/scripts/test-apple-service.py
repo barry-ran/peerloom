@@ -2,6 +2,7 @@
 # MIT — Copyright (c) 2026 Peerloom contributors.
 """Apple real-service fixture safety contracts; not Swift/native execution evidence."""
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -43,6 +44,39 @@ class ServiceSafety(unittest.TestCase):
             with self.assertRaises(FileExistsError): SERVICE.private(root / 'link', 'other')
             self.assertEqual(path.read_text(), 'synthetic')
 
+    def test_download_uses_truthful_identity_and_still_verifies_pinned_bytes(self):
+        payload = b'synthetic pinned official archive'
+        url = 'https://download.redis.io/releases/redis-8.10.3.tar.gz'
+        spec = {'url': url, 'sha256': hashlib.sha256(payload).hexdigest()}
+        def response(request, timeout):
+            self.assertEqual(request.full_url, url)
+            self.assertEqual(request.get_header('User-agent'), SERVICE.DOWNLOAD_USER_AGENT)
+            self.assertIsNone(request.get_header('Authorization'))
+            self.assertEqual(timeout, 30)
+            result = io.BytesIO(payload)
+            result.url = url
+            return result
+        with tempfile.TemporaryDirectory() as temporary, patch.object(SERVICE.urllib.request, 'build_opener') as factory:
+            factory.return_value.open.side_effect = response
+            path = Path(temporary) / 'archive'
+            SERVICE.download(spec, path)
+            self.assertEqual(path.read_bytes(), payload)
+            with self.assertRaisesRegex(SERVICE.Failure, 'checksum mismatch'):
+                SERVICE.download({**spec, 'sha256': '0' * 64}, Path(temporary) / 'mismatch')
+
+    def test_download_http_error_discloses_status_only(self):
+        secret = 'synthetic-private-query-header-body'
+        error = SERVICE.urllib.error.HTTPError('https://download.redis.io/?' + secret, 403,
+                                               secret, {'X-Private': secret}, io.BytesIO(secret.encode()))
+        with tempfile.TemporaryDirectory() as temporary, patch.object(SERVICE.urllib.request, 'build_opener') as factory:
+            factory.return_value.open.side_effect = error
+            with self.assertRaises(SERVICE.Failure) as raised:
+                SERVICE.download({'url': 'https://download.redis.io/releases/redis-8.10.3.tar.gz',
+                                  'sha256': '0' * 64}, Path(temporary) / 'archive')
+            self.assertEqual(str(raised.exception), 'dependency HTTP status 403')
+            self.assertNotIn(secret, str(raised.exception))
+            self.assertFalse((Path(temporary) / 'archive').exists())
+
     def test_tar_rejects_traversal_and_links_preserves_release_timestamps(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -78,7 +112,7 @@ class ServiceSafety(unittest.TestCase):
             with patch.object(SERVICE, 'run', return_value=b'postgres (PostgreSQL) 18.5\n'):
                 self.assertFalse(SERVICE.version_matches(executable, 'postgresql', '18.6'))
 
-    def test_three_unique_apps_and_directional_real_http_requests(self):
+    def test_three_registered_devices_and_unregistered_fourth_app_fixture(self):
         calls = []
         class Client:
             def request(self, method, path, expected, credential=None, body=None, key=None):
@@ -88,9 +122,21 @@ class ServiceSafety(unittest.TestCase):
                 if path == '/v1/device-registrations': return {'device_id': 'device-' + str(len(calls)), 'device_credential': 'synthetic', 'expires_at': 'synthetic'}
                 return {'id': 'grant'}
         devices = SERVICE.fixture(Client(), 'synthetic-admin')
-        self.assertEqual(len({value['application_id'] for value in devices.values()}), 3)
+        self.assertEqual(len({value['application_id'] for value in devices.values()}), 4)
+        first = devices['first_registration']
+        self.assertEqual(set(first), {'application_id', 'registration_grant', 'installation_public_key', 'idempotency_key'})
+        self.assertTrue(first['registration_grant'])
+        self.assertTrue(first['installation_public_key'])
+        self.assertTrue(first['idempotency_key'])
+        self.assertNotIn('synthetic-admin', json.dumps(devices))
+        first_app = [body for _, path, _, _, body in calls if path == '/v1/applications'][-1]
+        self.assertEqual(first_app['registration_mode'], 'grant')
+        first_grant = [body for _, path, _, _, body in calls if path == '/v1/registration-grants'][-1]
+        self.assertEqual(first_grant, {'application_id': first['application_id'], 'expires_in_seconds': 1200})
         registration = [body for _, path, _, _, body in calls if path == '/v1/device-registrations']
+        self.assertEqual(len(registration), 3)
         self.assertTrue(all(body['platform'] == 'ios' for body in registration))
+        self.assertNotIn(first['application_id'], {body['application_id'] for body in registration})
         grants = [body for _, path, _, _, body in calls if path == '/v1/connection-grants']
         self.assertEqual(len(grants), 2)
         self.assertTrue(all(body['source_device_id'] == devices['source']['device_id'] for body in grants))
@@ -107,6 +153,13 @@ class ServiceSafety(unittest.TestCase):
         self.assertNotIn('MockNative', source.replace('// Neither an injected memory store nor MockNative is used in this suite.', ''))
         self.assertIn('PeerloomSDK.open(configuration: config)', source)
         self.assertIn('KeychainIdentityStore()', source)
+        self.assertIn('empty.revision == 0, empty.identity == nil', source)
+        self.assertIn('firstSDK.start(registration: PeerloomRegistration(', source)
+        self.assertIn('idempotencyKey: first.idempotency_key', source)
+        self.assertIn('saved.identity?.deviceID == registeredID', source)
+        self.assertIn('reopenedSDK.start() == registeredID', source)
+        self.assertLess(source.index('try await firstSDK.close()'), source.index('let reopenedSDK'))
+        self.assertNotIn('operation: .save', source[source.index('let first ='):source.index('for (index, device)')])
         self.assertIn('256 * 1024', source)
         self.assertIn('finishWrite()', source)
         self.assertIn('mode: .lowLatencyMessage', source)

@@ -26,14 +26,34 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 # Three independent all-pass pressure rounds, never retry an admitted operation.
-# A failed round exits immediately under set -e; original C 45s bound is unchanged.
+# A failed round stops mandatory rounds; one independent diagnostic cannot override it.
+# Original C 45s bound is unchanged.
 for round in 1 2 3; do
   echo "C ABI pressure/reset round=$round/3"
   python3 scripts/prepare-lifecycle-fixture.py --base-url "$base_url" \
     --admin-fixture "$admin" --pair-output "$fixture/reset-$round.json" --direct-reset
-  TEST_IDENTITY_BASE_URL="$base_url" TEST_SIGNAL_FIXTURE_FILE="$fixture/reset-$round.json" \
-    python3 src/device-sdk/device-ffi/tests/run-service.py
-  rm -f -- "$fixture/reset-$round.json"
+  # Mandatory rounds always use the production/default feature set.
+  if TEST_C_DIAGNOSTICS=0 TEST_C_SCHEDULER_PROBE=0 \
+    TEST_IDENTITY_BASE_URL="$base_url" TEST_SIGNAL_FIXTURE_FILE="$fixture/reset-$round.json" \
+    python3 src/device-sdk/device-ffi/tests/run-service.py; then
+    rm -f -- "$fixture/reset-$round.json"
+  else
+    original_status=$?
+    rm -f -- "$fixture/reset-$round.json"
+    echo "C ABI mandatory round failed; collecting one independent phase-only diagnostic" >&2
+    # New identities and new operations, never replay the failed instance. The
+    # observer cannot make the mandatory gate green, even when diagnostics pass.
+    if python3 scripts/prepare-lifecycle-fixture.py --base-url "$base_url" \
+      --admin-fixture "$admin" --pair-output "$fixture/diagnostic.json" --direct-reset && \
+      TEST_C_DIAGNOSTICS=1 TEST_C_SCHEDULER_PROBE=0 \
+      TEST_IDENTITY_BASE_URL="$base_url" TEST_SIGNAL_FIXTURE_FILE="$fixture/diagnostic.json" \
+      python3 src/device-sdk/device-ffi/tests/run-service.py; then
+      echo 'C ABI independent diagnostic completed; mandatory failure remains' >&2
+    else
+      echo 'C ABI independent diagnostic failed; mandatory failure remains' >&2
+    fi
+    exit "$original_status"
+  fi
 done
 python3 scripts/prepare-lifecycle-fixture.py --base-url "$base_url" \
   --admin-fixture "$admin" --pair-output "$fixture/recovery.json"

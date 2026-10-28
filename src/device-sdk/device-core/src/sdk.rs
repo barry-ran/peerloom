@@ -1481,6 +1481,49 @@ struct ManagedRelayRequest {
     credential: SecretString,
 }
 
+#[cfg(feature = "test-diagnostics")]
+struct NegotiationDiagnostic {
+    answerer: bool,
+    generation: u64,
+    phase: &'static str,
+    started: std::time::Instant,
+}
+#[cfg(feature = "test-diagnostics")]
+impl NegotiationDiagnostic {
+    fn new(answerer: bool, generation: u64) -> Self {
+        Self {
+            answerer,
+            generation,
+            phase: "initial",
+            started: std::time::Instant::now(),
+        }
+    }
+    fn enter(&mut self, phase: &'static str) {
+        eprintln!(
+            "PeerloomTestDiag negotiation answerer={} generation={} phase={} elapsed_ms={} next={}",
+            self.answerer,
+            self.generation,
+            self.phase,
+            self.started.elapsed().as_millis(),
+            phase
+        );
+        self.phase = phase;
+        self.started = std::time::Instant::now();
+    }
+}
+#[cfg(feature = "test-diagnostics")]
+impl Drop for NegotiationDiagnostic {
+    fn drop(&mut self) {
+        eprintln!(
+            "PeerloomTestDiag negotiation answerer={} generation={} phase={} elapsed_ms={} next=worker-exit",
+            self.answerer,
+            self.generation,
+            self.phase,
+            self.started.elapsed().as_millis()
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn transport_worker(
     id: String,
@@ -1531,7 +1574,11 @@ async fn transport_worker(
             }
         }
     }
+    #[cfg(feature = "test-diagnostics")]
+    let mut diagnostic = NegotiationDiagnostic::new(offer.is_some(), generation);
     let requires_relay = config.policy == ConnectionPolicy::RelayOnly;
+    #[cfg(feature = "test-diagnostics")]
+    diagnostic.enter("peer-new");
     let peer = match PeerTransport::new(config).await {
         Ok(peer) => Arc::new(peer),
         Err(error) => {
@@ -1550,6 +1597,8 @@ async fn transport_worker(
     let operation = async {
         gate.check()?;
         let mut channel: MessageChannel = if let Some(offer) = offer {
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter("answer-offer");
             let answer = peer
                 .answer_offer(offer)
                 .await
@@ -1563,15 +1612,21 @@ async fn transport_worker(
                 ))
                 .await
                 .map_err(|_| SdkError::Closed)?;
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter("accept-incoming");
             match peer.accept_incoming().await.map_err(SdkError::Transport)? {
                 device_transport_webrtc::IncomingChannel::ReliableMessage(channel) => channel,
                 _ => return Err(SdkError::Transport(TransportError::UnsupportedChannel)),
             }
         } else {
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter("create-channel");
             let channel = peer
                 .create_channel("peerloom.reliable", ChannelMode::ReliableMessage)
                 .await
                 .map_err(SdkError::Transport)?;
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter("create-offer");
             let offer = peer.create_offer().await.map_err(SdkError::Transport)?;
             events
                 .send(Internal::Description(
@@ -1582,19 +1637,27 @@ async fn transport_worker(
                 ))
                 .await
                 .map_err(|_| SdkError::Closed)?;
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter("await-answer");
             let answer = tokio::time::timeout(Duration::from_secs(30), answers.recv())
                 .await
                 .map_err(|_| SdkError::Transport(TransportError::Timeout))?
                 .ok_or(SdkError::Closed)?;
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter("apply-answer");
             peer.apply_answer(answer)
                 .await
                 .map_err(SdkError::Transport)?;
             channel
         };
+        #[cfg(feature = "test-diagnostics")]
+        diagnostic.enter("metadata");
         let metadata = channel.metadata().await.map_err(SdkError::Transport)?;
         if !valid_message_metadata(&metadata) {
             return Err(SdkError::Transport(TransportError::UnsupportedChannel));
         }
+        #[cfg(feature = "test-diagnostics")]
+        diagnostic.enter("wait-open");
         channel.wait_open().await.map_err(SdkError::Transport)?;
         if requires_relay
             && !matches!(
@@ -1607,6 +1670,8 @@ async fn transport_worker(
             return Err(SdkError::Transport(TransportError::RelayRequired));
         }
         gate.check()?;
+        #[cfg(feature = "test-diagnostics")]
+        diagnostic.enter("channels-ready");
         channels::run(
             peer.clone(),
             channel,
@@ -1627,6 +1692,8 @@ async fn transport_worker(
         _ = &mut stop => None,
         result = operation => Some(result),
     };
+    #[cfg(feature = "test-diagnostics")]
+    diagnostic.enter("closing");
     gate.close();
     let _ = peer.close().await;
     if let Some(result) = result {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/barry-ran/peerloom/src/device-server/internal/adminweb"
+	"github.com/barry-ran/peerloom/src/device-server/internal/httpserver"
 	"github.com/barry-ran/peerloom/src/device-server/internal/management"
 	"github.com/barry-ran/peerloom/src/device-server/internal/webhook"
 )
@@ -76,7 +77,8 @@ func TestBrowserConsoleChromium(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/admin/api/", api)
 	mux.Handle("/admin/", adminweb.Handler())
-	server.Config.Handler = mux
+	// Use the production outer router so browser tests catch missing route delegation.
+	server.Config.Handler = httpserver.New(nil, mux)
 	server.Config.ReadHeaderTimeout = 5 * time.Second
 	server.Start()
 	defer server.Close()
