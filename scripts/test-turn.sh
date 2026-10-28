@@ -12,20 +12,20 @@ cleanup() {
   result=$?
   if [ "$result" -ne 0 ]; then
     # 仅状态字段与脱敏错误类别；禁止docker inspect完整配置/环境或原始日志。
-    docker inspect --format 'TURN state={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' "$container" 2>/dev/null || true
+    docker inspect --format 'TURN state={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} runtime_error={{.State.Error}}' "$container" > "$fixture/state.log" 2>/dev/null || true
     docker logs "$container" > "$fixture/diagnostic.log" 2>&1 || true
     python3 - "$fixture" <<'DIAGNOSTIC' || true
 from pathlib import Path
-import re
 import sys
 p = Path(sys.argv[1])
-text = (p / 'diagnostic.log').read_text(errors='replace')
+text = (p / 'state.log').read_text(errors='replace') + '\n' + (p / 'diagnostic.log').read_text(errors='replace')
 for name in ('username', 'password'):
     if (p / name).exists():
         secret = (p / name).read_text()
         if secret:
             text = text.replace(secret, '[redacted]')
-lines = [line for line in text.splitlines() if re.search(r'error|warn|fail|denied|unknown|cannot|invalid', line, re.I)]
+# 早退可能没有ERROR级别；保留末尾启动文本，仍完整替换两项随机秘密。
+lines = text.splitlines()
 for line in lines[-20:]:
     print('TURN diagnostic: ' + line[:500], file=sys.stderr)
 DIAGNOSTIC
