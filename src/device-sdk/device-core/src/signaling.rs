@@ -23,6 +23,8 @@ pub enum SignalError {
     Timeout,
     Closed,
     QueueFull,
+    AuthorizationRejected,
+    PolicyRejected,
 }
 impl std::fmt::Display for SignalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -193,7 +195,14 @@ impl SignalClient {
         )
         .await
         .map_err(|_| SignalError::Timeout)?
-        .map_err(|_| SignalError::Transport)?;
+        .map_err(|error| match error {
+            tokio_tungstenite::tungstenite::Error::Http(response)
+                if matches!(response.status().as_u16(), 401 | 403) =>
+            {
+                SignalError::AuthorizationRejected
+            }
+            _ => SignalError::Transport,
+        })?;
         let hello_started = std::time::Instant::now();
         let hello = Envelope::new("hello", json!({}))?;
         write(&mut socket, &hello).await?;
@@ -367,7 +376,7 @@ async fn read(socket: &mut Socket) -> Result<Envelope, SignalError> {
                 return Ok(envelope);
             }
             Message::Ping(_) | Message::Pong(_) => {}
-            Message::Close(_) => return Err(SignalError::Closed),
+            Message::Close(frame) => return Err(if frame.is_some_and(|frame| frame.code == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy) { SignalError::PolicyRejected } else { SignalError::Closed }),
             _ => return Err(SignalError::InvalidMessage),
         }
     }

@@ -3,6 +3,7 @@
 
 pub mod identity;
 pub mod lease;
+pub mod sdk;
 pub mod signaling;
 
 use device_protocol::{ChannelMode, OverflowPolicy};

@@ -2,6 +2,9 @@
 //! 使用前必须由控制面验证 SDP 对端身份和会话权限；此处不实现业务授权。
 //! 目前采用完整 ICE 收集的 SDP 交换；trickle ICE、重协商和自动重连尚未集成。
 
+pub mod stream;
+pub use stream::{ByteStream, StreamError};
+
 use async_trait::async_trait;
 use bytes::BytesMut;
 use device_protocol::{ChannelMode, ConnectionPolicy};
@@ -497,7 +500,36 @@ pub struct MessageChannel {
     pending: Option<Vec<u8>>,
 }
 
+/// 不含凭证的 DataChannel 协商元数据；用于拒绝错误通道语义。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelMetadata {
+    pub label: String,
+    pub protocol: String,
+    pub ordered: bool,
+    pub max_retransmits: Option<u16>,
+    pub max_packet_life_time: Option<u16>,
+}
+impl ChannelMetadata {
+    pub fn is_reliable_ordered(&self) -> bool {
+        self.ordered && self.max_retransmits.is_none() && self.max_packet_life_time.is_none()
+    }
+}
+
 impl MessageChannel {
+    pub async fn metadata(&self) -> Result<ChannelMetadata, TransportError> {
+        tokio::time::timeout(self.timeout, async {
+            Ok::<_, webrtc::error::Error>(ChannelMetadata {
+                label: self.channel.label().await?,
+                protocol: self.channel.protocol().await?,
+                ordered: self.channel.ordered().await?,
+                max_retransmits: self.channel.max_retransmits().await?,
+                max_packet_life_time: self.channel.max_packet_life_time().await?,
+            })
+        })
+        .await
+        .map_err(|_| TransportError::Timeout)?
+        .map_err(classify_backend)
+    }
     pub async fn wait_open(&mut self) -> Result<(), TransportError> {
         if self.opened {
             return Ok(());

@@ -348,7 +348,7 @@ enum Pending {
 /// Dropping an in-flight future preserves pending retry data; dropping this entire object
 /// loses that in-memory recovery data. Durable crash recovery is not implemented.
 pub struct IdentitySession {
-    client: IdentityClient,
+    pub(crate) client: IdentityClient,
     store: Arc<dyn IdentityStore>,
     scope: IdentityScope,
     revision: u64,

@@ -1,0 +1,259 @@
+use device_protocol::ConnectionPolicy;
+use device_transport_webrtc::{PeerTransport, StreamError, TransportConfig};
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn actual_byte_stream_preserves_bytes_and_half_close() {
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        ..TransportConfig::default()
+    };
+    let source = PeerTransport::new(config.clone()).await.unwrap();
+    let target = PeerTransport::new(config).await.unwrap();
+    let mut outgoing = source.create_stream("bytes").await.unwrap();
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    let mut incoming = target.accept_stream().await.unwrap();
+    let (a, b) = tokio::join!(outgoing.wait_open(), incoming.wait_open());
+    a.unwrap();
+    b.unwrap();
+    let input: Vec<u8> = (0..(256 << 10)).map(|i| (i % 251) as u8).collect();
+    let mut sent = 0;
+    while sent < input.len() {
+        let n = outgoing.write(&input[sent..]).await.unwrap();
+        assert!(n > 0 && n <= 16 << 10);
+        sent += n;
+    }
+    outgoing.shutdown_write().await.unwrap();
+    outgoing.shutdown_write().await.unwrap();
+    assert_eq!(
+        outgoing.write(b"after FIN").await,
+        Err(StreamError::WriteClosed)
+    );
+    let mut received = Vec::new();
+    let mut buffer = [0; 137];
+    loop {
+        let n = incoming.read(&mut buffer).await.unwrap();
+        if n == 0 {
+            break;
+        }
+        received.extend_from_slice(&buffer[..n]);
+    }
+    assert_eq!(received, input);
+    // A FIN only closes one direction; the receiver can still send its response.
+    assert_eq!(incoming.write("已接收".as_bytes()).await.unwrap(), 9);
+    incoming.shutdown_write().await.unwrap();
+    let n = outgoing.read(&mut buffer).await.unwrap();
+    assert_eq!(&buffer[..n], "已接收".as_bytes());
+    assert_eq!(outgoing.read(&mut buffer).await.unwrap(), 0);
+    outgoing.close().await.unwrap();
+    incoming.close().await.unwrap();
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn stream_backpressure_does_not_skip_bytes_or_sequence() {
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        send_buffer_bytes: 128,
+        max_message_bytes: 128,
+        ..TransportConfig::default()
+    };
+    let source = PeerTransport::new(config.clone()).await.unwrap();
+    let target = PeerTransport::new(config).await.unwrap();
+    let mut outgoing = source.create_stream("bounded").await.unwrap();
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    let mut incoming = target.accept_stream().await.unwrap();
+    let (a, b) = tokio::join!(outgoing.wait_open(), incoming.wait_open());
+    a.unwrap();
+    b.unwrap();
+    let mut accepted = 0;
+    let initial_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while accepted == 0 {
+        match outgoing.write(&[7; 512]).await {
+            Ok(n) => accepted += n,
+            Err(StreamError::Transport(device_transport_webrtc::TransportError::BufferFull))
+                if tokio::time::Instant::now() < initial_deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await
+            }
+            other => panic!("initial bounded send failed: {other:?}"),
+        }
+    }
+    let mut full = false;
+    for _ in 0..32 {
+        match outgoing.write(&[7; 512]).await {
+            Ok(n) => accepted += n,
+            Err(StreamError::Transport(device_transport_webrtc::TransportError::BufferFull)) => {
+                full = true;
+                break;
+            }
+            other => panic!("unexpected send: {other:?}"),
+        }
+    }
+    assert!(
+        accepted > 0 && full,
+        "bounded sender must apply backpressure"
+    );
+    let mut buffer = [0; 64];
+    let mut received = 0;
+    while received < accepted {
+        let n = incoming.read(&mut buffer).await.unwrap();
+        assert!(n > 0);
+        assert!(buffer[..n].iter().all(|byte| *byte == 7));
+        received += n;
+    }
+    assert_eq!(received, accepted);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match outgoing.write(b"one").await {
+            Ok(3) => break,
+            Err(StreamError::Transport(device_transport_webrtc::TransportError::BufferFull))
+                if tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await
+            }
+            other => panic!("backpressure did not recover: {other:?}"),
+        }
+    }
+    assert_eq!(incoming.read(&mut buffer).await.unwrap(), 3);
+    assert_eq!(&buffer[..3], b"one");
+    outgoing.close().await.unwrap();
+    // Abrupt close must be an error, never a false orderly EOF.
+    assert!(incoming.read(&mut buffer).await.is_err());
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn stream_rejects_plain_message_channel_protocol() {
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        ..TransportConfig::default()
+    };
+    let source = PeerTransport::new(config.clone()).await.unwrap();
+    let target = PeerTransport::new(config).await.unwrap();
+    let _message = source
+        .create_channel(
+            "not-a-stream",
+            device_protocol::ChannelMode::ReliableMessage,
+        )
+        .await
+        .unwrap();
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    assert!(matches!(
+        target.accept_stream().await,
+        Err(StreamError::Protocol)
+    ));
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn stream_negotiates_different_receive_limits() {
+    let large = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        ..TransportConfig::default()
+    };
+    let small = TransportConfig {
+        max_message_bytes: 128,
+        ..large.clone()
+    };
+    let source = PeerTransport::new(large).await.unwrap();
+    let target = PeerTransport::new(small).await.unwrap();
+    let mut a = source.create_stream("different").await.unwrap();
+    assert!(matches!(
+        a.write(b"early").await,
+        Err(StreamError::Transport(
+            device_transport_webrtc::TransportError::NotReady
+        ))
+    ));
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    let mut b = target.accept_stream().await.unwrap();
+    let (left, right) = tokio::join!(a.wait_open(), b.wait_open());
+    left.unwrap();
+    right.unwrap();
+    let payload = [42; 512];
+    let mut offset = 0;
+    while offset < payload.len() {
+        let n = a.write(&payload[offset..]).await.unwrap();
+        assert!(n <= 111);
+        offset += n;
+    }
+    a.shutdown_write().await.unwrap();
+    let mut received = Vec::new();
+    let mut buffer = [0; 37];
+    loop {
+        let n = b.read(&mut buffer).await.unwrap();
+        if n == 0 {
+            break;
+        }
+        received.extend_from_slice(&buffer[..n]);
+    }
+    assert_eq!(received, payload);
+    a.close().await.unwrap();
+    b.close().await.unwrap();
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn cancelling_peer_settings_wait_does_not_resend_local_settings() {
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        ..TransportConfig::default()
+    };
+    let source = PeerTransport::new(config.clone()).await.unwrap();
+    let target = PeerTransport::new(config).await.unwrap();
+    let mut stream = source.create_stream("cancel-settings").await.unwrap();
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    let mut raw = target.accept_channel().await.unwrap();
+    raw.wait_open().await.unwrap();
+    {
+        let waiting = stream.wait_open();
+        tokio::pin!(waiting);
+        tokio::select! {
+            received=raw.receive()=> {
+                let frame=received.unwrap();
+                assert_eq!(&frame[..5],b"PLS1\x03");
+                assert_eq!(u64::from_be_bytes(frame[5..13].try_into().unwrap()),0);
+            }
+            _=&mut waiting => panic!("must await peer SETTINGS"),
+            _=tokio::time::sleep(std::time::Duration::from_secs(3))=>panic!("settings send deadline"),
+        }
+        // Drop the pending receive future after the peer observed the local SETTINGS.
+    }
+    let mut settings = b"PLS1\x03".to_vec();
+    settings.extend_from_slice(&0u64.to_be_bytes());
+    settings.extend_from_slice(&4u32.to_be_bytes());
+    settings.extend_from_slice(&16384u32.to_be_bytes());
+    raw.send(&settings).await.unwrap();
+    stream.wait_open().await.unwrap();
+    assert_eq!(stream.write(b"one").await.unwrap(), 3);
+    let data = raw.receive().await.unwrap();
+    assert_eq!(&data[..5], b"PLS1\x01");
+    assert_eq!(u64::from_be_bytes(data[5..13].try_into().unwrap()), 1);
+    assert_eq!(&data[17..], b"one");
+    stream.close().await.unwrap();
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}
