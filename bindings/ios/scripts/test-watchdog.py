@@ -2,6 +2,7 @@
 # MIT — Copyright (c) 2026 Peerloom contributors.
 """Linux/macOS 真实子进程测试；不是 Swift/XCTest 或 Apple Keychain 验收。"""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import signal
@@ -10,8 +11,15 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("watchdog.py")
+SPEC = importlib.util.spec_from_file_location("watchdog", SCRIPT)
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+VERIFY_SPEC = importlib.util.spec_from_file_location("verify_swift", SCRIPT.with_name("verify-swift-tests.py"))
+VERIFY = importlib.util.module_from_spec(VERIFY_SPEC)
+VERIFY_SPEC.loader.exec_module(VERIFY)
 
 
 class WatchdogTests(unittest.TestCase):
@@ -64,6 +72,34 @@ class WatchdogTests(unittest.TestCase):
             result = self.execute(root, code, seconds=0.3)
             self.assertEqual(result.returncode, 124)
             self.assertEqual(json.loads((root / "status.json").read_text())["classification"], "timeout")
+
+    def test_timeout_cleans_recorded_descendant_in_another_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            heartbeat = root / "heartbeat"
+            child = "import pathlib,signal,time,sys; signal.signal(signal.SIGTERM,signal.SIG_IGN); p=pathlib.Path(sys.argv[1]);\nwhile True: p.write_text(str(time.monotonic())); time.sleep(.02)"
+            parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]],start_new_session=True); time.sleep(100)"
+            result = self.execute(root, parent, seconds=0.5, extra=[child, heartbeat])
+            self.assertEqual(result.returncode, 124, result.stderr)
+            self.assertGreaterEqual(json.loads((root / "status.json").read_text())["tracked_descendants"], 2)
+            value = heartbeat.read_bytes()
+            time.sleep(0.15)
+            self.assertEqual(heartbeat.read_bytes(), value)
+
+    def test_changed_pid_identity_and_unrelated_name_are_never_signaled_or_sampled(self):
+        owned = {100: ("original",), 101: ("child",)}
+        table = {100: (1, ("reused",), "xctest"), 101: (1, ("also-reused",), "xctest"),
+                 102: (1, ("unrelated",), "xctest")}
+        with mock.patch.object(MODULE, "process_table", return_value=table), \
+                mock.patch.object(MODULE.os, "kill") as kill, \
+                mock.patch.object(MODULE.platform, "system", return_value="Darwin"), \
+                mock.patch.object(MODULE.subprocess, "run") as sample:
+            MODULE.signal_descendants(owned, signal.SIGKILL)
+            MODULE.sample_owned(100, owned, Path("unused"))
+            MODULE.track_descendants(100, owned, table)
+            kill.assert_not_called()
+            sample.assert_not_called()
+            self.assertNotIn(102, owned)
 
     def test_interrupt_is_distinct_and_cleans_owned_group(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -127,6 +163,74 @@ class WatchdogTests(unittest.TestCase):
             result = subprocess.run(["bash", str(SCRIPT.with_name("test-native.sh")), "--stage", "cleanup"],
                                     env=env, capture_output=True, timeout=3)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_discovery_requires_exact_all_ten_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "discovery"
+            names = ["PeerloomSwiftTests." + suite + "/" + method
+                     for suite, methods in VERIFY.EXPECTED.items() for method in methods]
+            path.write_text("\n".join(names))
+            VERIFY.discovery(path)
+            for wrong in (names[:-1], names + [names[0]], names + ["OtherTests/testSkipped"]):
+                path.write_text("\n".join(wrong))
+                with self.assertRaises(ValueError):
+                    VERIFY.discovery(path)
+
+    def test_shell_helpers_preserve_failure_under_or_and_if(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "bin"
+            binary.mkdir()
+            fake = binary / "python3"
+            fake.write_text("#!/bin/sh\nexit 23\n")
+            fake.chmod(0o700)
+            source = SCRIPT.with_name("test-native.sh").read_text()
+            functions = source[source.index("run() {"):source.index("cleanup() {")]
+            env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"], HERE=str(root), OUT=str(root))
+            for helper in ("run", "run_capture"):
+                marker = root / "owned-device-marker"
+                marker.write_text("keep on failed cleanup")
+                code = functions + '\n' + helper + ' ignored 1 unused || true\n' + \
+                    'if ' + helper + ' conditional 1 unused; then rm "$OUT/owned-device-marker"; else printf "status=%s\\n" "$?"; fi\n'
+                result = subprocess.run(["bash", "-eu", "-c", code], env=env, capture_output=True, text=True, timeout=3)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("phase passed", result.stdout)
+                self.assertIn("status=23", result.stdout)
+                self.assertTrue(marker.exists())
+
+    def test_suite_started_or_zero_tests_is_not_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "suite"
+            methods = VERIFY.EXPECTED["NativeCoreTests"]
+            passed = ["Test Case '-[PeerloomSwiftTests.NativeCoreTests " + method + "]' passed (0.001 seconds)."
+                      for method in methods]
+            path.write_text("\n".join(passed))
+            VERIFY.suite_completed("NativeCoreTests", path)
+            for wrong in ("Executed 0 tests, with 0 failures", "\n".join(passed).replace("passed", "started"), "\n".join(passed[:-1])):
+                path.write_text(wrong)
+                with self.assertRaises(ValueError):
+                    VERIFY.suite_completed("NativeCoreTests", path)
+
+    def test_aggregate_cannot_hide_a_failed_other_suite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            names = ["PeerloomSwiftTests." + suite + "/" + method
+                     for suite, methods in VERIFY.EXPECTED.items() for method in methods]
+            (root / "phase-macos-discovery.stdout").write_text("\n".join(names))
+            for suite, methods in VERIFY.EXPECTED.items():
+                name = "phase-macos-" + suite
+                (root / (name + ".log")).write_text("\n".join("Test Case '-[PeerloomSwiftTests." + suite + " " + method + "]' passed (0.01 seconds)." for method in methods))
+                (root / (name + ".json")).write_text(json.dumps({"classification": "passed", "exit_code": 0,
+                                                               "started_at": "start", "finished_at": "end", "elapsed_seconds": 1}))
+            failure = root / "phase-macos-KeychainTests.json"
+            success = failure.read_text()
+            failure.write_text(json.dumps({"classification": "timeout", "exit_code": 124}))
+            with self.assertRaises(ValueError):
+                VERIFY.aggregate(root)
+            self.assertFalse((root / "phase-macos-swift.json").exists())
+            failure.write_text(success)
+            VERIFY.aggregate(root)
+            self.assertEqual(json.loads((root / "phase-macos-swift.json").read_text())["test_count"], 10)
 
 
 if __name__ == "__main__":

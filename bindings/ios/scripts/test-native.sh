@@ -21,23 +21,35 @@ run() {
   local name=$1 seconds=$2
   shift 2
   printf '\n[Apple phase start] %s\n' "$name"
-  python3 "$HERE/scripts/watchdog.py" --timeout "$seconds" \
-    --log "$OUT/phase-$name.log" --status "$OUT/phase-$name.json" -- "$@"
-  printf '[Apple phase passed] %s\n' "$name"
+  if python3 "$HERE/scripts/watchdog.py" --timeout "$seconds" \
+      --log "$OUT/phase-$name.log" --status "$OUT/phase-$name.json" -- "$@"; then
+    printf '[Apple phase passed] %s\n' "$name"
+  else
+    local status=$?
+    printf '[Apple phase failed] %s exit=%s\n' "$name" "$status"
+    return "$status"
+  fi
 }
 run_capture() {
   local name=$1 seconds=$2
   shift 2
   printf '\n[Apple phase start] %s\n' "$name"
-  python3 "$HERE/scripts/watchdog.py" --timeout "$seconds" \
-    --log "$OUT/phase-$name.log" --status "$OUT/phase-$name.json" \
-    --stdout "$OUT/phase-$name.stdout" -- "$@"
-  printf '[Apple phase passed] %s\n' "$name"
+  if python3 "$HERE/scripts/watchdog.py" --timeout "$seconds" \
+      --log "$OUT/phase-$name.log" --status "$OUT/phase-$name.json" \
+      --stdout "$OUT/phase-$name.stdout" -- "$@"; then
+    printf '[Apple phase passed] %s\n' "$name"
+  else
+    local status=$?
+    printf '[Apple phase failed] %s exit=%s\n' "$name" "$status"
+    return "$status"
+  fi
 }
 cleanup() {
   if [[ -n "$DEVICE" ]]; then
     run "$PHASE-cleanup-shutdown" 30 xcrun simctl shutdown "$DEVICE" || true
-    run "$PHASE-cleanup-delete" 30 xcrun simctl delete "$DEVICE" || true
+    if run "$PHASE-cleanup-delete" 30 xcrun simctl delete "$DEVICE"; then
+      rm -f "$OUT/phase-ios-device-id.txt"
+    fi
   fi
   if [[ -n "$TLS_PID" ]]; then
     kill "$TLS_PID" >/dev/null 2>&1 || true
@@ -84,7 +96,15 @@ case "$PHASE" in
     run_capture macos-probe-path 30 swift build --show-bin-path
     PEERLOOM_STORE_PROBE_BIN="$(cat "$OUT/phase-macos-probe-path.stdout")/PeerloomStoreProbe"
     [[ -x "$PEERLOOM_STORE_PROBE_BIN" ]]
-    run macos-swift 300 swift test --parallel
+    run_capture macos-discovery 300 swift test list
+    python3 "$HERE/scripts/verify-swift-tests.py" discovery "$OUT/phase-macos-discovery.stdout"
+    # Serial suite runners stream XCTest case names. The tests' own concurrency stays unchanged.
+    # Run both suites even after a failure for diagnostics; aggregate requires every assertion pass.
+    for suite in NativeCoreTests KeychainTests; do
+      run "macos-$suite" 120 env NSUnbufferedIO=YES swift test --skip-build \
+        --filter "PeerloomSwiftTests.$suite" || true
+    done
+    python3 "$HERE/scripts/verify-swift-tests.py" aggregate "$OUT"
     verify_tls
     ;;
   macos-rust-tls)

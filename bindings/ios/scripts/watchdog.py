@@ -7,11 +7,69 @@ from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+import platform
 import selectors
 import signal
 import subprocess
 import sys
 import time
+
+
+def process_table():
+    """Only identities/parentage, never argv or environment. Compatible with BSD/Linux ps."""
+    try:
+        result = subprocess.run(["ps", "-axo", "pid=,ppid=,lstart=,comm="],
+                                capture_output=True, text=True, timeout=2, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    table = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(maxsplit=7)
+        if len(fields) == 8 and fields[0].isdigit() and fields[1].isdigit():
+            table[int(fields[0])] = (int(fields[1]), tuple(fields[2:7]), Path(fields[7]).name)
+    return table
+
+
+def track_descendants(leader, owned, table):
+    parents = {pid for pid, birth in owned.items()
+               if pid in table and table[pid][1] == birth}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (parent, birth, _) in table.items():
+            if parent in parents and pid not in parents and len(owned) < 128:
+                owned[pid] = birth
+                parents.add(pid)
+                changed = True
+
+
+def signal_descendants(owned, signum):
+    table = process_table()
+    for pid, birth in owned.items():
+        if pid in table and table[pid][1] == birth:
+            try:
+                os.kill(pid, signum)
+            except ProcessLookupError:
+                pass
+
+
+def sample_owned(leader, owned, log_path):
+    """Best-effort stacks from owned test processes only, not securityd/other runner tasks."""
+    if platform.system() != "Darwin":
+        return
+    table = process_table()
+    candidates = [pid for pid, birth in owned.items()
+                  if pid in table and table[pid][1] == birth and table[pid][2] == "xctest"][:2]
+    if not candidates and leader in owned and leader in table and table[leader][1] == owned[leader]:
+        candidates = [leader]
+    for pid in candidates:
+        destination = str(log_path) + ".sample-" + str(pid) + ".txt"
+        try:
+            subprocess.run(["/usr/bin/sample", str(pid), "1", "1", "-mayDie", "-file", destination],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 def run(command, timeout, grace, log_path, status_path, stdout_path=None):
@@ -21,6 +79,7 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
     interrupted = []
     previous = {}
     process = None
+    owned = {}
     selector = selectors.DefaultSelector()
     # Existing evidence must not be overwritten by a repeated phase.
     with ExitStack() as files:
@@ -33,6 +92,10 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
         try:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        stdin=subprocess.DEVNULL, start_new_session=True)
+            initial = process_table()
+            if process.pid in initial:
+                # Before the first poll/wait, the child's PID cannot have been reused.
+                owned[process.pid] = initial[process.pid][1]
             os.set_blocking(process.stdout.fileno(), False)
             os.set_blocking(process.stderr.fileno(), False)
             selector.register(process.stdout, selectors.EVENT_READ, "stdout")
@@ -42,15 +105,23 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
             killed_at = None
             streams_open = 2
             reason = None
+            next_scan = started
             while True:
                 now = time.monotonic()
+                if now >= next_scan:
+                    track_descendants(process.pid, owned, process_table())
+                    next_scan = time.monotonic() + 0.1
                 if reason is None and (interrupted or now >= deadline):
                     reason = "interrupted" if interrupted else "timeout"
-                    terminate_at = now
+                    if reason == "timeout":
+                        sample_owned(process.pid, owned, log_path)
+                    terminate_at = time.monotonic()
+                    signal_descendants(owned, signal.SIGTERM)
                     signal_group(process.pid, signal.SIGTERM)
                 if terminate_at is not None and killed_at is None and now >= terminate_at + grace:
                     # The leader may already have exited; descendants still belong to our group.
                     signal_group(process.pid, signal.SIGKILL)
+                    signal_descendants(owned, signal.SIGKILL)
                     killed_at = now
                 for key, _ in selector.select(0.05):
                     chunk = os.read(key.fd, 65536)
@@ -88,6 +159,7 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
             if process is not None:
                 # Also reap ordinary children after failure. Never target an unrelated process.
                 signal_group(process.pid, signal.SIGTERM)
+                signal_descendants(owned, signal.SIGTERM)
                 if process.poll() is None:
                     try:
                         process.wait(timeout=grace)
@@ -98,6 +170,7 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
                         except subprocess.TimeoutExpired:
                             status["reap_failed"] = True
                 signal_group(process.pid, signal.SIGKILL)
+                signal_descendants(owned, signal.SIGKILL)
                 process.stdout.close()
                 process.stderr.close()
             selector.close()
@@ -105,6 +178,7 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
                 signal.signal(signum, handler)
             status["elapsed_seconds"] = round(time.monotonic() - started, 3)
             status["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            status["tracked_descendants"] = len(owned)
             status["exit_code"] = result
             # Deliberately omit argv/environment: they could contain credentials.
             json.dump(status, evidence, ensure_ascii=False, sort_keys=True, indent=2)
