@@ -17,30 +17,9 @@ func (s *Service) RevokeGrant(ctx context.Context, tenantID, grantID string) ([]
 		return nil, err
 	}
 	defer rollback(tx)
-	if _, err = loadGrant(ctx, tx, tenantID, grantID); err != nil {
+	result, err := RevokeGrantTx(ctx, tx, tenantID, grantID)
+	if err != nil {
 		return nil, err
-	}
-	if _, err = tx.Exec(ctx, "UPDATE connection_grants SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE tenant_id=$1 AND id=$2", tenantID, grantID); err != nil {
-		return nil, databaseError(err)
-	}
-	rows, err := tx.Query(ctx, `UPDATE sessions SET state='closed',close_reason='GRANT_REVOKED',closed_at=clock_timestamp()
-WHERE tenant_id=$1 AND grant_id=$2 AND state<>'closed' RETURNING `+sessionColumns, tenantID, grantID)
-	if err != nil {
-		return nil, databaseError(err)
-	}
-	var result []Session
-	for rows.Next() {
-		value, scanErr := scanSession(rows)
-		if scanErr != nil {
-			rows.Close()
-			return nil, databaseError(scanErr)
-		}
-		result = append(result, value)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, databaseError(err)
 	}
 	if err = commit(ctx, tx); err != nil {
 		return nil, err

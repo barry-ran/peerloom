@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Peerloom 基础与设备身份接口",
+    "title": "Peerloom 服务接口",
     "version": "0.1.0-dev",
-    "description": "已实现健康与 grant-only 身份服务。没有管理后台、direct 注册、WSS 或平台授权 WebRTC 连接入口。"
+    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap和tenant service-key管理API；不包含交互登录、direct注册、relay节点管理或webhook管理。生产入口必须TLS。"
   },
   "paths": {
     "/healthz": {
@@ -472,7 +472,7 @@
         "description": "必须通过 Authorization Bearer 鉴权，拒绝 Origin 和 URL query；开发 Compose 仅本机 ws，生产入口必须 TLS/wss。升级后使用 signal-envelope.schema.json。",
         "security": [
           {
-            "DeviceCredentialBearer": []
+            "DeviceCredential": []
           }
         ],
         "responses": {
@@ -489,6 +489,1316 @@
             "description": "容量或依赖不可用"
           }
         }
+      }
+    },
+    "/v1/bootstrap": {
+      "get": {
+        "summary": "公开协议能力，不含租户秘密",
+        "description": "实际支持的协议版本、相对信令路径、注册模式、通道类型和安全要求；不是readyz，不承诺托管TURN可用。",
+        "responses": {
+          "200": {
+            "description": "当前实现能力"
+          }
+        }
+      }
+    },
+    "/v1/applications": {
+      "post": {
+        "summary": "创建grant-only应用",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementApplication"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementApplicationCreate"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "分页列出当前租户应用",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementApplicationPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
+      }
+    },
+    "/v1/applications/{id}": {
+      "get": {
+        "summary": "读取当前租户应用",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementApplication"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "summary": "部分更新应用；禁用时关闭会话",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementApplicationChange"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementApplicationPatch"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/registration-grants": {
+      "post": {
+        "summary": "签发短期一次性注册grant",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRegistrationGrant"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementRegistrationGrantCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/devices": {
+      "get": {
+        "summary": "按应用、在线与标签过滤设备",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementDevicePage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          },
+          {
+            "name": "application_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "online",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "仅true/false，Redis不可用返回503，不伪造离线。最多扫描10*limit候选，可空页带next_cursor。"
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementProperties"
+                }
+              }
+            },
+            "description": "URL编码JSON对象，原始query值最多8192字节；按jsonb包含匹配。"
+          }
+        ]
+      }
+    },
+    "/v1/devices/{id}": {
+      "get": {
+        "summary": "读取设备及可用的实时在线状态",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementDevice"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "summary": "部分更新公共设备属性；不改身份或状态",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementDevice"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementDevicePatch"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/devices/{id}/revoke": {
+      "post": {
+        "summary": "不可逆撤销设备与全部凭证并关闭会话",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRevocation"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ]
+      }
+    },
+    "/v1/connection-grants": {
+      "post": {
+        "summary": "创建同租户定向连接授权",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementConnectionGrant"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementConnectionGrantCreate"
+              },
+              "example": {
+                "source_device_id": "9ab274c6-10ca-4eae-bddb-1c4ac23a1351",
+                "target_device_id": "9ab274c6-10ca-4eae-bddb-1c4ac23a1352",
+                "expires_at": "2027-01-01T00:00:00Z",
+                "expiry_action": "terminate",
+                "max_sessions": 1
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "分页读取连接授权",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementConnectionGrantPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
+      }
+    },
+    "/v1/connection-grants/{id}": {
+      "get": {
+        "summary": "读取连接授权",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementConnectionGrant"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "summary": "撤销连接授权并关闭相关会话；保留记录",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRevocation"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ]
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "summary": "分页读取持久化会话状态",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementSessionPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
+      }
+    },
+    "/v1/sessions/{id}": {
+      "get": {
+        "summary": "读取会话，不隐式续租或授权SDP",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/sessions/{id}/terminate": {
+      "post": {
+        "summary": "终止会话",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementClosedSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ]
+      }
+    },
+    "/v1/audit-events": {
+      "get": {
+        "summary": "分页读取当前租户审计",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementAuditEventPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
       }
     }
   },
@@ -696,6 +2006,995 @@
             }
           }
         ]
+      },
+      "ManagementProperties": {
+        "type": "object",
+        "maxProperties": 32,
+        "propertyNames": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]*$"
+        },
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 1024,
+              "pattern": "^[^\\u0000]*$"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "ManagementApplicationCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]*$"
+          },
+          "registration_mode": {
+            "type": "string",
+            "enum": [
+              "grant"
+            ],
+            "default": "grant"
+          },
+          "require_target_approval": {
+            "type": "boolean",
+            "default": false
+          },
+          "max_connections": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1024,
+            "default": 8
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "ManagementApplicationPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]*$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "require_target_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_connections": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1024
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "minProperties": 1,
+        "anyOf": [
+          {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "require_target_approval"
+            ],
+            "properties": {
+              "require_target_approval": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "max_connections"
+            ],
+            "properties": {
+              "max_connections": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "enabled"
+            ],
+            "properties": {
+              "enabled": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ManagementApplication": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "registration_mode": {
+            "enum": [
+              "grant",
+              "direct",
+              "both"
+            ]
+          },
+          "require_target_approval": {
+            "type": "boolean"
+          },
+          "max_connections": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "name",
+          "registration_mode",
+          "require_target_approval",
+          "max_connections",
+          "enabled",
+          "created_at"
+        ]
+      },
+      "ManagementDevicePatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 128,
+                "pattern": "^[^\\u0000]*$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ManagementProperties"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ManagementProperties"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "connectable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_connections": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1024
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "minProperties": 1,
+        "anyOf": [
+          {
+            "required": [
+              "display_name"
+            ],
+            "properties": {
+              "display_name": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "metadata"
+            ],
+            "properties": {
+              "metadata": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "tags"
+            ],
+            "properties": {
+              "tags": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "connectable"
+            ],
+            "properties": {
+              "connectable": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "max_connections"
+            ],
+            "properties": {
+              "max_connections": {}
+            }
+          }
+        ]
+      },
+      "ManagementDevice": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "application_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "platform": {
+            "enum": [
+              "windows",
+              "macos",
+              "linux",
+              "android",
+              "ios",
+              "web"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ManagementProperties"
+          },
+          "tags": {
+            "$ref": "#/components/schemas/ManagementProperties"
+          },
+          "connectable": {
+            "type": "boolean"
+          },
+          "max_connections": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "active",
+              "revoked"
+            ]
+          },
+          "online": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "application_id",
+          "platform",
+          "display_name",
+          "metadata",
+          "tags",
+          "connectable",
+          "max_connections",
+          "status",
+          "online",
+          "created_at"
+        ]
+      },
+      "ManagementRegistrationGrantCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "application_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600,
+            "default": 300,
+            "description": "省略或0使用300秒。"
+          }
+        },
+        "required": [
+          "application_id"
+        ]
+      },
+      "ManagementRegistrationGrant": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "grant": {
+            "type": "string",
+            "pattern": "^reg_[A-Za-z0-9_-]{43}$",
+            "writeOnly": false
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "grant",
+          "expires_at"
+        ]
+      },
+      "ManagementConnectionGrantCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "target_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2592000,
+            "description": "可选便利字段，与expires_at互斥；相对事务数据库时钟计算，不能与绝对时间同时提交。"
+          },
+          "expiry_action": {
+            "enum": [
+              "terminate",
+              "no_new_connections"
+            ],
+            "default": "terminate"
+          },
+          "max_sessions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1024,
+            "default": 1,
+            "description": "省略或0使用1。"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "规范到期字段：RFC3339时间，偏移转换为UTC；事务数据库时钟检查未来且不超过30天。示例时间仅示意，调用方须选择实际未来时间。",
+            "example": "2027-01-01T00:00:00Z"
+          }
+        },
+        "required": [
+          "source_device_id",
+          "target_device_id"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "expires_at"
+            ],
+            "not": {
+              "required": [
+                "expires_in_seconds"
+              ]
+            }
+          },
+          {
+            "required": [
+              "expires_in_seconds"
+            ],
+            "not": {
+              "required": [
+                "expires_at"
+              ]
+            }
+          }
+        ]
+      },
+      "ManagementConnectionGrant": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "source_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "target_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiry_action": {
+            "enum": [
+              "terminate",
+              "no_new_connections"
+            ]
+          },
+          "max_sessions": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "source_device_id",
+          "target_device_id",
+          "expires_at",
+          "expiry_action",
+          "max_sessions",
+          "revoked_at",
+          "created_at"
+        ]
+      },
+      "ManagementSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "source_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "target_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "grant_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "requested",
+              "authorizing",
+              "connecting",
+              "connected",
+              "reconnecting",
+              "closed"
+            ]
+          },
+          "close_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_lease_expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target_lease_expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "source_device_id",
+          "target_device_id",
+          "grant_id",
+          "state",
+          "close_reason",
+          "source_lease_expires_at",
+          "target_lease_expires_at",
+          "created_at"
+        ]
+      },
+      "ManagementClosedSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "source_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "target_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "state": {
+            "const": "closed"
+          },
+          "close_reason": {
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source_lease_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "target_lease_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lease_generation": {
+            "type": "integer"
+          },
+          "source_connected": {
+            "type": "boolean"
+          },
+          "target_connected": {
+            "type": "boolean"
+          },
+          "source_offer_seen": {
+            "type": "boolean"
+          },
+          "target_answer_seen": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "tenant_id",
+          "source_device_id",
+          "target_device_id",
+          "grant_id",
+          "state",
+          "lease_expires_at",
+          "source_lease_expires_at",
+          "target_lease_expires_at",
+          "lease_generation",
+          "source_connected",
+          "target_connected",
+          "source_offer_seen",
+          "target_answer_seen"
+        ]
+      },
+      "ManagementRevocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revoked": {
+            "const": true
+          },
+          "closed_sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManagementClosedSession"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "revoked",
+          "closed_sessions"
+        ]
+      },
+      "ManagementApplicationChange": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "application": {
+            "$ref": "#/components/schemas/ManagementApplication"
+          },
+          "closed_sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManagementClosedSession"
+            }
+          }
+        },
+        "required": [
+          "application",
+          "closed_sessions"
+        ]
+      },
+      "ManagementAuditEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "actor_type": {
+            "type": "string"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "action": {
+            "type": "string"
+          },
+          "resource_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resource_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "details": {
+            "type": "object"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "actor_type",
+          "actor_id",
+          "action",
+          "resource_type",
+          "resource_id",
+          "details",
+          "created_at"
+        ]
+      },
+      "ManagementApplicationPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ManagementApplication"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "ManagementDevicePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ManagementDevice"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "ManagementConnectionGrantPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ManagementConnectionGrant"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "ManagementSessionPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ManagementSession"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "ManagementAuditEventPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ManagementAuditEvent"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "ManagementProblem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "about:blank"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "detail",
+          "request_id"
+        ]
       }
     },
     "securitySchemes": {
@@ -703,6 +3002,24 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "opaque dev_ token"
+      },
+      "TenantServiceCredential": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "svc_ opaque token",
+        "description": "仅可信租户后端使用，独立于设备credential；read只读，admin可写。不得嵌入浏览器、URL或日志。"
+      }
+    },
+    "responses": {
+      "ManagementError": {
+        "description": "稳定code区分权限、输入、幂等或依赖失败",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ManagementProblem"
+            }
+          }
+        }
       }
     }
   }

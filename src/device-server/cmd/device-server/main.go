@@ -20,6 +20,7 @@ import (
 	"github.com/barry-ran/peerloom/src/device-server/internal/httpapi"
 	"github.com/barry-ran/peerloom/src/device-server/internal/httpserver"
 	"github.com/barry-ran/peerloom/src/device-server/internal/identity"
+	"github.com/barry-ran/peerloom/src/device-server/internal/management"
 	"github.com/barry-ran/peerloom/src/device-server/internal/migrate"
 )
 
@@ -117,7 +118,37 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 	defer func() { sweepCancel(); <-sweepDone }()
+	administration, err := management.New(pool, key, management.DefaultSettings(), online)
+	if err != nil {
+		return errors.New("cannot initialize management service")
+	}
+	managementCtx, managementCancel := context.WithCancel(ctx)
+	managementDone := make(chan struct{})
+	go func() {
+		defer close(managementDone)
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-managementCtx.Done():
+				return
+			case <-ticker.C:
+				operationCtx, cancel := context.WithTimeout(managementCtx, 3*time.Second)
+				err := administration.PurgeExpired(operationCtx)
+				cancel()
+				if err != nil && managementCtx.Err() == nil {
+					logger.Warn("expired management replay cleanup unavailable")
+				}
+			}
+		}
+	}()
+	defer func() { managementCancel(); <-managementDone }()
 	api := http.NewServeMux()
+	managementHandler := management.NewHandler(administration, signalingServer.NotifySession)
+	for _, resource := range []string{"applications", "registration-grants", "devices", "connection-grants", "sessions", "audit-events"} {
+		api.Handle("/v1/"+resource, managementHandler)
+		api.Handle("/v1/"+resource+"/", managementHandler)
+	}
 	api.Handle("/v1/device-signal", signalingServer)
 	api.Handle("/", httpapi.New(store))
 	postgresReady := database.Ready(pool, migrate.CurrentVersion)

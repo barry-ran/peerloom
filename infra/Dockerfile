@@ -5,7 +5,8 @@ RUN go mod download
 COPY src/device-server/ ./
 RUN CGO_ENABLED=0 go build -trimpath -o /out/device-server ./cmd/device-server && \
     CGO_ENABLED=0 go build -trimpath -o /out/device-migrate ./cmd/device-migrate && \
-    CGO_ENABLED=0 go build -trimpath -o /out/device-bootstrap ./cmd/device-bootstrap
+    CGO_ENABLED=0 go build -trimpath -o /out/device-bootstrap ./cmd/device-bootstrap && \
+    CGO_ENABLED=0 go build -trimpath -o /out/device-admin ./cmd/device-admin
 
 FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 RUN addgroup -S -g 65532 peerloom && adduser -S -D -H -u 65532 -G peerloom peerloom

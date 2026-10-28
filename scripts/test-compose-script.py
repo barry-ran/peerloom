@@ -8,11 +8,28 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
 
 MOCK = r'''#!/usr/bin/env python3
-import json, os, pathlib, stat, sys
+import json, os, pathlib, stat, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
+if name == "python3":
+    if len(sys.argv) > 1 and sys.argv[1].endswith("test-management.py"):
+        for argument in ("--admin-fixture", "--foreign-admin-fixture", "--read-fixture"):
+            path = pathlib.Path(sys.argv[sys.argv.index(argument) + 1])
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+            assert json.loads(path.read_text())["service_credential"] == os.environ["TEST_EPHEMERAL_GRANT"]
+        output = pathlib.Path(sys.argv[sys.argv.index("--pair-output") + 1])
+        assert not output.exists()
+        output.write_text(json.dumps({side: {"application_id": side, "device_id": side, "device_credential": os.environ["TEST_EPHEMERAL_GRANT"], "expires_at": "test-expiry"} for side in ("source", "target")}))
+        output.chmod(0o600)
+        pathlib.Path("management-test-invoked").touch()
+        sys.exit(9 if os.environ["TEST_FAIL_TARGET"] == "management" else 0)
+    sys.exit(subprocess.run([os.environ["REAL_PYTHON"], *sys.argv[1:]], input=sys.stdin.read(), text=True).returncode)
 if name == "docker":
+    if "device-admin" in sys.argv:
+        assert "--offline" in sys.argv
+        print(json.dumps({"tenant_id": "00000000-0000-4000-8000-000000000001", "service_credential": os.environ["TEST_EPHEMERAL_GRANT"]}))
     if "device-bootstrap" in sys.argv:
         if "--pair" in sys.argv:
             print(json.dumps({side: {"application_id": side, "device_id": side, "device_credential": os.environ["TEST_EPHEMERAL_GRANT"], "expires_at": "test-expiry"} for side in ("source", "target")}))
@@ -20,6 +37,7 @@ if name == "docker":
             print(json.dumps({"application_id": "test-app", "registration_grant": os.environ["TEST_EPHEMERAL_GRANT"]}))
     if "down" in sys.argv:
         assert not list(pathlib.Path(".secrets").glob("identity-fixture.*")), "fixture survived cleanup"
+        assert not list(pathlib.Path(".secrets").glob("management-fixture.*")), "management fixture survived cleanup"
         pathlib.Path("cleanup-completed").touch()
 elif name == "curl" and "%{http_code}" in sys.argv:
     print("404" if sys.argv[-1].endswith("/metrics") else "401", end="")
@@ -29,6 +47,8 @@ elif name == "cargo":
     target = "sdk" if "sdk_service" in sys.argv else "pair" if "authorized_pair" in sys.argv else "identity"
     pair = target != "identity"
     p = pathlib.Path(os.environ["TEST_SIGNAL_FIXTURE_FILE" if pair else "TEST_IDENTITY_FIXTURE_FILE"])
+    if target == "sdk" and p.parent.name.startswith("management-fixture."):
+        target = "managed_sdk"
     assert p.is_absolute() and stat.S_IMODE(p.stat().st_mode) == 0o600
     data = json.loads(p.read_text())
     assert (data["source"]["device_credential"] if pair else data["registration_grant"]) == os.environ["TEST_EPHEMERAL_GRANT"]
@@ -57,27 +77,37 @@ class ComposeScriptTest(unittest.TestCase):
             (root / ".secrets/redis_password").write_text(password)
             script = root / "scripts/test-compose.sh"
             shutil.copyfile(Path(__file__).with_name("test-compose.sh"), script)
-            for name in ("docker", "curl", "go", "cargo"):
+            for name in ("docker", "curl", "go", "cargo", "python3"):
                 executable = root / "bin" / name
-                executable.write_text(MOCK)
+                executable.write_text(MOCK.replace("#!/usr/bin/env python3", "#!" + sys.executable, 1))
                 executable.chmod(0o700)
             env = {**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"],
-                   "TEST_EPHEMERAL_GRANT": grant, "TEST_CARGO_EXIT": str(exit_code), "TEST_FAIL_TARGET": fail_target}
+                   "REAL_PYTHON": sys.executable, "TEST_EPHEMERAL_GRANT": grant, "TEST_CARGO_EXIT": str(exit_code), "TEST_FAIL_TARGET": fail_target}
             result = subprocess.run(["bash", "-x", str(script)], env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, exit_code, result.stderr)
             self.assertTrue((root / "identity-test-invoked").exists())
             self.assertTrue((root / "cleanup-completed").exists())
-            if exit_code == 0 or fail_target in ("pair", "sdk"):
+            if exit_code == 0 or fail_target in ("pair", "sdk", "management", "managed_sdk"):
                 self.assertTrue((root / "pair-test-invoked").exists())
-            if exit_code == 0 or fail_target == "sdk":
+            if exit_code == 0 or fail_target in ("sdk", "management", "managed_sdk"):
                 self.assertTrue((root / "sdk-test-invoked").exists())
-                self.assertEqual(len((root / "fixture-paths").read_text().splitlines()), 3)
+                self.assertEqual(len((root / "fixture-paths").read_text().splitlines()), 4 if exit_code == 0 or fail_target == "managed_sdk" else 3)
+            if exit_code == 0 or fail_target in ("management", "managed_sdk"):
+                self.assertTrue((root / "management-test-invoked").exists())
+            if exit_code == 0 or fail_target == "managed_sdk":
+                self.assertTrue((root / "managed_sdk-test-invoked").exists())
             self.assertNotIn(password, result.stdout + result.stderr)
             self.assertNotIn(grant, result.stdout + result.stderr)
             self.assertEqual(list((root / ".secrets").glob("identity-fixture.*")), [])
 
     def test_success_cleans_fixture_without_logging_secrets(self):
         self.run_script(0)
+
+    def test_failed_management_still_cleans_credentials(self):
+        self.run_script(9, "management")
+
+    def test_failed_managed_sdk_still_cleans_credentials(self):
+        self.run_script(7, "managed_sdk")
 
     def test_failed_sdk_test_still_cleans_fixture(self):
         self.run_script(7, "sdk")

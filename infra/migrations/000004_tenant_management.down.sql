@@ -1,0 +1,3 @@
+DROP INDEX applications_management_page_idx,devices_management_page_idx,devices_management_app_page_idx,
+    grants_management_page_idx,sessions_management_page_idx,audit_management_page_idx;
+DROP TABLE management_requests,tenant_service_credentials;

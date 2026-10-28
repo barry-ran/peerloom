@@ -48,6 +48,11 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	switch r.URL.Path {
+	case "/v1/bootstrap":
+		if !method(w, r, id, http.MethodGet) {
+			return
+		}
+		respond(w, id, capabilities(), nil, http.StatusOK)
 	case "/v1/device-registrations":
 		if !method(w, r, id, http.MethodPost) {
 			return

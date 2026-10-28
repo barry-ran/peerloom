@@ -2,12 +2,15 @@
 # 仅隔离开发/CI 环境：此脚本创建并最终删除自己的数据库卷。
 set +x
 set -euo pipefail
+umask 077
 cd "$(dirname "$0")/.."
 project="peerloom-test-${RANDOM}-${RANDOM}"
 compose=(docker compose -p "$project" -f infra/compose.yaml -f infra/compose.ci.yaml)
 fixture=""
+management_fixture=""
 cleanup() {
   if [ -n "$fixture" ]; then rm -f -- "$fixture"; fi
+  if [ -n "$management_fixture" ]; then rm -rf -- "$management_fixture"; fi
   "${compose[@]}" down --volumes --remove-orphans
 }
 trap cleanup EXIT
@@ -106,6 +109,38 @@ PAIR
 )
 rm -f -- "$fixture"
 fixture=""
+# 管理API仅针对本脚本的隔离数据库：离线建两租户及只读key，不修改真实环境。
+management_fixture="$(mktemp -d "$PWD/.secrets/management-fixture.XXXXXX")"
+"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
+  bootstrap --offline --tenant-name ci-management --scope admin > "$management_fixture/admin.json"
+"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
+  bootstrap --offline --tenant-name ci-foreign --scope admin > "$management_fixture/foreign.json"
+tenant_id="$(python3 - "$management_fixture/admin.json" <<'TENANT'
+import json
+import sys
+import uuid
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        print(uuid.UUID(json.load(stream)["tenant_id"]))
+except Exception:
+    raise SystemExit("invalid management fixture; contents withheld") from None
+TENANT
+)"
+"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
+  issue-key --offline --tenant-id "$tenant_id" --scope read > "$management_fixture/read.json"
+python3 scripts/test-management.py --base-url http://127.0.0.1:18080 \
+  --admin-fixture "$management_fixture/admin.json" \
+  --foreign-admin-fixture "$management_fixture/foreign.json" \
+  --read-fixture "$management_fixture/read.json" \
+  --pair-output "$management_fixture/pair.json"
+# 此pair由管理HTTP授权创建，不依赖开发bootstrap直接插入授权。
+(
+  cd src/device-sdk
+  TEST_IDENTITY_BASE_URL=http://127.0.0.1:18080 TEST_SIGNAL_FIXTURE_FILE="$management_fixture/pair.json" \
+    cargo test -p device-core --test sdk_service --locked -- --ignored --nocapture
+)
+rm -rf -- "$management_fixture"
+management_fixture=""
 "${compose[@]}" restart device-server
 "${compose[@]}" up -d --wait device-server gateway
 curl --fail --silent --show-error http://127.0.0.1:18080/readyz > /dev/null

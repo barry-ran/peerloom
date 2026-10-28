@@ -2,10 +2,7 @@ package authorization
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -42,8 +39,7 @@ func (s *Service) begin(ctx context.Context, tenant string) (pgx.Tx, error) {
 	if err != nil {
 		return nil, failure("DATABASE_UNAVAILABLE", 503)
 	}
-	key := sha256.Sum256([]byte("peerloom-session:" + strings.ToLower(tenant)))
-	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", int64(binary.BigEndian.Uint64(key[:8]))); err != nil {
+	if err = LockTenant(ctx, tx, tenant); err != nil {
 		rollback(tx)
 		return nil, failure("DATABASE_UNAVAILABLE", 503)
 	}
