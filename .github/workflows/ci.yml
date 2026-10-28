@@ -34,6 +34,10 @@ jobs:
           ./scripts/check-compose.sh --integration
       - name: PostgreSQL 迁移与 Compose 启停集成
         run: ./scripts/test-compose.sh
+      - name: 原生 WebRTC 双端直连与消息互通
+        timeout-minutes: 5
+        working-directory: src/device-sdk
+        run: cargo test -p device-transport-webrtc --test native_pair --locked -- --ignored --nocapture
       - name: 构建可下载检查产物
         run: ./scripts/build.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
