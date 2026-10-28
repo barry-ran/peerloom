@@ -204,6 +204,8 @@ management_fixture="$(mktemp -d "$PWD/.secrets/management-fixture.XXXXXX")"
   bootstrap --offline --tenant-name ci-lifecycle --scope admin > "$management_fixture/admin.json"
 ./scripts/test-lifecycle.sh --base-url http://127.0.0.1:18080 \
   --admin-fixture "$management_fixture/admin.json" --shared-secret-file "$relay_fixture/shared-secret"
+python3 scripts/test-control-recovery.py --project "$project" --base-url http://127.0.0.1:18080 \
+  --admin-fixture "$management_fixture/admin.json"
 rm -rf -- "$management_fixture"
 management_fixture=""
 "${compose[@]}" restart device-server

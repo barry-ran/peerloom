@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 if (-not $IsWindows) { throw 'WINDOWS_NATIVE_RUNNER_REQUIRED' }
+& (Join-Path $PSScriptRoot 'test-windows-arguments.ps1')
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path $vswhere)) { throw 'VSWHERE_MISSING' }
 $vs = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
@@ -37,7 +38,8 @@ Invoke-Checked 'cargo' @('+1.99.1', 'test', '--manifest-path', $manifest, '--wor
 Invoke-Checked 'cargo' @('+1.99.1', 'test', '--manifest-path', $manifest, '-p', 'device-transport-webrtc', '--test', 'native_pair', '--target', $triple, '--locked', '--', '--ignored', '--nocapture')
 Invoke-Checked 'cargo' @('+1.99.1', 'build', '--manifest-path', $manifest, '-p', 'device-core', '--example', 'windows_secure_peer', '--target', $triple, '--locked')
 foreach ($profile in @('debug', 'release')) {
-    $profileArgs = if ($profile -eq 'release') { @('--release') } else { @() }
+    [string[]] $profileArgs = @()
+    if ($profile -eq 'release') { $profileArgs = @('--release') }
     Invoke-Checked 'cargo' (@('+1.99.1', 'build', '--manifest-path', $manifest, '-p', 'device-ffi', '--target', $triple, '--locked') + $profileArgs)
     $target = Join-Path (Split-Path $manifest) "target\$triple\$profile"
     $harness = Join-Path $root 'src\device-sdk\device-ffi\tests\lifecycle.cpp'

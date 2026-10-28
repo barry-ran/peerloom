@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"hash/fnv"
 	"net/http"
 	"strings"
@@ -233,12 +234,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		seq = e.Seq
 		checkCtx, checkCancel := context.WithTimeout(ctx, 3*time.Second)
 		current, authErr := s.auth.Authenticate(checkCtx, token)
-		if authErr == nil && current.ID == device.ID && current.TenantID == device.TenantID {
-			authErr = s.presence.Renew(checkCtx, device.TenantID, device.ID, lease)
-		}
-		checkCancel()
 		if authErr != nil || current.ID != device.ID || current.TenantID != device.TenantID {
-			conn.Close(websocket.StatusPolicyViolation, "authorization or ownership expired")
+			checkCancel()
+			conn.Close(websocket.StatusPolicyViolation, "authorization expired")
+			return
+		}
+		presenceErr := s.presence.Renew(checkCtx, device.TenantID, device.ID, lease)
+		checkCancel()
+		if presenceErr != nil {
+			// Never dispatch while ownership cannot be verified. A transient backend
+			// failure is not permanent credential rejection; a known stale owner is.
+			if errors.Is(presenceErr, presence.ErrFenced) {
+				conn.Close(websocket.StatusPolicyViolation, "ownership expired")
+			} else {
+				conn.Close(websocket.StatusInternalError, "presence unavailable")
+			}
 			return
 		}
 		if e.Type == "presence.heartbeat" && EmptyPayload(e) && e.SessionID == "" {

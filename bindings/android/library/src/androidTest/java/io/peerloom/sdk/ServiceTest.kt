@@ -1,13 +1,16 @@
 package io.peerloom.sdk
 
+import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -21,6 +24,57 @@ private fun config(device: JSONObject) =
         .put("development_loopback", true)
         .put("max_channels_per_connection", 4)
         .put("application_id", device.getString("application_id"))
+
+/** Owned host controller accepts only these fixed test phases, not arbitrary commands. */
+private fun hostPhase(phase: String) {
+    require(phase in listOf("network_pause", "network_resume", "revoke_grant"))
+    val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+    val request = context.noBackupFilesDir.resolve("acceptance-request")
+    val reply = context.noBackupFilesDir.resolve("acceptance-reply")
+    val temporary = context.noBackupFilesDir.resolve("acceptance-request.new")
+    temporary.writeText(phase + "\n")
+    check(temporary.renameTo(request))
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(25)
+    while (System.nanoTime() < deadline) {
+        if (reply.exists() && reply.readText().trim() == phase) return
+        Thread.sleep(25)
+    }
+    error("owned host phase deadline")
+}
+
+private fun finiteBackgroundAndResume() {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+    val resumed = BackgroundProbeActivity.resumes.get()
+    val stopped = BackgroundProbeActivity.stops.get()
+    val intent =
+        Intent(context, BackgroundProbeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val activity = instrumentation.startActivitySync(intent)
+    var resumedActivity: android.app.Activity? = null
+    try {
+        assertTrue(BackgroundProbeActivity.resumes.get() > resumed)
+        var moved = false
+        instrumentation.runOnMainSync { moved = activity.moveTaskToBack(true) }
+        assertTrue(moved)
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (
+            BackgroundProbeActivity.stops.get() <= stopped && System.nanoTime() < deadline
+        ) Thread.sleep(25)
+        assertTrue(BackgroundProbeActivity.stops.get() > stopped)
+        Thread.sleep(3000) // instrumentation worker, never the application UI thread
+        resumedActivity =
+            instrumentation.startActivitySync(
+                Intent(context, BackgroundProbeActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+            )
+        assertTrue(BackgroundProbeActivity.resumes.get() >= resumed + 2)
+    } finally {
+        instrumentation.runOnMainSync {
+            resumedActivity?.finish()
+            activity.finish()
+        }
+    }
+}
 
 private fun fixture(name: String): JSONObject {
     val context = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -156,7 +210,7 @@ class RegistrationTest {
 @RunWith(AndroidJUnit4::class)
 class ServiceTest {
     @Test
-    fun authorizedDataRotationAndQueuedDeliveryRevocation() {
+    fun authorizedChannelsBackgroundControlPlaneRecoveryAndGrantRevocation() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val pair = fixture("pair-fixture.json")
         val source = pair.getJSONObject("source")
@@ -182,17 +236,21 @@ class ServiceTest {
                     )
             )
         }
+        val sourceClosed = AtomicInteger(0)
+        val targetClosed = AtomicInteger(0)
         val sourceQueue = ArrayBlockingQueue<Event>(32)
         val targetQueue = ArrayBlockingQueue<Event>(32)
         val sourceExecutor = Executors.newSingleThreadExecutor()
         PausingExecutor().use { targetExecutor ->
             val a =
                 PeerloomSdk.create(context, config(source), sourceExecutor) {
+                        if (it.kind == 7 && it.connection != null) sourceClosed.incrementAndGet()
                         check(sourceQueue.offer(it))
                     }
                     .get(20, TimeUnit.SECONDS)
             val b =
                 PeerloomSdk.create(context, config(target), targetExecutor) {
+                        if (it.kind == 7 && it.connection != null) targetClosed.incrementAndGet()
                         check(targetQueue.offer(it))
                     }
                     .get(20, TimeUnit.SECONDS)
@@ -267,17 +325,42 @@ class ServiceTest {
                 assertTrue(ca.isValid())
                 await(low.close())
                 await(stream.close())
+                finiteBackgroundAndResume()
+                await(ca.send(message))
+                assertArrayEquals(message, next(targetQueue, 6).payload)
+                await(cb.send(message))
+                assertArrayEquals(message, next(sourceQueue, 6).payload)
+                hostPhase("network_pause")
+                next(sourceQueue, 3)
+                next(targetQueue, 3)
+                // Only WSS is interrupted: healthy peer data and existing lease must survive.
+                assertTrue(ca.isValid())
+                assertTrue(cb.isValid())
+                await(ca.send(message))
+                assertArrayEquals(message, next(targetQueue, 6).payload)
+                hostPhase("network_resume")
+                next(sourceQueue, 2)
+                next(targetQueue, 2)
+                assertTrue(ca.isValid())
+                assertTrue(cb.isValid())
+                await(ca.send(message))
+                assertArrayEquals(message, next(targetQueue, 6).payload)
+                await(cb.send(message))
+                assertArrayEquals(message, next(sourceQueue, 6).payload)
                 await(a.refreshCredentials())
                 next(sourceQueue, 2)
                 // Proven host-queue negative case: a real message has scheduled a paused
-                // application drain, then remote close invalidates its shared native gate.
+                // application drain, then real management grant revocation invalidates its gate.
                 targetExecutor.pause()
                 await(ca.send(message))
                 assertTrue(targetExecutor.blocked.await(10, TimeUnit.SECONDS))
                 awaitQueuedMessage(b, cb, message)
-                await(ca.close())
+                hostPhase("revoke_grant")
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-                while (cb.isValid() && System.nanoTime() < deadline) Thread.sleep(10)
+                while ((ca.isValid() || cb.isValid()) && System.nanoTime() < deadline) Thread.sleep(
+                    10
+                )
+                assertFalse(ca.isValid())
                 assertFalse(cb.isValid())
                 targetExecutor.resume()
                 var observedClosed = false
@@ -296,6 +379,8 @@ class ServiceTest {
                 sourceExecutor.shutdownNow()
             }
         }
+        assertEquals(1, sourceClosed.get())
+        assertEquals(1, targetClosed.get())
         assertEquals(0, Native.liveClients())
     }
 }

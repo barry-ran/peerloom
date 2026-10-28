@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set +x
 set -euo pipefail
+trap 'exit 143' TERM
+trap 'exit 130' INT
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 serial=${ANDROID_SERIAL:?explicit owned emulator serial required}
 avd_name=${PEERLOOM_AVD_NAME:?owned AVD name required}
@@ -54,6 +56,7 @@ run_trusted_tls() (
   release_trust() {
     local status=$?
     trap - EXIT
+    trap '' TERM INT
     if [[ "$owner_attempted" = 1 ]]; then
       # CA removal and exact absence verification MUST precede admin removal.
       if ! owned_avd || ! run 'TrustFixtureTest#remove'; then
@@ -79,9 +82,15 @@ project="peerloom-android-${RANDOM}-${RANDOM}"
 compose=(docker compose -p "$project" -f "$root/infra/compose.yaml" -f "$root/infra/compose.ci.yaml")
 fixture=$(mktemp -d)
 chmod 700 "$fixture"
+controller_pid=''
 cleanup() {
+  trap '' TERM INT
+  if [[ -n "$controller_pid" ]]; then
+    kill "$controller_pid" 2>/dev/null || true
+    wait "$controller_pid" 2>/dev/null || true
+  fi
   if owned_avd; then
-    timeout 5 adb -s "$serial" shell "run-as $package rm -f no_backup/pair-fixture.json no_backup/registration-fixture.json" >/dev/null 2>&1 || true
+    timeout 5 adb -s "$serial" shell "run-as $package rm -f no_backup/pair-fixture.json no_backup/registration-fixture.json no_backup/acceptance-request no_backup/acceptance-request.new no_backup/acceptance-reply" >/dev/null 2>&1 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans
   rm -rf "$fixture"
@@ -96,12 +105,19 @@ python3 scripts/generate-dev-secrets.py
 adb_owned reverse tcp:18080 tcp:18080
 umask 077
 "${compose[@]}" run --rm -T --no-deps --entrypoint device-bootstrap device-server --development > "$fixture/registration-fixture.json"
-"${compose[@]}" run --rm -T --no-deps --entrypoint device-bootstrap device-server --development --pair > "$fixture/pair-fixture.json"
+# The administrator credential stays in this host-only 0600 file, never in the APK.
+"${compose[@]}" run --rm -T --no-deps --entrypoint device-admin device-server bootstrap --offline --tenant-name android-acceptance --scope admin > "$fixture/admin.json"
+python3 scripts/prepare-lifecycle-fixture.py --base-url http://127.0.0.1:18080 --admin-fixture "$fixture/admin.json" --pair-output "$fixture/pair-fixture.json"
 for name in registration-fixture.json pair-fixture.json; do
   adb_owned shell "run-as $package sh -c 'umask 077; mkdir -p no_backup; cat > no_backup/$name'" < "$fixture/$name"
 done
 run RegistrationTest
+adb_owned shell "run-as $package sh -c 'umask 077; : > no_backup/acceptance-request; : > no_backup/acceptance-reply'"
+python3 "$root/bindings/android/scripts/service-control.py" --root "$root" --serial "$serial" --avd "$avd_name" --project "$project" --admin-fixture "$fixture/admin.json" --pair-fixture "$fixture/pair-fixture.json" &
+controller_pid=$!
 run ServiceTest
+wait "$controller_pid"
+controller_pid=''
 adb_owned shell am force-stop "$package"
 run ServiceRestartTest
 # Only print CheckJNI failures, not arbitrary device logs or application payloads.

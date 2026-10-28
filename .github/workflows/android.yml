@@ -22,6 +22,7 @@ jobs:
           python3 bindings/android/scripts/test-build-safety.py
           python3 bindings/android/scripts/test-diagnostics.py
           python3 bindings/android/scripts/test-trust-fixture.py
+          python3 bindings/android/scripts/test-service-control.py
       - name: 固定工具链
         run: |
           export JAVA_HOME="$JAVA_HOME_17_X64"

@@ -89,7 +89,7 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 5. 独立 Go/PostgreSQL/Redis 环境：真实 Android 注册、同租户跨应用授权确认、WebRTC 二进制收发、凭证旋转后进程重启仍用同设备身份。
 6. 应用 executor 暂停时确认真实消息已排队；远端关闭后读取 gate 已失效，再恢复 executor，消息不得交给应用。
 
-本地完成了 Rust host check、JNI C++17 `-Werror` 静态编译、官方 API36/AndroidX 类型的 Kotlin 编译，以及脚本边界检查。实际 Android 构建、4KB 与 16KB emulator 已通过上述全部门禁，包括各自固定五轮跨进程 CAS/持锁强杀测试，以及宿主队列中精确 payload/connection 的撤销断言；参见[对应精确提交的完整 CI 证据](https://github.com/barry-ran/peerloom/actions/runs/40686771276)。这只证明对应提交，不自动覆盖后续组合提交。
+本地完成了 Rust host check、JNI C++17 `-Werror` 静态编译、官方 API36/AndroidX 类型的 Kotlin 编译，以及脚本边界检查。实际 Android 构建、4KB 与 16KB emulator 已通过上述全部门禁，包括各自固定五轮跨进程 CAS/持锁强杀测试，以及宿主队列中精确 payload/connection 的远端主动关闭失效断言（该旧用例不是管理授权撤销）；参见[对应精确提交的完整 CI 证据](https://github.com/barry-ran/peerloom/actions/runs/40686771276)。这只证明对应提交，不自动覆盖后续组合提交。
 
 16KB 测试曾从本包 `ApplicationExitInfo` 取得 `REASON_LOW_MEMORY=3` 的明确记录，表明持锁测试进程被系统低内存清理，因而采用上述固定内存 fixture；保持原断言、五轮首败即红，不重试掩盖。该证据不追认更早所有崩溃都属于同一根因，也不证明任意低内存真机的长期行为。失败诊断仅保留白名单阶段、数值退出原因和受限异常类别，不读取进程 trace/description，不上传原始 logcat 或凭证。普通 emulator 不等于真机；移动网络切换、系统休眠、OEM Keystore 与长期后台生命周期仍需专项验收。
 
@@ -108,3 +108,11 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 - [Android 单张 CA 安装/卸载管理 API](https://developer.android.com/reference/android/app/admin/DevicePolicyManager#installCaCert(android.content.ComponentName,%20byte[]))
 
 - [Android 进程低内存退出原因](https://developer.android.com/reference/android/app/ApplicationExitInfo#REASON_LOW_MEMORY)
+
+## 有限生命周期与真实撤销验收
+
+测试 APK 的非导出 `BackgroundProbeActivity` 覆盖有限 Activity 后台停留三秒再回前台，并在同一身份和连接上继续双向消息；不等于 Doze、长期后台、厂商杀进程或真机切网验收。测试不修改生产 Activity、系统网络、安全配置或后台豁免。
+
+CI 只对本次 Compose 项目的 gateway 短暂停止/重启，形成真实 WSS 控制面断连。APK 通过固定阶段标记请求，host 控制器核验 CI、精确 emulator serial/AVD、专属 Compose 名称与时间上限，finally 恢复自己的 gateway。健康 P2P 与未过期租约应保留原句柄；恢复 Online 后继续双向消息，不把该用例称为底层 ICE restart 或数据路径故障重建。
+
+随后暂停接收端应用 executor，确认精确 payload/connection 已排队，由 host 经真实管理 HTTP 撤销本次 pair 的唯一有效定向 grant，并核对持久化 session 的关闭原因确为 `GRANT_REVOKED`。恢复 executor 后不得交付旧 payload；两个旧连接句柄都失效，各端 CONNECTION_CLOSED 仅一次，整个 SDK 关闭后复核计数。管理员凭证仅存在 host 新建 0600 文件，不传入 APK、ADB 参数或日志。此新增真实撤销/恢复门禁需在两个页大小的 emulator CI 上通过后才能声明验收；旧主动 close 证据不能替代它。

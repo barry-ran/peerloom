@@ -78,6 +78,75 @@ class Checksums(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     checksums.verify(path)
 
+    def evidence_fixture(self, path):
+        self.fixture(path)
+        files = {
+            "maven-evidence/report.json": b"{}",
+            "maven-evidence/sbom.cdx.json": b"{}",
+            "maven-evidence/SHA256SUMS": b"nested list",
+            "maven-evidence/第三方告知.md": "原始许可证说明".encode("utf-8"),
+            "release-package/LICENSE": b"MIT",
+            "release-package/SHA256SUMS": b"nested list",
+            "release-package/release-metadata.json": b"{}",
+            "release-package/third-party/原文/LICENSE": b"license bytes",
+        }
+        with (path / "SHA256SUMS").open("a", encoding="utf-8") as manifest:
+            for name, data in files.items():
+                destination = path / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+                manifest.write(hashlib.sha256(data).hexdigest() + "  " + name + "\n")
+
+    def test_utf8_recursive_producer_evidence_hashes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            self.evidence_fixture(path)
+            checksums.verify(path)
+            (path / "maven-evidence/第三方告知.md").write_text("tampered")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                checksums.verify(path)
+
+    def test_bad_utf8_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            self.fixture(path)
+            with (path / "SHA256SUMS").open("ab") as manifest:
+                manifest.write(b"\xff")
+            with self.assertRaises(UnicodeDecodeError):
+                checksums.verify(path)
+
+    def test_evidence_tree_missing_unknown_casefold_symlink_rejected(self):
+        for case in ("extra", "unknown-root", "casefold", "symlink", "anchor", "traversal", "ads", "prefix-conflict", "directory-symlink"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp)
+                self.evidence_fixture(path)
+                manifest = path / "SHA256SUMS"
+                if case in ("extra", "unknown-root", "casefold"):
+                    name = {"extra": "maven-evidence/unlisted", "unknown-root": "unknown/第三方.md", "casefold": "maven-evidence/REPORT.json"}[case]
+                    destination = path / name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(b"extra")
+                    if case != "extra":
+                        with manifest.open("a", encoding="utf-8") as output:
+                            output.write(hashlib.sha256(b"extra").hexdigest() + "  " + name + "\n")
+                elif case == "symlink":
+                    (path / "maven-evidence/第三方告知.md").unlink()
+                    (path / "maven-evidence/第三方告知.md").symlink_to(path / "LICENSE")
+                elif case == "prefix-conflict":
+                    with manifest.open("a", encoding="utf-8") as output:
+                        output.write(hashlib.sha256(b"x").hexdigest() + "  maven-evidence/report.json/child\n")
+                elif case == "directory-symlink":
+                    (path / "maven-evidence/linked").symlink_to(path / "release-package", target_is_directory=True)
+                elif case == "anchor":
+                    target = "maven-evidence/report.json"
+                    (path / target).unlink()
+                    manifest.write_text("\n".join(line for line in manifest.read_text().splitlines() if not line.endswith("  " + target)) + "\n")
+                else:
+                    replacement = "maven-evidence/../LICENSE" if case == "traversal" else "maven-evidence/x:ads"
+                    manifest.write_text(manifest.read_text().replace("maven-evidence/第三方告知.md", replacement))
+                with self.assertRaises(ValueError):
+                    checksums.verify(path)
+
 class ReleaseTrust(unittest.TestCase):
     def test_admin_is_only_protected_test_receiver(self):
         import xml.etree.ElementTree as ET

@@ -36,6 +36,67 @@ class ToolFailure(Failure):
     """Only controlled category; never carries command arguments or captured output."""
 
 
+DIAGNOSTIC_STEPS = frozenset({
+    'https-client', 'admin-page', 'readyz', 'metrics-denied', 'signal-unauthorized',
+    'login-origin-denied', 'login-host-denied', 'login', 'login-json', 'session-shape',
+    'secure-cookie', 'cookie-policy', 'session-read', 'logout-csrf-denied',
+    'logout', 'old-cookie-denied',
+})
+DIAGNOSTIC_REASONS = frozenset({
+    'unexpected-status', 'body-limit', 'page-csp', 'session-shape',
+    'secure-cookie', 'cookie-policy', 'exception',
+})
+
+
+class DiagnosticFailure(Failure):
+    """Only allowlisted labels; never preserves response or exception contents."""
+    def __init__(self, step, reason, category='assertion'):
+        self.step = step if step in DIAGNOSTIC_STEPS else 'unknown-step'
+        self.reason = reason if reason in DIAGNOSTIC_REASONS else 'unknown-reason'
+        self.category = category if category in {
+            'assertion', 'certificate-verification', 'tls', 'http', 'url-transport',
+            'timeout', 'os', 'json', 'shape', 'fixture-assertion', 'unexpected',
+        } else 'unexpected'
+        super().__init__('step=' + self.step + '; category=' + self.category + '; reason=' + self.reason)
+
+
+def diagnostic_category(error):
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return 'certificate-verification'
+    if isinstance(error, ssl.SSLError):
+        return 'tls'
+    if isinstance(error, urllib.error.HTTPError):
+        return 'http'
+    if isinstance(error, urllib.error.URLError):
+        # urllib wraps TLS verification failures. Inspect only the object type,
+        # never its textual reason, URL, headers, or response body.
+        if isinstance(error.reason, ssl.SSLCertVerificationError):
+            return 'certificate-verification'
+        if isinstance(error.reason, ssl.SSLError):
+            return 'tls'
+        return 'url-transport'
+    if isinstance(error, TimeoutError):
+        return 'timeout'
+    if isinstance(error, OSError):
+        return 'os'
+    if isinstance(error, json.JSONDecodeError):
+        return 'json'
+    if isinstance(error, (ValueError, KeyError, TypeError, AttributeError)):
+        return 'shape'
+    if isinstance(error, Failure):
+        return 'fixture-assertion'
+    return 'unexpected'
+
+
+def diagnose(step, operation, *args, **kwargs):
+    try:
+        return operation(*args, **kwargs)
+    except DiagnosticFailure:
+        raise
+    except Exception as error:
+        raise DiagnosticFailure(step, 'exception', diagnostic_category(error)) from None
+
+
 def invoke(args, *, data=None, capture=False, timeout=180, env=None):
     tool = Path(args[0]).name
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", tool):
@@ -119,51 +180,60 @@ def validate_rendered(raw):
 
 
 def verify_https(tenant, password, ca, origin=ORIGIN):
-    context = ssl.create_default_context(cafile=str(ca))
-    jar = http.cookiejar.CookieJar()
-    client = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
-        urllib.request.HTTPSHandler(context=context), urllib.request.HTTPCookieProcessor(jar))
+    def create_client():
+        context = ssl.create_default_context(cafile=str(ca))
+        jar = http.cookiejar.CookieJar()
+        client = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
+            urllib.request.HTTPSHandler(context=context), urllib.request.HTTPCookieProcessor(jar))
+        return client, jar
+    client, jar = diagnose('https-client', create_client)
 
-    def call(path, *, method='GET', data=None, headers=None, status=200):
-        values = dict(headers or {})
-        body = None if data is None else json.dumps(data).encode()
-        if body is not None:
-            values['Content-Type'] = 'application/json'
-        request = urllib.request.Request(origin + path, data=body, headers=values, method=method)
-        try:
-            response = client.open(request, timeout=10)
-        except urllib.error.HTTPError as error:
-            response = error
-        with response:
-            raw = response.read(1_048_577)
-            if response.status != status or len(raw) > 1_048_576:
-                raise Failure('HTTPS status/body bound mismatch: ' + path)
-            return raw, response.headers
+    def call(step, path, *, method='GET', data=None, headers=None, status=200):
+        def request_response():
+            values = dict(headers or {})
+            body = None if data is None else json.dumps(data).encode()
+            if body is not None:
+                values['Content-Type'] = 'application/json'
+            request = urllib.request.Request(origin + path, data=body, headers=values, method=method)
+            try:
+                response = client.open(request, timeout=10)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                raw = response.read(1_048_577)
+                if response.status != status:
+                    raise DiagnosticFailure(step, 'unexpected-status')
+                if len(raw) > 1_048_576:
+                    raise DiagnosticFailure(step, 'body-limit')
+                return raw, response.headers
+        return diagnose(step, request_response)
 
-    page, headers = call('/admin/')
+    page, headers = call('admin-page', '/admin/')
     if b'Peerloom' not in page or "script-src 'self'" not in headers.get('Content-Security-Policy', ''):
-        raise Failure('HTTPS management page/CSP missing')
-    call('/readyz')
-    call('/metrics', status=404)
-    call('/v1/device-signal', status=401)
+        raise DiagnosticFailure('admin-page', 'page-csp')
+    call('readyz', '/readyz')
+    call('metrics-denied', '/metrics', status=404)
+    call('signal-unauthorized', '/v1/device-signal', status=401)
     login = {'tenant_id': tenant, 'username': 'gateway_owner', 'password': password}
-    call('/admin/api/auth/login', method='POST', data=login, headers={'Origin': 'https://invalid.example'}, status=403)
-    call('/admin/api/auth/login', method='POST', data=login, headers={'Origin': origin, 'Host': 'invalid.example'}, status=403)
-    body, headers = call('/admin/api/auth/login', method='POST', data=login, headers={'Origin': origin})
-    session = json.loads(body)
+    call('login-origin-denied', '/admin/api/auth/login', method='POST', data=login, headers={'Origin': 'https://invalid.example'}, status=403)
+    call('login-host-denied', '/admin/api/auth/login', method='POST', data=login, headers={'Origin': origin, 'Host': 'invalid.example'}, status=403)
+    body, headers = call('login', '/admin/api/auth/login', method='POST', data=login, headers={'Origin': origin})
+    session = diagnose('login-json', json.loads, body)
     cookies = list(jar)
-    if session.get('tenant_id') != tenant or session.get('scope') != 'admin' or len(session.get('csrf_token', '')) != 43:
-        raise Failure('HTTPS authenticated session mismatch')
+    valid_session = diagnose('session-shape', lambda: session.get('tenant_id') == tenant
+        and session.get('scope') == 'admin' and len(session.get('csrf_token', '')) == 43)
+    if not valid_session:
+        raise DiagnosticFailure('session-shape', 'session-shape')
     if len(cookies) != 1 or cookies[0].name != '__Host-peerloom_admin' or not cookies[0].secure or cookies[0].path != '/':
-        raise Failure('HTTPS __Host Secure cookie missing')
+        raise DiagnosticFailure('secure-cookie', 'secure-cookie')
     header = headers.get('Set-Cookie', '').lower()
     if 'httponly' not in header or 'samesite=strict' not in header or 'domain=' in header:
-        raise Failure('HTTPS cookie policy mismatch')
-    call('/admin/api/auth/session')
+        raise DiagnosticFailure('cookie-policy', 'cookie-policy')
+    call('session-read', '/admin/api/auth/session')
     old_cookie = cookies[0].name + '=' + cookies[0].value
-    call('/admin/api/auth/logout', method='POST', data={}, headers={'Origin': origin}, status=403)
-    call('/admin/api/auth/logout', method='POST', data={}, headers={'Origin': origin, 'X-CSRF-Token': session['csrf_token']})
-    call('/admin/api/auth/session', headers={'Cookie': old_cookie}, status=401)
+    call('logout-csrf-denied', '/admin/api/auth/logout', method='POST', data={}, headers={'Origin': origin}, status=403)
+    call('logout', '/admin/api/auth/logout', method='POST', data={}, headers={'Origin': origin, 'X-CSRF-Token': session['csrf_token']})
+    call('old-cookie-denied', '/admin/api/auth/session', headers={'Cookie': old_cookie}, status=401)
 
 
 def read_exact(stream, count):
@@ -301,15 +371,19 @@ def execute(root=ROOT):
                 raise Failure('synthetic admin creation failed')
             stage = 'HTTPS gateway startup'; run(compose + ['up', '-d', '--wait', 'device-server', 'gateway'])
             run(compose + ['exec', '-T', 'gateway', 'nginx', '-t'])
-            stage = 'CA/hostname verification and HTTPS management'
+            stage = 'default CA rejection'
             verify_default_trust_rejects()
+            stage = 'explicit CA HTTPS readyz'
             run(['curl', '--fail', '--silent', '--show-error', '--noproxy', '*', '--max-time', '10', '--cacert', str(ca), ORIGIN + '/readyz'])
+            stage = 'HTTPS management'
             verify_https(tenant, password, ca)
             stage = 'real authenticated WSS hello/heartbeat'; verify_wss(pair['source']['device_credential'], ca)
+        except DiagnosticFailure as error:
+            raise Failure('TLS Compose validation failed during ' + stage + '; ' + str(error) + '; secret details withheld') from None
         except ToolFailure as error:
             raise Failure('TLS Compose validation failed during ' + stage + '; ' + str(error) + '; secret details withheld') from None
-        except Exception:
-            raise Failure('TLS Compose validation failed during ' + stage + '; secret details withheld') from None
+        except Exception as error:
+            raise Failure('TLS Compose validation failed during ' + stage + '; category=' + diagnostic_category(error) + '; secret details withheld') from None
         finally:
             try:
                 run(compose + ['down', '--volumes', '--remove-orphans', '--timeout', '10'], timeout=90)

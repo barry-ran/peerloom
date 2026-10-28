@@ -80,6 +80,10 @@ sys.exit(7 if os.environ['FAIL'] == 'recovery' else 0)
 
 
 class LifecycleScriptTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'posix', 'POSIX executable mode checked on Unix CI')
+    def test_repository_entrypoint_is_executable(self):
+        self.assertTrue((HERE / 'test-lifecycle.sh').stat().st_mode & stat.S_IXUSR)
+
     def run_shell(self, failure):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -39,6 +39,13 @@ if name == "test-managed-relay.sh":
     pathlib.Path("relay-test-invoked").touch()
     sys.exit(7 if os.environ["TEST_FAIL_TARGET"] == "relay" else 0)
 if name == "python3":
+    if len(sys.argv) > 1 and sys.argv[1].endswith("test-control-recovery.py"):
+        project = sys.argv[sys.argv.index("--project") + 1]
+        assert project.startswith("peerloom-test-")
+        admin = pathlib.Path(sys.argv[sys.argv.index("--admin-fixture") + 1])
+        assert stat.S_IMODE(admin.stat().st_mode) == 0o600
+        pathlib.Path("control-recovery-invoked").touch()
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1].endswith("run-service.py"):
         p = pathlib.Path(os.environ["TEST_SIGNAL_FIXTURE_FILE"])
         assert p.is_absolute() and stat.S_IMODE(p.stat().st_mode) == 0o600

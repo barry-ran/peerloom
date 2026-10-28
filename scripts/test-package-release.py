@@ -93,7 +93,23 @@ class PackageTests(unittest.TestCase):
         (self.proof/'LICENSE').write_text('first')
         (self.proof/'license').write_text('second')
         self.evidence('collected-not-legally-reviewed')
-        with self.assertRaisesRegex(m.PackageError, 'CASEFOLD'): self.finish()
+        observed = {path.name for path in self.proof.iterdir()}
+        if {'LICENSE', 'license'} <= observed:
+            # Keep the real directory regression on case-sensitive filesystems.
+            with self.assertRaisesRegex(m.PackageError, 'CASEFOLD'):
+                self.finish()
+            (self.proof/'license').unlink()
+            self.evidence('collected-not-legally-reviewed')
+        # A case-insensitive macOS volume cannot physically retain both entries.
+        # Always supply a hostile enumeration too: real checksum reads and the
+        # production collision guard are used, with no platform test skip.
+        entries = list(self.proof.rglob('*'))
+        existing = next(path for path in entries if path.name.casefold() == 'license')
+        alias = 'license' if existing.name == 'LICENSE' else 'LICENSE'
+        entries.append(self.proof/alias)
+        with patch.object(Path, 'rglob', return_value=iter(entries)):
+            with self.assertRaisesRegex(m.PackageError, 'CASEFOLD'):
+                self.finish()
 
     def test_reserved_windows_name_rejected(self):
         (self.proof/'CON.txt').write_text('ambiguous')

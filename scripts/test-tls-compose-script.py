@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import urllib.error
 from unittest import mock
 
 import yaml
@@ -40,6 +41,86 @@ class TLSComposeTests(unittest.TestCase):
             with self.assertRaisesRegex(m.ToolFailure, 'command=docker; outcome=timeout') as error:
                 m.invoke(['docker', 'private-argument'])
             self.assertNotIn('private', str(error.exception))
+
+    def test_exception_categories_never_include_private_exception_contents(self):
+        private = 'dev_secret svc_secret password=secret Cookie=private https://private/'
+        cases = [
+            (ssl.SSLCertVerificationError(private), 'certificate-verification'),
+            (urllib.error.URLError(ssl.SSLCertVerificationError(private)), 'certificate-verification'),
+            (ssl.SSLError(private), 'tls'),
+            (urllib.error.URLError(private), 'url-transport'),
+            (TimeoutError(private), 'timeout'),
+            (OSError(private), 'os'),
+            (json.JSONDecodeError(private, private, 0), 'json'),
+            (KeyError(private), 'shape'),
+            (m.Failure(private), 'fixture-assertion'),
+            (RuntimeError(private), 'unexpected'),
+        ]
+        for value, category in cases:
+            with self.subTest(category=category), self.assertRaises(m.DiagnosticFailure) as caught:
+                m.diagnose('login', mock.Mock(side_effect=value))
+            self.assertEqual(str(caught.exception),
+                             'step=login; category=' + category + '; reason=exception')
+        self.assertEqual(str(m.DiagnosticFailure(private, private, private)),
+                         'step=unknown-step; category=unexpected; reason=unknown-reason')
+
+    def https_fixture(self, *, fail_index=None, malformed_json=False, cookie_secure=True,
+                      wrong_csp=False, oversized=False):
+        private = 'private-password-and-cookie-and-response'
+        cookie = mock.Mock(name='cookie')
+        cookie.name = '__Host-peerloom_admin'
+        cookie.secure = cookie_secure
+        cookie.path = '/'
+        cookie.value = private
+        headers = {'Content-Security-Policy': "script-src 'self'",
+                   'Set-Cookie': '__Host-peerloom_admin=' + private + '; Secure; HttpOnly; SameSite=Strict'}
+        replies = []
+        statuses = [200, 200, 404, 401, 403, 403, 200, 200, 403, 200, 401]
+        for index, status in enumerate(statuses):
+            reply = mock.MagicMock()
+            reply.__enter__.return_value = reply
+            reply.status = 599 if index == fail_index else status
+            reply.headers = dict(headers)
+            raw = b'Peerloom' if index == 0 else private.encode()
+            if index == 6:
+                raw = private.encode() if malformed_json else json.dumps({
+                    'tenant_id': 'tenant', 'scope': 'admin', 'csrf_token': 'x' * 43}).encode()
+            if index == 0 and wrong_csp:
+                reply.headers['Content-Security-Policy'] = private
+            if index == 0 and oversized:
+                raw = private.encode() * 65536
+            reply.read.return_value = raw
+            replies.append(reply)
+        client = mock.Mock()
+        client.open.side_effect = replies
+        with mock.patch.object(m.ssl, 'create_default_context'), \
+             mock.patch.object(m.http.cookiejar, 'CookieJar', return_value=[cookie]), \
+             mock.patch.object(m.urllib.request, 'build_opener', return_value=client):
+            m.verify_https('tenant', private, Path('/synthetic-ca'))
+        return client
+
+    def test_https_status_diagnostics_identify_each_fixed_step_without_secrets(self):
+        steps = ['admin-page', 'readyz', 'metrics-denied', 'signal-unauthorized',
+                 'login-origin-denied', 'login-host-denied', 'login', 'session-read',
+                 'logout-csrf-denied', 'logout', 'old-cookie-denied']
+        for index, step in enumerate(steps):
+            with self.subTest(step=step), self.assertRaises(m.DiagnosticFailure) as caught:
+                self.https_fixture(fail_index=index)
+            self.assertEqual(str(caught.exception),
+                             'step=' + step + '; category=assertion; reason=unexpected-status')
+            self.assertNotIn('private', str(caught.exception))
+        self.assertEqual(self.https_fixture().open.call_count, 11)
+
+    def test_https_json_csp_cookie_and_bounds_have_controlled_reasons(self):
+        cases = [({'malformed_json': True}, 'step=login-json; category=json; reason=exception'),
+                 ({'cookie_secure': False}, 'step=secure-cookie; category=assertion; reason=secure-cookie'),
+                 ({'wrong_csp': True}, 'step=admin-page; category=assertion; reason=page-csp'),
+                 ({'oversized': True}, 'step=admin-page; category=assertion; reason=body-limit')]
+        for options, expected in cases:
+            with self.subTest(options=options), self.assertRaises(m.DiagnosticFailure) as caught:
+                self.https_fixture(**options)
+            self.assertEqual(str(caught.exception), expected)
+            self.assertNotIn('private', str(caught.exception))
 
     def test_configuration_ports_secret_scope_and_production_cookie_mode(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -107,7 +188,7 @@ class TLSComposeTests(unittest.TestCase):
             m.verify_wss('dev_private\r\nInjected: yes', Path('/nonexistent'))
 
     def test_cleanup_owns_only_new_project_and_never_leaks_password(self):
-        for fail in (False, True, "tool"):
+        for fail in (False, True, "tool", "diagnostic"):
             with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary); (root / 'infra').mkdir(); (root / 'scripts').mkdir()
                 shutil.copy(ROOT / 'infra/compose.yaml', root / 'infra/compose.yaml')
@@ -154,13 +235,14 @@ class TLSComposeTests(unittest.TestCase):
                 with mock.patch.object(m, 'certificates', side_effect=certificates), \
                      mock.patch.object(m, 'invoke', side_effect=invoke), \
                      mock.patch.object(m, 'verify_default_trust_rejects'), \
-                     mock.patch.object(m, 'verify_https', side_effect=m.ToolFailure('command=docker; exit_code=42') if fail == 'tool' else m.Failure('secret payload') if fail else None), \
+                     mock.patch.object(m, 'verify_https', side_effect=m.DiagnosticFailure('login', 'unexpected-status') if fail == 'diagnostic' else m.ToolFailure('command=docker; exit_code=42') if fail == 'tool' else m.Failure('secret payload') if fail else None), \
                      mock.patch.object(m, 'verify_wss') as wss, contextlib.redirect_stdout(out):
                     if fail:
                         with self.assertRaisesRegex(m.Failure, 'secret details withheld') as error:
                             m.execute(root)
                         self.assertNotIn('secret payload', str(error.exception))
                         if fail == 'tool': self.assertIn('exit_code=42', str(error.exception))
+                        if fail == 'diagnostic': self.assertIn('step=login; category=assertion; reason=unexpected-status', str(error.exception))
                         wss.assert_not_called()
                     else:
                         m.execute(root); wss.assert_called_once()
