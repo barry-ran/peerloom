@@ -3,6 +3,8 @@
 #[allow(unsafe_code)]
 mod boundary;
 mod bridge;
+mod channels;
+mod handles;
 mod state;
 mod storage;
 pub use boundary::*;

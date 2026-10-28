@@ -1,6 +1,6 @@
 # SDK 身份与信令模块
 
-本模块位于 `src/device-sdk/device-core` 与 `device-storage`。`DeviceSdk`/`Connection` 已把身份、原生 WSS、目标确认、授权期限与真实 WebRTC 组合为可调用的 Rust facade；也保留低层组件供专门集成。当前 Rust facade 支持**单身份、单 WSS 下有界多会话，每会话仍仅单条可靠消息通道**，不是最终多连接多通道 SDK，不包含五端安全存储；Linux 的 C ABI 子集见 [C 语言接口模块](C语言接口模块.md)，不代表五端 ABI 已验收。
+本模块位于 `src/device-sdk/device-core` 与 `device-storage`。`DeviceSdk`/`Connection` 已把身份、原生 WSS、目标确认、授权期限与真实 WebRTC 组合为可调用的 Rust facade；也保留低层组件供专门集成。当前 Rust facade 支持**单身份、单 WSS 下有界多会话，每会话可热开可靠消息、低延迟消息和可靠字节流**，不是最终多连接多通道 SDK，不包含五端安全存储；Linux 的 C ABI 子集见 [C 语言接口模块](C语言接口模块.md)，不代表五端 ABI 已验收。
 
 ```mermaid
 flowchart LR
@@ -18,6 +18,26 @@ flowchart LR
     Gate --> Connection
     Gate --> Worker
 ```
+
+## Rust 多通道接口与边界
+
+`Connection::peer_device_id()` 返回经过会话参与者校验的对端；`request_id()` 仅源端关联最初 `connect_with_request`，目标端为 `None`，同会话恢复新代保留原关联。不能把仅有 session ID 的 Ready 猜测成最近一次 connect。
+
+- `open_message(label, mode, QueueConfig)` 只接可靠消息/低延迟消息；`open_stream(label)` 采用现有 `peerloom.stream.v1`，不新增协议或密码学。相同 label 不用来猜类型。
+- 一个 worker 独占 `accept_incoming`，按协议/可靠性元数据严格分派。`take_incoming_channels()` 一次性取得独立接收器，避免默认消息 receive 与通道 accept 抢同一可变借用；丢弃接收器不会关闭父连接，无法交付的新子通道自行关闭。
+- 消息 `sender()` 可克隆并与 receive 并发；发送完成仅代表本地传输受理，`Dropped` 明确表示整条策略丢弃，不是送达确认。发送能力的克隆被丢弃不关闭 owner；owner 关闭/失效后克隆也不可用。
+- `SdkByteStream::split()` 返回独立 reader/writer，挂起 read 不阻止 write/FIN。write 可部分受理，调用者按返回 n 前进；FIN 仅关闭本端写方向，之后误 write 被拒，但反向读仍可继续。任一半显式 close/drop 关闭整个子流；正常 FIN 不是 drop。
+- 每个子 handle 保存父 session/generation 与只读 `ChannelValidity`。关闭子通道不关闭兄弟；父租约失效、撤销、reset 或旧代关闭同步禁止所有旧子通道收发。raw transport 不外泄。
+
+活动通道额度与底层累计创建预算不同：`transport.max_channels` 默认 8、此 facade 上限 128，初始默认通道计入；正常关闭释放活动额度，但不回收累计预算，创建超时也保留底层不确定名额。需要新累计预算应按正常会话授权创建新 PeerConnection，不能绕过既有租约或静默重置身份。
+
+### 发送预算、TTL 与回压
+
+SDK 全部会话共享发送预算，默认有效载荷 4 MiB/1024 条（可配置、硬上界64 MiB/65536），queued 与实际 I/O in-flight 都计费，取消/失败只在实际持有者销毁后释放。每消息通道可独立设置队列条数/字节数/单条上限/TTL/整条 fail、drop_oldest、drop_newest；drop_oldest 不夺取兄弟或 in-flight 字节。绝对 `send_before` 将上层受理 deadline 与默认 TTL 取小值，异序 deadline 扫描有界队列全部条目，不被较晚过期的队首挡住；每个被丢弃/过期请求独立结算一次。
+
+stream 不使用消息丢弃队列，write 每次最多16 KiB、待发命令槽1，默认发送TTL30秒。`write_before`/`shutdown_write_before` 保留外层受理deadline，绝不重新计时；排队/进行中取消或超时使整条子流失败关闭，不自动重放中段。明确未受理的 BufferFull 可在应用排空后重试。消息实际发送的超时/不确定错误也关闭该子通道，只有明确未受理的 BufferFull/MessageTooLarge 不因此关闭。
+
+接收方向是有界回压，不额外发明入站TTL：消息接收32条，stream最多4个16 KiB分片，局部读取保留余字节。SCTP共享拥塞/接收窗口可能耦合通道吞吐，不承诺任意停读时其他通道完全无影响。上述发送payload预算不包含底层DTLS/SCTP、接收缓存、协议元数据、FFI已受理请求或宿主内存，不能声称是进程总内存上限。stream无数据轮询超时不消费任何frame，不改变序号/半关闭状态；发送超时则不能类推为未发送。
 
 ## 托管 TURN 与初始 ICE 配置
 
@@ -54,7 +74,7 @@ flowchart LR
 | `Connection::send` / `receive` | 有界可靠消息收发；不暴露可绕过授权守卫的 raw transport |
 | `Connection::close` / `DeviceSdk::close` | 先禁止新收发，再有界等待资源清理；正常 SDK 退出允许正在执行的有界凭证变更结束 |
 
-`max_connections` 默认 1，可设 1..32（当前工程硬上界，不是吞吐承诺）；pending、待授权、协商、Ready 与恢复中的会话全部占位。`max_channels_per_connection` 当前仍只接受 1。C/Kotlin/Swift 本切片仍只曝光单连接，不能仅凭 Rust 配置宣称五端多连接完成。底层传输也硬设为单通道；Ready 前检查 label 为 `peerloom.reliable`、protocol 为空，并且有序、没有有限重传次数或期限，不能把低延迟或字节流通道伪装为可靠消息。
+`max_connections` 默认 1，可设 1..32（当前工程硬上界，不是吞吐承诺）；pending、待授权、协商、Ready 与恢复中的会话全部占位。`max_channels_per_connection` 默认 1，可设 1..32，含保留的默认可靠消息通道和正在创建/握手的通道，且不得超过 `transport.max_channels`。C/Kotlin/Swift 本切片仍只曝光单连接，不能仅凭 Rust 配置宣称五端多连接完成。每会话初始仍创建默认可靠消息通道以保持旧 `send/receive`；Ready 前检查 label 为 `peerloom.reliable`、protocol 为空，并且有序、没有有限重传次数或期限，不能把低延迟或字节流通道伪装为可靠消息。
 
 连接请求被拒时发出同样的 `ConnectionRequestFailed`（reason 为拒绝错误），不会释放其他目标的 pending，也不会关闭已获准的兄弟会话。未知或旧代响应不作用于当前代。服务端已分配会话后的事件继续以 session_id 关联。ABI1 保持事件布局与编号不变：请求失败映射既有 CONNECTION_CLOSED（connection_id=0、session_id 为空），JSON 追加 request_id 和 target_device_id；旧客户端可忽略新增字段。
 
@@ -171,7 +191,7 @@ cargo test --locked -p device-core --test sdk_service -- --ignored --nocapture
 
 fixture 必须是 0600 私有文件；不把凭证放入命令行参数、日志或仓库。当前新增阶段的远端 CI 尚需按准确提交确认，不能以本地结果替代。
 
-尚未完成的验收包括授权业务链路中的自动 TURN 回退、网络切换/休眠恢复、24 小时级凭证生命周期与长期续租压力、多连接多通道 facade、五端安全存储、稳定 C ABI 与 Android/iOS 原生绑定。底层可靠字节流即使单独通过传输测试，也不等于已接入当前可靠消息 facade。接口和测试不得把这些目标写成已交付能力。
+尚未完成的验收包括授权业务链路中的自动 TURN 回退、网络切换/休眠恢复、24 小时级凭证生命周期与长期续租压力、长期多连接多通道压力、五端安全存储、稳定 C ABI 与 Android/iOS 原生绑定。当前 Rust 三类型通道已接入同一 facade；C/Kotlin/Swift 新多连接/多通道包装需独立验收，不由 Rust 测试代替。接口和测试不得把这些目标写成已交付能力。
 
 托管中继的真实验收使用新的一对设备夹具（权限0600，经过目标批准的定向grant），服务端已配置批准的coturn REST节点：
 

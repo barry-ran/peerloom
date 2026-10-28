@@ -50,19 +50,22 @@ jobs:
         run: |
           ./scripts/test-windows.ps1
           ./scripts/test-windows-service.ps1
+      - name: 打包已链接验证的 Windows release ABI 与原文证据
+        run: |
+          python scripts/test-package-release.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release packaging tests failed' }
+          python scripts/package-third-party.py
+          if ($LASTEXITCODE -ne 0) { throw 'Third-party evidence generation failed' }
+          python scripts/package-release.py --platform windows-x86_64 --output dist/release/windows-x86_64
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release-profile packaging failed' }
       - name: 保存 Windows 原生检查证据与 ABI（非正式发布）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: peerloom-windows-native-${{ github.sha }}
+          name: peerloom-windows-release-${{ github.sha }}
           retention-days: 14
           if-no-files-found: error
           path: |
-            dist/validation/windows-*.txt
-            src/device-sdk/target/x86_64-pc-windows-msvc/debug/device_ffi.dll
-            src/device-sdk/target/x86_64-pc-windows-msvc/debug/device_ffi.dll.lib
-            src/device-sdk/target/x86_64-pc-windows-msvc/debug/device_ffi.lib
-            src/device-sdk/device-ffi/include/device_sdk.h
-            LICENSE
+            dist/release/windows-x86_64/
   apple-native:
     runs-on: macos-15
     timeout-minutes: 90
@@ -119,19 +122,23 @@ jobs:
               PEERLOOM_APPLE_OUTPUT="$output" ./bindings/ios/scripts/test-native.sh --stage cleanup
             fi
           done
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: src/device-server/go.sum
+      - name: 打包已验收 Apple release XCFramework 与原文证据
+        run: |
+          python3 scripts/test-package-release.py
+          python3 scripts/package-third-party.py
+          python3 scripts/package-release.py --platform apple --apple-package "$PEERLOOM_APPLE_OUTPUT/SwiftPackage" --output dist/release/apple
       - name: 保存 Apple 检查产物（unsigned device build 非真机验证）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: peerloom-apple-native-${{ github.sha }}
+          name: peerloom-apple-release-${{ github.sha }}
           retention-days: 14
           if-no-files-found: error
           path: |
-            ${{ runner.temp }}/peerloom-apple-validation/SwiftPackage
-            !${{ runner.temp }}/peerloom-apple-validation/SwiftPackage/.build/**
-            !${{ runner.temp }}/peerloom-apple-validation/SwiftPackage/.swiftpm/**
-            ${{ runner.temp }}/peerloom-apple-validation/*.txt
-            ${{ runner.temp }}/peerloom-apple-validation/*.json
-            LICENSE
+            dist/release/apple/
       - name: 保留真实 Xcode 测试诊断（不视为验收产物）
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

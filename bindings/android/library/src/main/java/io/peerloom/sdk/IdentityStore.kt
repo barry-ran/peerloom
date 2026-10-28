@@ -27,7 +27,8 @@ import org.json.JSONObject
  * persistence or key-loss reset. Deletion writes an encrypted tombstone.
  */
 class IdentityStore
-internal constructor(context: Context, private val rename: (String, String) -> Unit) {
+internal constructor(context: Context, private val rename: (String, String) -> Unit) :
+    IdentityStorage {
     constructor(context: Context) : this(context, { source, target -> Os.rename(source, target) })
 
     private val directory =
@@ -41,7 +42,7 @@ internal constructor(context: Context, private val rename: (String, String) -> U
 
     class Conflict : Exception()
 
-    fun execute(request: JSONObject): JSONObject =
+    override fun execute(request: JSONObject): JSONObject =
         processLock.withLock {
             check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
                 "storage requires worker thread"

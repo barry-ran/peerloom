@@ -13,11 +13,13 @@ tasks.register('collectMavenEvidence') {
         if (!gradle.startParameter.offline) {
             throw new GradleException('Maven evidence requires --offline; build/fetch separately')
         }
+        new GroovyShell().run(rootProject.file('scripts/test-maven-keys.groovy'),
+            [rootProject.file('scripts/maven-evidence.gradle').absolutePath] as String[])
         def output = rootProject.layout.buildDirectory.file('maven-evidence-input.json').get().asFile
         if (output.exists()) {
             throw new GradleException('Evidence input already exists; use a fresh build directory')
         }
-        def coordinate = { id -> "${id.group}:${id.module}:${id.version}" }
+        def coordinate = { id -> "${id.group}:${id.module}:${id.version}".toString() }
         def fileProof = { file ->
             def md = MessageDigest.getInstance('SHA-256')
             file.withInputStream { input ->
@@ -40,9 +42,9 @@ tasks.register('collectMavenEvidence') {
             // Original selected module archives, not AGP transformed class directories.
             configuration.resolvedConfiguration.resolvedArtifacts.each { artifact ->
                 def id = artifact.moduleVersion.id
-                def key = "${id.group}:${id.name}:${id.version}"
+                def key = "${id.group}:${id.name}:${id.version}".toString()
                 if (records.containsKey(key)) {
-                    records[key].artifacts.add(fileProof(artifact.file))
+                    records.get(key).artifacts.add(fileProof(artifact.file))
                 } else if (!(artifact.id.componentIdentifier instanceof org.gradle.api.artifacts.component.ProjectComponentIdentifier)) {
                     throw new GradleException('Unknown external artifact requires reviewed inventory')
                 }
@@ -54,7 +56,7 @@ tasks.register('collectMavenEvidence') {
                 def poms = component.getArtifacts(MavenPomArtifact)
                 def resolved = poms.findAll { it instanceof org.gradle.api.artifacts.result.ResolvedArtifactResult }
                 if (resolved.size() == 1) {
-                    records[coordinate(component.id)].pom = fileProof(resolved.first().file)
+                    records.get(coordinate(component.id)).pom = fileProof(resolved.first().file)
                 }
             }
             records.values().each { record ->

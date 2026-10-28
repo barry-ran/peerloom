@@ -167,7 +167,7 @@ class WatchdogTests(unittest.TestCase):
                           {"workspace": {"schemes": ["Other-Package"]}}):
                 path.write_text(json.dumps(wrong))
                 self.assertNotEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
-        self.assertIn("summary['totalTestCount'] >= 8 and summary['failedTests'] == 0", source)
+        self.assertIn("summary['totalTestCount'] >= 12 and summary['failedTests'] == 0", source)
         self.assertIn("CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=", source)
         self.assertIn("run ios-device 600 xcodebuild -scheme PeerloomSwift", source)
         self.assertNotIn("-skip-testing", source)
@@ -312,7 +312,7 @@ class WatchdogTests(unittest.TestCase):
         self.assertNotIn("-skip-testing", workflow + build)
         native = SCRIPT.with_name("test-native.sh").read_text()
         self.assertIn("inspect-test-signing.py", native)
-        self.assertIn("summary['totalTestCount'] >= 8 and summary['failedTests'] == 0", native)
+        self.assertIn("summary['totalTestCount'] >= 12 and summary['failedTests'] == 0", native)
 
     def test_real_ios_runs_before_diagnostics_and_both_fail_closed(self):
         source = SCRIPT.with_name("test-native.sh").read_text()
@@ -351,6 +351,24 @@ class WatchdogTests(unittest.TestCase):
                 self.assertIn("status=23", result.stdout)
                 self.assertTrue(marker.exists())
 
+    def test_discovery_requires_old_and_new_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "discovery"
+            names = sorted("PeerloomSwiftTests." + suite + "/" + method
+                           for suite, methods in VERIFY.EXPECTED.items() for method in methods)
+            self.assertEqual(len(names), 14)
+            self.assertIn("PeerloomSwiftTests.NativeCoreTests/testTypedChildMetadataAndPartialWriteResult", names)
+            path.write_text("\n".join(names))
+            VERIFY.discovery(path)
+            # Every original test and the new channel test remain mandatory.
+            for missing in names:
+                path.write_text("\n".join(name for name in names if name != missing))
+                with self.assertRaises(ValueError, msg=missing):
+                    VERIFY.discovery(path)
+            path.write_text("\n".join(names + [names[0]]))
+            with self.assertRaises(ValueError):
+                VERIFY.discovery(path)
+
     def test_suite_started_or_zero_tests_is_not_success(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "suite"
@@ -383,7 +401,7 @@ class WatchdogTests(unittest.TestCase):
             self.assertFalse((root / "phase-macos-swift.json").exists())
             failure.write_text(success)
             VERIFY.aggregate(root)
-            self.assertEqual(json.loads((root / "phase-macos-swift.json").read_text())["test_count"], 10)
+            self.assertEqual(json.loads((root / "phase-macos-swift.json").read_text())["test_count"], 14)
 
 
 if __name__ == "__main__":

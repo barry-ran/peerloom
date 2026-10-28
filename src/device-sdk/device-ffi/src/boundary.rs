@@ -18,6 +18,7 @@ pub struct DpEvent {
     pub struct_size: u32,
     pub payload: *const u8,
     pub payload_len: usize,
+    pub channel: u64,
 }
 fn guarded(f: impl FnOnce() -> Result<(), u32>) -> u32 {
     catch_unwind(AssertUnwindSafe(f))
@@ -50,10 +51,10 @@ unsafe fn output_zero(output: *mut u64) -> Result<(), u32> {
 pub extern "C" fn dp_abi_version() -> u32 {
     1
 }
-/// Capability bits: reliable messages, external async CAS, explicit memory store.
+/// Capability bits are additive; ABI1 prefix remains stable.
 #[unsafe(no_mangle)]
 pub extern "C" fn dp_capabilities() -> u64 {
-    1 | 2 | 4 | 8
+    1 | 2 | 4 | 8 | 16 | 32 | 64 | 128
 }
 
 /// # Safety
@@ -104,14 +105,19 @@ pub unsafe extern "C" fn dp_sdk_create(
             shutting: AtomicBool::new(false),
             stop: Default::default(),
             runtime_done: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
             callback_done: AtomicBool::new(false),
             shutdown_id: AtomicU64::new(0),
-            connection_id: AtomicU64::new(0),
-            connection_validity: Mutex::new(None),
+            handles: Mutex::new(
+                crate::handles::HandleRegistry::new(
+                    config.max_connections,
+                    config.max_channels_per_connection,
+                )
+                .map_err(handle_error)?,
+            ),
             device_id: Mutex::new(None),
             resetting: AtomicBool::new(false),
             reset_active: AtomicBool::new(false),
-            closing_connection: AtomicU64::new(0),
             data_count: AtomicUsize::new(0),
             control_count: AtomicUsize::new(0),
             threads: Mutex::new(Vec::new()),
@@ -131,15 +137,18 @@ pub unsafe extern "C" fn dp_sdk_create(
         let callback_thread = std::thread::Builder::new()
             .name("peerloom-callback".into())
             .spawn(move || {
-                while let Ok(event) = event_rx.recv() {
+                while let Ok(mut event) = event_rx.recv() {
                     let deliver = event.validity.as_ref().is_none_or(|v| {
                         v.is_valid()
                             && !callback_instance.resetting.load(Ordering::Acquire)
                             && !callback_instance.shutting.load(Ordering::Acquire)
-                            && callback_instance.closing_connection.load(Ordering::Acquire)
-                                != event.connection
                     });
-                    if deliver {
+                    if !deliver && event.kind == COMPLETE {
+                        event.payload.fill(0);
+                        event.payload.clear();
+                        event.status = CLOSED;
+                    }
+                    if deliver || event.kind == COMPLETE {
                         let view = DpEvent {
                             abi_version: 1,
                             kind: event.kind,
@@ -153,6 +162,7 @@ pub unsafe extern "C" fn dp_sdk_create(
                                 event.payload.as_ptr()
                             },
                             payload_len: event.payload.len(),
+                            channel: event.channel,
                         };
                         callback(context, &view);
                     }
@@ -317,21 +327,57 @@ pub extern "C" fn dp_sdk_state(sdk: u64) -> u32 {
 pub extern "C" fn dp_connection_is_valid(sdk: u64, connection: u64) -> u32 {
     guarded(|| {
         let instance = lookup(sdk)?;
-        if instance.shutting.load(Ordering::Acquire)
-            || instance.resetting.load(Ordering::Acquire)
-            || instance.closing_connection.load(Ordering::Acquire) == connection
-        {
+        if instance.shutting.load(Ordering::Acquire) || instance.resetting.load(Ordering::Acquire) {
             return Err(CLOSED);
         }
-        let validity = instance.connection_validity.lock().map_err(|_| INTERNAL)?;
-        let (_, validity) = validity
-            .as_ref()
-            .filter(|(id, _)| *id == connection)
-            .ok_or(HANDLE)?;
-        if validity.is_valid() {
-            Ok(())
-        } else {
-            Err(CLOSED)
+        instance
+            .handles
+            .lock()
+            .map_err(|_| INTERNAL)?
+            .connection(connection)
+            .map_err(handle_error)?;
+        Ok(())
+    })
+}
+/// Child validity includes parent ownership, generation and local admission fences.
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_channel_is_valid(sdk: u64, connection: u64, channel: u64) -> u32 {
+    guarded(|| {
+        let instance = lookup(sdk)?;
+        if instance.shutting.load(Ordering::Acquire) || instance.resetting.load(Ordering::Acquire) {
+            return Err(CLOSED);
         }
+        instance
+            .handles
+            .lock()
+            .map_err(|_| INTERNAL)?
+            .channel(connection, channel)
+            .map_err(handle_error)?;
+        Ok(())
+    })
+}
+/// # Safety
+/// Input must be readable for len bytes, out_request aligned and writable for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dp_channel_submit(
+    sdk: u64,
+    connection: u64,
+    channel: u64,
+    operation: u32,
+    input: *const u8,
+    len: usize,
+    out_request: *mut u64,
+) -> u32 {
+    guarded(|| {
+        // SAFETY: forwarded ABI call preconditions; no pointer crosses the operation boundary.
+        unsafe {
+            output_zero(out_request)?;
+        }
+        let bytes = unsafe { copy(input, len, 65536)? };
+        let id = lookup(sdk)?.submit_channel(operation, connection, channel, bytes)?;
+        unsafe {
+            out_request.write(id);
+        }
+        Ok(())
     })
 }

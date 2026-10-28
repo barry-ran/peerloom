@@ -11,17 +11,19 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 
 class PeerloomException(val status: Int) : Exception("Peerloom status $status")
 
-data class Completion(val status: Int, val payload: ByteArray)
+data class Completion(val status: Int, val payload: ByteArray, val channel: Channel? = null)
 
 data class Event(
     val kind: Int,
     val connection: Connection?,
     val status: Int,
     val payload: ByteArray,
+    val channel: Channel? = null,
 )
 
 class Operation
@@ -40,22 +42,35 @@ class Connection internal constructor(private val sdk: PeerloomSdk, internal val
     fun send(data: ByteArray): Operation = sdk.submit(4, handle, data)
 
     fun close(): Operation = sdk.submit(6, handle, byteArrayOf())
+
+    fun openChannel(
+        mode: ChannelMode,
+        label: String,
+        queue: MessageQueueOptions? = null,
+    ): Operation {
+        val input = JSONObject().put("mode", mode.wire).put("label", label)
+        if (queue != null) input.put("queue", queue.json())
+        return sdk.submit(8, handle, input.toString().toByteArray(UTF_8))
+    }
 }
 
 /**
- * One connection/one reliable-message channel. Explicit asynchronous close is mandatory. No
+ * Bounded multiple connections and typed channels. Explicit asynchronous close is mandatory. No
  * finalizer blocks a UI thread. Do not block native callback completion continuations; use
  * CompletableFuture's asynchronous continuation methods with your own executor.
  */
 class PeerloomSdk
 private constructor(
-    private val store: IdentityStore,
+    private val store: IdentityStorage,
     private val listener: (Event) -> Unit,
     private val applicationExecutor: Executor,
 ) {
     @Volatile private var handle: Long = 0
     private val operations = HashMap<Long, CompletableFuture<Completion>>()
     private val operationLock = Any()
+    private val operationKinds = HashMap<Long, Int>()
+    private val hostReads = AtomicInteger(0)
+    private val channels = HashMap<Long, Channel>()
     private val closing = AtomicBoolean(false)
     private val released = CompletableFuture<Unit>()
     private val nativeReleased = AtomicBoolean(false)
@@ -89,6 +104,25 @@ private constructor(
             config: JSONObject,
             applicationExecutor: Executor,
             listener: (Event) -> Unit,
+        ): CompletableFuture<PeerloomSdk> =
+            createInternal(context, config, applicationExecutor, null, listener)
+
+        /** Explicit custom encrypted CAS store; no automatic plaintext/memory fallback. */
+        fun createWithStore(
+            context: Context,
+            config: JSONObject,
+            applicationExecutor: Executor,
+            storage: IdentityStorage,
+            listener: (Event) -> Unit,
+        ): CompletableFuture<PeerloomSdk> =
+            createInternal(context, config, applicationExecutor, storage, listener)
+
+        private fun createInternal(
+            context: Context,
+            config: JSONObject,
+            applicationExecutor: Executor,
+            storage: IdentityStorage?,
+            listener: (Event) -> Unit,
         ): CompletableFuture<PeerloomSdk> {
             val result = CompletableFuture<PeerloomSdk>()
             val application = context.applicationContext
@@ -107,7 +141,11 @@ private constructor(
                             throw PeerloomException(initialized)
                         }
                         val sdk =
-                            PeerloomSdk(IdentityStore(application), listener, applicationExecutor)
+                            PeerloomSdk(
+                                storage ?: IdentityStore(application),
+                                listener,
+                                applicationExecutor,
+                            )
                         synchronized(sdk.operationLock) {
                             val created = Native.create(encoded, sdk)
                             if (created[0] != 0L) {
@@ -162,6 +200,17 @@ private constructor(
 
     fun refreshCredentials(): Operation = submit(5, 0, byteArrayOf())
 
+    fun resetIdentity(expectedDeviceId: String, retry: Boolean = false): Operation =
+        submit(
+            7,
+            0,
+            JSONObject()
+                .put("expected_device_id", expectedDeviceId)
+                .put("retry", retry)
+                .toString()
+                .toByteArray(UTF_8),
+        )
+
     internal fun submit(kind: Int, connection: Long, data: ByteArray): Operation {
         synchronized(operationLock) {
             if (closing.get() || handle == 0L) {
@@ -173,8 +222,75 @@ private constructor(
             }
             val future = CompletableFuture<Completion>()
             operations[response[1]] = future
+            operationKinds[response[1]] = kind
             return Operation(this, response[1], future)
         }
+    }
+
+    internal fun submitChannel(
+        connection: Long,
+        channel: Long,
+        kind: Int,
+        data: ByteArray,
+    ): Operation {
+        synchronized(operationLock) {
+            if (closing.get() || handle == 0L) throw PeerloomException(5)
+            val response = Native.channelSubmit(handle, connection, channel, kind, data)
+            if (response[0] != 0L) throw PeerloomException(response[0].toInt())
+            val future = CompletableFuture<Completion>()
+            operations[response[1]] = future
+            operationKinds[response[1]] = 63 + kind
+            return Operation(this, response[1], future)
+        }
+    }
+
+    internal fun validChannel(connection: Long, channel: Long): Boolean =
+        !closing.get() && handle != 0L && Native.channelValid(handle, connection, channel) == 0
+
+    internal fun readChannel(connection: Long, channel: Long, maxBytes: Int): ReadOperation {
+        while (true) {
+            val current = hostReads.get()
+            if (current >= 32) throw PeerloomException(6)
+            if (hostReads.compareAndSet(current, current + 1)) break
+        }
+        val operation =
+            try {
+                submitChannel(
+                    connection,
+                    channel,
+                    2,
+                    JSONObject().put("max_bytes", maxBytes).toString().toByteArray(UTF_8),
+                )
+            } catch (error: Throwable) {
+                hostReads.decrementAndGet()
+                throw error
+            }
+        val result = CompletableFuture<ByteArray>()
+        operation.completion.whenComplete { completion, error ->
+            try {
+                applicationExecutor.execute {
+                    try {
+                        if (error != null) throw error
+                        if (completion.status != 0) throw PeerloomException(completion.status)
+                        if (!validChannel(connection, channel)) throw PeerloomException(5)
+                        if (!result.complete(completion.payload)) completion.payload.fill(0)
+                    } catch (failure: Throwable) {
+                        completion?.payload?.fill(0)
+                        result.completeExceptionally(failure)
+                    } finally {
+                        hostReads.decrementAndGet()
+                        finishReleaseIfDrained()
+                    }
+                }
+            } catch (failure: RejectedExecutionException) {
+                completion?.payload?.fill(0)
+                hostReads.decrementAndGet()
+                result.completeExceptionally(failure)
+                close()
+                finishReleaseIfDrained()
+            }
+        }
+        return ReadOperation(operation, result)
     }
 
     internal fun cancel(request: Long): Int = Native.cancel(handle, request)
@@ -223,6 +339,7 @@ private constructor(
         kind: Int,
         request: Long,
         connection: Long,
+        channel: Long,
         status: Int,
         payload: ByteArray,
     ) {
@@ -233,8 +350,22 @@ private constructor(
         }
         when (kind) {
             1 -> {
-                val future = synchronized(operationLock) { operations.remove(request) }
-                future?.complete(Completion(status, payload))
+                val (future, operationKind) =
+                    synchronized(operationLock) {
+                        Pair(operations.remove(request), operationKinds.remove(request))
+                    }
+                try {
+                    val opened =
+                        if (operationKind == 8 && status == 0 && channel != 0L) {
+                            channel(connection, channel, payload).also {
+                                synchronized(operationLock) { channels[channel] = it }
+                            }
+                        } else null
+                    future?.complete(Completion(status, payload, opened))
+                } catch (failure: Exception) {
+                    future?.completeExceptionally(failure)
+                    close()
+                }
             }
             10 -> {
                 val sdk = handle
@@ -273,19 +404,33 @@ private constructor(
                     pollRelease()
                 }
             }
-            else ->
+            else -> {
+                val scopedChannel =
+                    synchronized(operationLock) {
+                        when (kind) {
+                            12 ->
+                                channel(connection, channel, payload).also {
+                                    channels[channel] = it
+                                }
+                            13 -> channels.remove(channel)
+                            14 -> channels[channel] ?: throw PeerloomException(8)
+                            7 -> {
+                                channels.entries.removeAll { it.value.parent == connection }
+                                null
+                            }
+                            else -> null
+                        }
+                    }
                 deliver(
                     Event(
                         kind,
-                        if (connection == 0L) {
-                            null
-                        } else {
-                            Connection(this, connection)
-                        },
+                        if (connection == 0L) null else Connection(this, connection),
                         status,
                         payload,
+                        scopedChannel,
                     )
                 )
+            }
         }
     }
 
@@ -327,7 +472,16 @@ private constructor(
                     events.removeFirst()
                 }
             }
-        if (event != null && (event.kind !in listOf(5, 6) || event.connection?.isValid() == true)) {
+        if (
+            event != null &&
+                (when (event.kind) {
+                    5,
+                    6 -> event.connection?.isValid() == true
+                    12,
+                    14 -> event.channel?.isValid() == true
+                    else -> true
+                })
+        ) {
             try {
                 listener(event)
             } catch (_: Exception) {
@@ -352,7 +506,9 @@ private constructor(
 
     private fun finishReleaseIfDrained() {
         val done =
-            synchronized(eventLock) { nativeReleased.get() && events.isEmpty() && !scheduled }
+            synchronized(eventLock) {
+                nativeReleased.get() && hostReads.get() == 0 && events.isEmpty() && !scheduled
+            }
         if (done) {
             if (shutdownStatus == 0) {
                 released.complete(Unit)

@@ -36,35 +36,38 @@ Invoke-Checked 'cargo' @('+1.99.1', 'clippy', '--manifest-path', $manifest, '--w
 Invoke-Checked 'cargo' @('+1.99.1', 'test', '--manifest-path', $manifest, '--workspace', '--target', $triple, '--locked')
 Invoke-Checked 'cargo' @('+1.99.1', 'test', '--manifest-path', $manifest, '-p', 'device-transport-webrtc', '--test', 'native_pair', '--target', $triple, '--locked', '--', '--ignored', '--nocapture')
 Invoke-Checked 'cargo' @('+1.99.1', 'build', '--manifest-path', $manifest, '-p', 'device-core', '--example', 'windows_secure_peer', '--target', $triple, '--locked')
-Invoke-Checked 'cargo' @('+1.99.1', 'build', '--manifest-path', $manifest, '-p', 'device-ffi', '--target', $triple, '--locked')
-$target = Join-Path (Split-Path $manifest) "target\$triple\debug"
-$harness = Join-Path $root 'src\device-sdk\device-ffi\tests\lifecycle.cpp'
-$headerProbe = Join-Path $root 'src\device-sdk\device-ffi\tests\header.c'
-$include = Join-Path $root 'src\device-sdk\device-ffi\include'
-$testDir = Join-Path $target 'native-tests'
-New-Item -ItemType Directory -Force $testDir | Out-Null
-$dll = Join-Path $target 'device_ffi.dll'
-$import = Join-Path $target 'device_ffi.dll.lib'
-$static = Join-Path $target 'device_ffi.lib'
-foreach ($file in @($dll,$import,$static)) { if (-not (Test-Path $file)) { throw 'EXPECTED_NATIVE_ABI_ARTIFACT_MISSING' } }
-Copy-Item $dll $testDir -Force
-Push-Location $testDir
-try {
-    Invoke-Checked 'cl.exe' @('/nologo','/std:c11','/W4','/WX','/MD',"/I$include",$headerProbe,$import,'/link','/OUT:header.exe')
-    Invoke-Checked (Join-Path $testDir 'header.exe') @()
-    Invoke-Checked 'cl.exe' @('/nologo','/std:c++17','/EHsc','/W4','/WX','/MD','/permissive-',"/I$include",$harness,$import,'/link','/OUT:lifecycle-shared.exe')
-    Invoke-Checked (Join-Path $testDir 'lifecycle-shared.exe') @()
-    # Ask the actual target compiler for required system libraries; do not guess
-    # that a static Rust library has no platform link dependencies.
-    $notes = & cargo +1.99.1 rustc --manifest-path $manifest -p device-ffi --lib --target $triple --locked -- --print native-static-libs 2>&1
-    if ($LASTEXITCODE -ne 0) { throw 'RUST_STATIC_LINK_METADATA_FAILED' }
-    $line = ($notes | ForEach-Object { "$_" } | Where-Object { $_ -match 'native-static-libs:' } | Select-Object -Last 1)
-    if (-not $line) { throw 'RUST_STATIC_LINK_METADATA_MISSING' }
-    $native = ($line -replace '^.*native-static-libs:\s*','')
-    $libraries = @([regex]::Matches($native, '"([^"]+)"|(\S+)') | ForEach-Object { if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value } })
-    $native | Set-Content -Encoding utf8 (Join-Path $validation 'windows-static-link-libraries.txt')
-    $arguments = @('/nologo','/std:c++17','/EHsc','/W4','/WX','/MD','/permissive-',"/I$include",$harness,$static) + $libraries + @('/link','/OUT:lifecycle-static.exe')
-    Invoke-Checked 'cl.exe' $arguments
-    Invoke-Checked (Join-Path $testDir 'lifecycle-static.exe') @()
-} finally { Pop-Location }
+foreach ($profile in @('debug', 'release')) {
+    $profileArgs = if ($profile -eq 'release') { @('--release') } else { @() }
+    Invoke-Checked 'cargo' (@('+1.99.1', 'build', '--manifest-path', $manifest, '-p', 'device-ffi', '--target', $triple, '--locked') + $profileArgs)
+    $target = Join-Path (Split-Path $manifest) "target\$triple\$profile"
+    $harness = Join-Path $root 'src\device-sdk\device-ffi\tests\lifecycle.cpp'
+    $headerProbe = Join-Path $root 'src\device-sdk\device-ffi\tests\header.c'
+    $include = Join-Path $root 'src\device-sdk\device-ffi\include'
+    $testDir = Join-Path $target 'native-tests'
+    New-Item -ItemType Directory -Force $testDir | Out-Null
+    $dll = Join-Path $target 'device_ffi.dll'
+    $import = Join-Path $target 'device_ffi.dll.lib'
+    $static = Join-Path $target 'device_ffi.lib'
+    foreach ($file in @($dll,$import,$static)) { if (-not (Test-Path $file)) { throw 'EXPECTED_NATIVE_ABI_ARTIFACT_MISSING' } }
+    Copy-Item $dll $testDir -Force
+    Push-Location $testDir
+    try {
+        Invoke-Checked 'cl.exe' @('/nologo','/std:c11','/W4','/WX','/MD',"/I$include",$headerProbe,$import,'/link','/OUT:header.exe')
+        Invoke-Checked (Join-Path $testDir 'header.exe') @()
+        Invoke-Checked 'cl.exe' @('/nologo','/std:c++17','/EHsc','/W4','/WX','/MD','/permissive-',"/I$include",$harness,$import,'/link','/OUT:lifecycle-shared.exe')
+        Invoke-Checked (Join-Path $testDir 'lifecycle-shared.exe') @()
+        # Ask the actual target compiler for required system libraries; do not guess
+        # that a static Rust library has no platform link dependencies.
+        $notes = & cargo +1.99.1 rustc --manifest-path $manifest -p device-ffi --lib --target $triple --locked @profileArgs -- --print native-static-libs 2>&1
+        if ($LASTEXITCODE -ne 0) { throw 'RUST_STATIC_LINK_METADATA_FAILED' }
+        $line = ($notes | ForEach-Object { "$_" } | Where-Object { $_ -match 'native-static-libs:' } | Select-Object -Last 1)
+        if (-not $line) { throw 'RUST_STATIC_LINK_METADATA_MISSING' }
+        $native = ($line -replace '^.*native-static-libs:\s*','')
+        $libraries = @([regex]::Matches($native, '"([^"]+)"|(\S+)') | ForEach-Object { if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value } })
+        $native | Set-Content -Encoding utf8 (Join-Path $validation 'windows-static-link-libraries.txt')
+        $arguments = @('/nologo','/std:c++17','/EHsc','/W4','/WX','/MD','/permissive-',"/I$include",$harness,$static) + $libraries + @('/link','/OUT:lifecycle-static.exe')
+        Invoke-Checked 'cl.exe' $arguments
+        Invoke-Checked (Join-Path $testDir 'lifecycle-static.exe') @()
+    } finally { Pop-Location }
+}
 Write-Output 'Windows native Rust/DPAPI/ACL/direct-pair/C11/C++17 DLL and static lifecycle checks passed.'

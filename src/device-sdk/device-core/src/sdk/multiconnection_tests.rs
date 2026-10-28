@@ -47,6 +47,7 @@ async fn target_terminal_session_ignores_late_snapshot_and_offer(reject: bool) {
             session_id.clone(),
             Session {
                 id: session_id.clone(),
+                initial_request_id: None,
                 source: source.clone(),
                 target: target.clone(),
                 guard: LeaseGuard::new(session_id.clone(), source.clone(), target.clone()).unwrap(),

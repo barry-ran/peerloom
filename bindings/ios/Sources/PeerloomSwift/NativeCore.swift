@@ -5,22 +5,62 @@ import CPeerloom
 public enum PeerloomError: Error, Equatable, Sendable {
     case native(UInt32), invalidEvent, eventOverflow, concurrentEventReader
 }
+/// SDK-owned bytes remain private until synchronous consumption on the caller's executor.
+fileprivate final class EventPayload: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes: Data?
+    private let valid: @Sendable () -> Bool
+    private var release: (@Sendable () -> Void)?
+    init(_ bytes: Data, valid: @escaping @Sendable () -> Bool, release: @escaping @Sendable () -> Void) {
+        self.bytes = bytes; self.valid = valid; self.release = release
+    }
+    var isValid: Bool { valid() }
+    func consume() throws -> Data {
+        lock.lock()
+        guard let value = bytes else { lock.unlock(); throw PeerloomError.invalidEvent }
+        bytes = nil
+        let finish = release; release = nil
+        let allowed = valid()
+        lock.unlock()
+        // No await/executor hop between authorization check and caller receiving these bytes.
+        finish?()
+        guard allowed else { throw PeerloomError.native(5) }
+        return value
+    }
+    deinit { release?() }
+}
 public struct PeerloomEvent: Sendable {
     public let kind: UInt32
     public let connection: UInt64
     public let status: UInt32
-    public let payload: Data
+    public let channel: UInt64
+    private let owned: EventPayload
+    fileprivate init(kind: UInt32, connection: UInt64, status: UInt32, channel: UInt64, owned: EventPayload) {
+        self.kind = kind; self.connection = connection; self.status = status; self.channel = channel; self.owned = owned
+    }
+    /// Single consumption. Retained copies share the same bounded credit and consumed state.
+    /// After this synchronous call returns, any further application queuing is caller-owned.
+    public func consumePayload() throws -> Data { try owned.consume() }
+    fileprivate var isDeliverable: Bool { owned.isValid }
 }
+struct NativeCompletion: Sendable { let channel: UInt64; let payload: Data }
 typealias NativeCallback = @convention(c) (UInt64, UnsafePointer<dp_event>?) -> Void
 protocol NativeAPI: Sendable {
     func create(_ data: Data, callback: NativeCallback, context: UInt64) -> (UInt32, UInt64)
     func submit(_ sdk: UInt64, operation: UInt32, connection: UInt64, data: Data) -> (UInt32, UInt64)
+    func channelSubmit(_ sdk: UInt64, connection: UInt64, channel: UInt64, operation: UInt32, data: Data) -> (UInt32, UInt64)
+    func channelValid(_ sdk: UInt64, connection: UInt64, channel: UInt64) -> UInt32
     func cancel(_ sdk: UInt64, request: UInt64) -> UInt32
     func shutdown(_ sdk: UInt64) -> UInt32
     func state(_ sdk: UInt64) -> UInt32
     func release(_ sdk: UInt64) -> UInt32
     func valid(_ sdk: UInt64, connection: UInt64) -> UInt32
     func storage(_ sdk: UInt64, request: UInt64, status: UInt32, data: Data) -> UInt32
+}
+extension NativeAPI {
+    // Older test adapters remain explicit Unsupported, never an emulated success.
+    func channelSubmit(_ sdk: UInt64, connection: UInt64, channel: UInt64, operation: UInt32, data: Data) -> (UInt32, UInt64) { (7, 0) }
+    func channelValid(_ sdk: UInt64, connection: UInt64, channel: UInt64) -> UInt32 { 7 }
 }
 struct CNativeAPI: NativeAPI {
     func create(_ data: Data, callback: NativeCallback, context: UInt64) -> (UInt32, UInt64) {
@@ -33,6 +73,12 @@ struct CNativeAPI: NativeAPI {
         let status = data.withUnsafeBytes { dp_sdk_submit(sdk, operation, connection, $0.bindMemory(to: UInt8.self).baseAddress, numericCast(data.count), &request) }
         return (status, request)
     }
+    func channelSubmit(_ sdk: UInt64, connection: UInt64, channel: UInt64, operation: UInt32, data: Data) -> (UInt32, UInt64) {
+        var request: UInt64 = 0
+        let status = data.withUnsafeBytes { dp_channel_submit(sdk, connection, channel, operation, $0.bindMemory(to: UInt8.self).baseAddress, numericCast(data.count), &request) }
+        return (status, request)
+    }
+    func channelValid(_ sdk: UInt64, connection: UInt64, channel: UInt64) -> UInt32 { dp_channel_is_valid(sdk, connection, channel) }
     func cancel(_ sdk: UInt64, request: UInt64) -> UInt32 { dp_sdk_cancel(sdk, request) }
     func shutdown(_ sdk: UInt64) -> UInt32 { var request: UInt64 = 0; return dp_sdk_shutdown(sdk, &request) }
     func state(_ sdk: UInt64) -> UInt32 { dp_sdk_state(sdk) }
@@ -53,7 +99,7 @@ private let callback: NativeCallback = { context, pointer in
     }
     // No borrowed C pointer escapes this stack frame.
     let payload = length == 0 ? Data() : Data(bytes: event.payload!, count: length)
-    core.receive(kind: event.kind, request: event.request_id, connection: event.connection, status: event.status, payload: payload)
+    core.receive(kind: event.kind, request: event.request_id, connection: event.connection, status: event.status, payload: payload, channel: event.channel)
 }
 
 private final class Ticket: @unchecked Sendable {
@@ -77,7 +123,7 @@ final class NativeCore: @unchecked Sendable {
     private var released = false
     private var nativeFinal = false
     private var timer: DispatchSourceTimer?
-    private var pending: [UInt64: CheckedContinuation<Data, Error>] = [:]
+    private var pending: [UInt64: CheckedContinuation<NativeCompletion, Error>] = [:]
     private var admitted = 0
     private var storageJobs = 0
     private var closeWaiters: [CheckedContinuation<Void, Error>] = []
@@ -103,24 +149,34 @@ final class NativeCore: @unchecked Sendable {
         lock.unlock()
     }
     func perform(operation: UInt32, connection: UInt64, input: Data) async throws -> Data {
+        try await performDetailed(operation: operation, connection: connection, input: input).payload
+    }
+    func performDetailed(operation: UInt32, connection: UInt64, channel: UInt64? = nil, input: Data, isolation: isolated (any Actor)? = #isolation) async throws -> NativeCompletion {
+        lock.lock()
+        guard !stopping, !released else { lock.unlock(); throw PeerloomError.native(5) }
+        guard admitted < 32 else { lock.unlock(); throw PeerloomError.native(6) }
+        admitted += 1
+        lock.unlock()
+        // Retain the host-delivery credit until this executor actually consumes the reply.
+        defer { lock.lock(); admitted -= 1; lock.unlock() }
         let ticket = Ticket()
-        return try await withTaskCancellationHandler(operation: {
+        let value: NativeCompletion = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
-                lock.lock()
-                guard !stopping, !released else { lock.unlock(); continuation.resume(throwing: PeerloomError.native(5)); return }
-                guard admitted < 32 else { lock.unlock(); continuation.resume(throwing: PeerloomError.native(6)); return }
-                admitted += 1
-                lock.unlock()
                 io.async { [self] in
                     lock.lock()
                     if stopping || ticket.isCancelled {
-                        admitted -= 1; lock.unlock()
+                        lock.unlock()
                         continuation.resume(throwing: ticket.isCancelled ? CancellationError() : PeerloomError.native(5))
                         return
                     }
-                    let result = api.submit(handle, operation: operation, connection: connection, data: input)
+                    let result: (UInt32, UInt64)
+                    if let channel {
+                        result = api.channelSubmit(handle, connection: connection, channel: channel, operation: operation, data: input)
+                    } else {
+                        result = api.submit(handle, operation: operation, connection: connection, data: input)
+                    }
                     if result.0 != 0 {
-                        admitted -= 1; lock.unlock(); continuation.resume(throwing: PeerloomError.native(result.0)); return
+                        lock.unlock(); continuation.resume(throwing: PeerloomError.native(result.0)); return
                     }
                     pending[result.1] = continuation
                     let cancelled = ticket.install(result.1)
@@ -133,17 +189,38 @@ final class NativeCore: @unchecked Sendable {
             let request = ticket.cancel()
             if request != 0 { io.async { [self] in _ = api.cancel(currentHandle(), request: request) } }
         })
+        if let channel, operation == 2 {
+            // A continuation can sit on a paused actor after native callback dispatch.
+            guard channelIsValid(connection: connection, channel: channel) else { throw PeerloomError.native(5) }
+        }
+        return value
+    }
+    func channelIsValid(connection: UInt64, channel: UInt64) -> Bool {
+        lock.lock(); let sdk = handle, stopped = stopping; lock.unlock()
+        return !stopped && sdk != 0 && api.channelValid(sdk, connection: connection, channel: channel) == 0
+    }
+    private func connectionIsValid(_ connection: UInt64) -> Bool {
+        lock.lock(); let sdk = handle, stopped = stopping; lock.unlock()
+        return !stopped && sdk != 0 && api.valid(sdk, connection: connection) == 0
+    }
+    private func releaseEventCredit(isData: Bool) {
+        // Deinit may run while the queue lock is held. Enqueue only the accounting action.
+        io.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            if isData { self.dataEvents -= 1 } else { self.controlEvents -= 1 }
+            self.lock.unlock()
+        }
     }
     private func currentHandle() -> UInt64 { lock.lock(); defer { lock.unlock() }; return handle }
 
-    func receive(kind: UInt32, request: UInt64, connection: UInt64, status: UInt32, payload: Data) {
+    func receive(kind: UInt32, request: UInt64, connection: UInt64, status: UInt32, payload: Data, channel: UInt64 = 0) {
         if kind == 1 {
             lock.lock()
             let completion = pending.removeValue(forKey: request)
-            if completion != nil { admitted -= 1 }
             lock.unlock()
             guard let completion else { fail(PeerloomError.invalidEvent); return }
-            if status == 0 { completion.resume(returning: payload) }
+            if status == 0 { completion.resume(returning: NativeCompletion(channel: channel, payload: payload)) }
             else if status == 9 { completion.resume(throwing: CancellationError()) }
             else { completion.resume(throwing: PeerloomError.native(status)) }
             return
@@ -157,13 +234,19 @@ final class NativeCore: @unchecked Sendable {
             return
         }
         lock.lock()
-        if stopping && (kind == 5 || kind == 6) { lock.unlock(); return }
-        let isData = kind == 6
+        if stopping && [5, 6, 12, 14].contains(kind) { lock.unlock(); return }
+        let isData = kind == 6 || kind == 14
         guard (isData ? dataEvents : controlEvents) < 32 else {
             lock.unlock(); fail(PeerloomError.eventOverflow); return
         }
         if isData { dataEvents += 1 } else { controlEvents += 1 }
-        events.append(PeerloomEvent(kind: kind, connection: connection, status: status, payload: payload))
+        let owned = EventPayload(payload, valid: { [weak self] in
+            guard let self else { return false }
+            if kind == 5 || kind == 6 { return self.connectionIsValid(connection) }
+            if kind == 12 || kind == 14 { return self.channelIsValid(connection: connection, channel: channel) }
+            return true
+        }, release: { [weak self] in self?.releaseEventCredit(isData: isData) })
+        events.append(PeerloomEvent(kind: kind, connection: connection, status: status, channel: channel, owned: owned))
         let waiter = eventWaiter; eventWaiter = nil
         lock.unlock(); waiter?.resume()
     }
@@ -189,7 +272,7 @@ final class NativeCore: @unchecked Sendable {
         }
     }
     func fail(_ error: Error) {
-        lock.lock(); eventError = error; events.removeAll(); dataEvents = 0; controlEvents = 0
+        lock.lock(); eventError = error; events.removeAll()
         let waiter = eventWaiter; eventWaiter = nil
         lock.unlock(); waiter?.resume(); requestShutdown()
     }
@@ -255,13 +338,10 @@ final class NativeCore: @unchecked Sendable {
             if let error = eventError { lock.unlock(); throw error }
             if !events.isEmpty {
                 let event = events.removeFirst()
-                if event.kind == 6 { dataEvents -= 1 } else { controlEvents -= 1 }
-                let sdk = handle, stopped = stopping
                 lock.unlock()
-                if event.kind == 5 || event.kind == 6 {
-                    // Check on the consuming Swift executor, NOT before scheduling onto it.
-                    if stopped || api.valid(sdk, connection: event.connection) != 0 { continue }
-                }
+                // Filtering here is only an optimization; consumePayload rechecks synchronously
+                // after any further legacy AsyncIterator/caller-actor scheduling.
+                if !event.isDeliverable { continue }
                 return event
             }
             let ended = stopping || released

@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 // MIT — Copyright (c) 2026 Peerloom contributors.
 import PackageDescription
 import Foundation
@@ -18,5 +18,5 @@ let package = Package(
         .executableTarget(name: "PeerloomStoreProbe", dependencies: ["PeerloomSwift"]),
         .testTarget(name: "PeerloomSwiftTests", dependencies: ["PeerloomSwift", "CPeerloom"])
     ],
-    swiftLanguageVersions: [.v5]
+    swiftLanguageModes: [.v5]
 )

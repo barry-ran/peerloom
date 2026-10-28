@@ -148,7 +148,7 @@ PY
     run ios-boot 30 xcrun simctl boot "$DEVICE"
     run ios-bootstatus 180 xcrun simctl bootstatus "$DEVICE" -b
     # build-for-testing verifies the actual TestAction and builds the test runner.
-    # Only a real test-without-building execution can satisfy the >=8-test gate below.
+    # Only a real test-without-building execution can satisfy the >=12-test gate below.
     run ios-build-for-testing 600 xcodebuild -project "$IOS_PROJECT" -scheme PeerloomSimulatorHost -destination "platform=iOS Simulator,id=$DEVICE" \
       -derivedDataPath "$OUT/DerivedData-simulator" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
       "PEERLOOM_TLS_ORIGIN=$PEERLOOM_TLS_ORIGIN" build-for-testing
@@ -169,7 +169,7 @@ PY
     python3 - "$OUT/iOS测试摘要.json" <<'PY'
 import json,sys
 summary=json.load(open(sys.argv[1]))
-assert summary['totalTestCount'] >= 8 and summary['failedTests'] == 0, 'iOS XCTest 未实际执行足够用例或存在失败'
+assert summary['totalTestCount'] >= 12 and summary['failedTests'] == 0, 'iOS XCTest 未实际执行足够用例或存在失败'
 PY
     verify_tls
     ;;
@@ -202,7 +202,7 @@ for phase in ('macos-swift','ios-simulator'):
     tls=json.loads((out/('phase-'+phase+'-tls.json')).read_text())
     assert tls['rejected_handshakes']>=1 and tls['accepted_handshakes']==0, '双平台 TLS 证据不足'
 summary=json.loads((out/'iOS测试摘要.json').read_text())
-assert summary['totalTestCount']>=8 and summary['failedTests']==0
+assert summary['totalTestCount']>=12 and summary['failedTests']==0
 p=out/'构建证据.json'
 meta=json.loads(p.read_text())
 meta['status']='native-tests-passed'

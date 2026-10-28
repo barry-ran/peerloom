@@ -1,12 +1,15 @@
 use crate::{state::*, storage::ExternalStore};
 use device_core::{
     identity::{IdempotencyKey, IdentityError, Platform, RegistrationRequest},
-    sdk::{Connection, DeviceSdk, SdkConfig, SdkError, SdkEvent},
+    sdk::{DeviceSdk, SdkConfig, SdkError, SdkEvent},
 };
 use device_storage::{IdentityStore, MemoryIdentityStore, SecretString};
 use serde::Deserialize;
 use serde_json::json;
-use std::sync::{Arc, atomic::Ordering};
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic::Ordering},
+};
 use tokio::sync::mpsc;
 
 #[derive(Deserialize)]
@@ -20,6 +23,18 @@ pub struct Config {
     pub development_loopback: bool,
     #[serde(default = "yes")]
     pub auto_reconnect: bool,
+    #[serde(default = "one")]
+    pub max_connections: usize,
+    #[serde(default = "one")]
+    pub max_channels_per_connection: usize,
+    #[serde(default = "eight")]
+    pub max_channel_creations_per_connection: usize,
+}
+fn eight() -> usize {
+    8
+}
+fn one() -> usize {
+    1
 }
 fn yes() -> bool {
     true
@@ -28,11 +43,18 @@ impl Config {
     pub fn validate(&self) -> bool {
         self.abi_version == 1
             && matches!(self.storage.as_str(), "memory" | "external")
+            && (1..=32).contains(&self.max_connections)
+            && (1..=32).contains(&self.max_channels_per_connection)
+            && (self.max_channels_per_connection..=128)
+                .contains(&self.max_channel_creations_per_connection)
             && self.origin.len() <= 2048
             && self.application_id.len() <= 36
     }
     fn sdk(&self) -> SdkConfig {
         let mut c = SdkConfig::new(self.origin.clone(), self.application_id.clone());
+        c.max_connections = self.max_connections;
+        c.max_channels_per_connection = self.max_channels_per_connection;
+        c.transport.max_channels = self.max_channel_creations_per_connection;
         c.development_loopback = self.development_loopback;
         c.auto_reconnect = self.auto_reconnect;
         c.transport.include_loopback = self.development_loopback;
@@ -69,7 +91,7 @@ struct Respond {
     session_id: String,
     accept: bool,
 }
-fn error(error: SdkError) -> u32 {
+pub(crate) fn error(error: SdkError) -> u32 {
     match error {
         SdkError::InvalidConfiguration => INVALID,
         SdkError::Busy => BUSY,
@@ -95,20 +117,20 @@ fn error(error: SdkError) -> u32 {
         _ => INTERNAL,
     }
 }
-async fn connection_receive(
-    connection: &mut Option<(u64, Connection)>,
-) -> Result<Vec<u8>, SdkError> {
-    match connection {
-        Some((_, c)) => c.receive().await,
-        None => std::future::pending().await,
-    }
-}
 async fn sdk_event(sdk: &mut Option<DeviceSdk>) -> Option<SdkEvent> {
     match sdk {
         Some(s) if !s.is_resetting() => s.next_event().await,
         Some(_) => std::future::pending().await,
         None => std::future::pending().await,
     }
+}
+
+async fn close_connections(connections: &mut HashMap<u64, (String, crate::channels::Task)>) {
+    let mut closes = tokio::task::JoinSet::new();
+    for (_, (_, task)) in connections.drain() {
+        closes.spawn(task.close());
+    }
+    while closes.join_next().await.is_some() {}
 }
 
 pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Receiver<Operation>) {
@@ -118,157 +140,119 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
         Arc::new(MemoryIdentityStore::default())
     };
     let mut sdk: Option<DeviceSdk> = None;
-    let mut connection: Option<(u64, Connection)> = None;
+    let mut connections: HashMap<u64, (String, crate::channels::Task)> = HashMap::new();
     loop {
-        if connection.is_none() {
-            if let Ok(mut validity) = instance.connection_validity.lock() {
-                *validity = None;
-            }
-            instance.connection_id.store(0, Ordering::Release);
-        }
         if instance.shutting.load(Ordering::Acquire) {
             break;
         }
         tokio::select! {
             _ = instance.stop.notified() => break,
             command = commands.recv() => {
-                let Some(op) = command else { break };
-                let queued_phase = if matches!(op.kind, 6 | 7) { 4 } else { 0 };
-                if op.phase.compare_exchange(
-                    queued_phase, 1, Ordering::AcqRel, Ordering::Acquire,
-                ).is_err() {
-                    instance.finish(op, CANCELLED, Vec::new());
+                let Some(operation) = command else { break };
+                if matches!(operation.kind, 4 | 6 | 8 | 64..=68) {
+                    if let Some((_, task)) = connections.get(&operation.connection) { task.route(&instance, operation); }
+                    else { instance.finish(operation, CLOSED, Vec::new()); }
                     continue;
                 }
-                let result = execute(&config, store.clone(), &mut sdk, &mut connection, &op).await;
-                if result.is_ok() && op.kind == 1
+                let Some(guard) = CompletionGuard::start(instance.clone(), operation) else { continue };
+                if guard.operation().kind == 7 { close_connections(&mut connections).await; }
+                let result = execute(&config, store.clone(), &mut sdk, guard.operation()).await;
+                if result.is_ok() && guard.operation().kind == 1
                     && let Ok(mut current) = instance.device_id.lock() {
                     *current = sdk.as_ref().map(|sdk| sdk.device_id().to_owned());
                 }
-                if result.is_ok() && op.kind == 7 {
-                    if let Ok(mut current) = instance.device_id.lock() { *current = None; }
-                    instance.resetting.store(false, Ordering::Release);
+                if guard.operation().kind == 7 {
+                    instance.reset_active.store(false, Ordering::Release);
+                    if result.is_ok() {
+                        if let Ok(mut current) = instance.device_id.lock() { *current = None; }
+                        instance.resetting.store(false, Ordering::Release);
+                    }
                 }
-                let (status, payload) = match result {
-                    Ok(payload) => (OK, payload),
-                    Err(status) => (status, Vec::new()),
-                };
-                instance.finish(op, status, payload);
+                match result { Ok(payload) => guard.finish(OK, payload, None), Err(status) => guard.finish(status, Vec::new(), None) }
             },
             event = sdk_event(&mut sdk) => {
                 match event {
-                    Some(SdkEvent::Online) => {
-                        instance.emit(Event::new(2, 0, 0, OK, Vec::new()));
-                    },
-                    Some(SdkEvent::Offline) => {
-                        instance.emit(Event::new(3, 0, 0, OK, Vec::new()));
-                    },
+                    Some(SdkEvent::Online) => { instance.emit(Event::new(2, 0, 0, OK, Vec::new())); },
+                    Some(SdkEvent::Offline) => { instance.emit(Event::new(3, 0, 0, OK, Vec::new())); },
                     Some(SdkEvent::IncomingConnection { session_id, source_device_id }) => {
-                        let payload = json!({
-                            "session_id": session_id,
-                            "source_device_id": source_device_id,
-                        }).to_string().into_bytes();
+                        let payload = json!({"session_id":session_id,"source_device_id":source_device_id}).to_string().into_bytes();
                         instance.emit(Event::new(4, 0, 0, OK, payload));
                     },
-                    Some(SdkEvent::ConnectionReady(c)) => {
-                        if connection.is_some() {
-                            drop(c);
-                            instance.stop();
-                            continue;
+                    Some(SdkEvent::ConnectionReady(connection)) => {
+                        let session = connection.session_id().to_owned();
+                        let generation = connection.negotiation_generation();
+                        let peer_device_id = connection.peer_device_id().to_owned();
+                        let request_id = connection.request_id().map(str::to_owned);
+                        let old = connections.iter().find(|(_, (value, _))| value == &session).map(|(id, _)| *id);
+                        if let Some(old) = old
+                            && let Some((_, task)) = connections.remove(&old) {
+                            task.close().await;
                         }
-                        let Ok(id) = next_id() else {
-                            instance.stop();
-                            continue;
-                        };
-                        let payload = json!({"session_id": c.session_id()}).to_string().into_bytes();
-                        if let Ok(mut validity) = instance.connection_validity.lock() {
-                            *validity = Some((id, c.validity()));
-                        } else { drop(c); instance.stop(); continue; }
-                        instance.connection_id.store(id, Ordering::Release);
-                        instance.closing_connection.store(0, Ordering::Release);
-                        let mut event = Event::new(5, 0, id, OK, payload);
-                        event.validity = Some(c.validity());
-                        connection = Some((id, c));
-                        instance.emit(event);
+                        let admitted = (|| {
+                            let mut handles = instance.handles.lock().map_err(|_| INTERNAL)?;
+                            let id = handles.add_connection(Authority::Connection(connection.validity()), || next_id().map_err(|_| crate::handles::HandleError::Allocator)).map_err(handle_error)?;
+                            Ok::<_,u32>((id, handles.connection(id).map_err(handle_error)?))
+                        })();
+                        let Ok((id, validity)) = admitted else { drop(connection); instance.stop(); continue; };
+                        match crate::channels::spawn_connection(instance.clone(), id, validity.clone(), connection) {
+                            Ok(task) => {
+                                let payload = json!({"session_id":session,"generation":generation,"peer_device_id":peer_device_id,"request_id":request_id}).to_string().into_bytes();
+                                connections.insert(id, (session, task));
+                                let mut event = Event::new(5, 0, id, OK, payload);
+                                event.validity = Some(validity);
+                                instance.emit(event);
+                            }
+                            Err(_) => { if let Ok(mut handles) = instance.handles.lock() { let _ = handles.remove_connection(id); } instance.stop(); }
+                        }
                     },
                     Some(SdkEvent::ConnectionRequestFailed { target_device_id, request_id, reason }) => {
-                        let payload = json!({"session_id": "", "target_device_id": target_device_id,
-                            "request_id": request_id}).to_string().into_bytes();
-                        // ABI1 retains the existing failed-pre-session event and status.
+                        let payload = json!({"session_id":"","target_device_id":target_device_id,"request_id":request_id}).to_string().into_bytes();
                         instance.emit(Event::new(7, 0, 0, error(reason), payload));
                     },
                     Some(SdkEvent::ConnectionClosed { session_id, reason }) => {
-                        let id = connection.as_ref()
-                            .filter(|(_, c)| c.session_id() == session_id)
-                            .map(|(id, _)| *id)
-                            .unwrap_or(0);
-                        if id != 0 {
-                            connection.take();
-                        }
-                        let payload = json!({"session_id": session_id}).to_string().into_bytes();
-                        instance.emit(Event::new(7, 0, id, error(reason), payload));
+                        let id = connections.iter().find(|(_, (value, _))| value == &session_id).map(|(id, _)| *id).unwrap_or(0);
+                        if let Some((_, task)) = connections.remove(&id) { task.close().await; }
+                        instance.emit(Event::new(7, 0, id, error(reason), json!({"session_id":session_id}).to_string().into_bytes()));
                     },
-                    Some(SdkEvent::IdentityPersistencePending) => {
-                        instance.emit(Event::new(8, 0, 0, NOT_READY, Vec::new()));
-                    },
-                    Some(SdkEvent::Stopped(reason)) => {
-                        instance.emit(Event::new(11, 0, 0, error(reason), Vec::new()));
-                        instance.stop();
-                    },
+                    Some(SdkEvent::IdentityPersistencePending) => { instance.emit(Event::new(8, 0, 0, NOT_READY, Vec::new())); },
+                    Some(SdkEvent::Stopped(reason)) => { instance.emit(Event::new(11, 0, 0, error(reason), Vec::new())); instance.stop(); },
                     None => instance.stop(),
-                }
-            },
-            received = connection_receive(&mut connection) => {
-                if let Some((id, c)) = &connection {
-                    match received {
-                        Ok(payload) => {
-                            let mut event = Event::new(6, 0, *id, OK, payload);
-                            event.validity = Some(c.validity());
-                            instance.emit(event);
-                        },
-                        Err(reason) => {
-                            instance.emit(Event::new(7, 0, *id, error(reason), Vec::new()));
-                            connection.take();
-                        },
-                    }
                 }
             }
         }
     }
     commands.close();
-    let mut close_requests = Vec::new();
-    while let Some(op) = commands.recv().await {
-        if op.kind == 6 {
-            close_requests.push(op);
-        } else if op.kind == 7 {
-            // Reset admission already fenced delivery and is not falsely Cancelled by shutdown.
-            let result = execute(&config, store.clone(), &mut sdk, &mut connection, &op).await;
+    while let Some(operation) = commands.recv().await {
+        if operation.kind == 7 {
+            close_connections(&mut connections).await;
+            let result = execute(&config, store.clone(), &mut sdk, &operation).await;
             let (status, payload) = match result {
                 Ok(payload) => (OK, payload),
                 Err(status) => (status, Vec::new()),
             };
-            instance.finish(op, status, payload);
+            instance.finish(operation, status, payload);
+        } else if matches!(operation.kind, 6 | 68) {
+            if let Some((_, task)) = connections.get(&operation.connection) {
+                task.route(&instance, operation);
+            } else {
+                instance.finish(operation, CLOSED, Vec::new());
+            }
         } else {
-            instance.finish(op, CANCELLED, Vec::new());
+            let status = if operation.kind == 67 {
+                CLOSED
+            } else {
+                CANCELLED
+            };
+            instance.finish(operation, status, Vec::new());
         }
     }
-    let close_status = if let Some((_, connection)) = connection.take() {
-        connection.close().await.err().map(error).unwrap_or(OK)
-    } else {
-        OK
-    };
-    // Close admission already stopped local delivery and cannot be rolled back. During
-    // shutdown it completes only after the same resource cleanup, never falsely Cancelled.
-    for op in close_requests {
-        instance.finish(op, close_status, Vec::new());
-    }
+    close_connections(&mut connections).await;
     if let Some(sdk) = sdk.take() {
         sdk.close().await;
     }
-    if let Ok(mut validity) = instance.connection_validity.lock() {
-        *validity = None;
+    if let Ok(mut handles) = instance.handles.lock() {
+        handles.clear();
     }
-    instance.connection_id.store(0, Ordering::Release);
     if let Ok(mut pending) = instance.storage.lock() {
         pending.clear();
     }
@@ -284,7 +268,6 @@ async fn execute(
     config: &Config,
     store: Arc<dyn IdentityStore>,
     sdk: &mut Option<DeviceSdk>,
-    connection: &mut Option<(u64, Connection)>,
     op: &Operation,
 ) -> Result<Vec<u8>, u32> {
     if op.kind == 1 {
@@ -324,8 +307,6 @@ async fn execute(
     }
     if op.kind == 7 {
         let request: ResetRequest = serde_json::from_slice(&op.input).map_err(|_| INVALID)?;
-        // Drop closes the local gate; the SDK actor joins transport cleanup below.
-        connection.take();
         let active = sdk.as_mut().ok_or(NOT_READY)?;
         if request.retry {
             active
@@ -350,7 +331,15 @@ async fn execute(
                 return Err(HANDLE);
             }
             let t: Target = serde_json::from_slice(&op.input).map_err(|_| INVALID)?;
-            sdk.connect(&t.target_device_id).await.map_err(error)?;
+            let request_id = sdk
+                .connect_with_request(&t.target_device_id)
+                .await
+                .map_err(error)?;
+            return Ok(
+                json!({"request_id":request_id,"target_device_id":t.target_device_id})
+                    .to_string()
+                    .into_bytes(),
+            );
         }
         3 => {
             if op.connection != 0 {
@@ -364,31 +353,11 @@ async fn execute(
             }
             .map_err(error)?;
         }
-        4 => {
-            let (_, c) = connection
-                .as_ref()
-                .filter(|(id, _)| *id == op.connection)
-                .ok_or(HANDLE)?;
-            c.send(&op.input).await.map_err(error)?;
-        }
         5 => {
             if op.connection != 0 || !op.input.is_empty() {
                 return Err(INVALID);
             }
             sdk.refresh_credentials().await.map_err(error)?;
-        }
-        6 => {
-            if !op.input.is_empty() {
-                return Err(INVALID);
-            }
-            if connection
-                .as_ref()
-                .is_none_or(|(id, _)| *id != op.connection)
-            {
-                return Err(HANDLE);
-            }
-            let (_, c) = connection.take().ok_or(HANDLE)?;
-            c.close().await.map_err(error)?;
         }
         _ => return Err(UNSUPPORTED),
     }
@@ -430,7 +399,7 @@ pub fn runtime(instance: Arc<Instance>, config: Config, commands: mpsc::Receiver
             if id == u64::MAX { 0 } else { id }
         },
         0,
-        if matches!(result, Ok(Ok(()))) {
+        if matches!(result, Ok(Ok(()))) && !instance.failed.load(Ordering::Acquire) {
             OK
         } else {
             INTERNAL
@@ -466,5 +435,17 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(error(input), expected);
         }
+    }
+    #[test]
+    fn ffi_creation_budget_matches_core_limit() {
+        let mut config: Config = serde_json::from_str(r#"{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory","max_channels_per_connection":32,"max_channel_creations_per_connection":128}"#).unwrap();
+        assert!(config.validate());
+        assert_eq!(config.sdk().transport.max_channels, 128);
+        config.max_channel_creations_per_connection = 129;
+        assert!(!config.validate());
+        config.max_channel_creations_per_connection = 31;
+        assert!(!config.validate());
+        config.max_channel_creations_per_connection = 32;
+        assert!(config.validate());
     }
 }

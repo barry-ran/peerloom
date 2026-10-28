@@ -1,9 +1,15 @@
-//! 单身份/单WSS的有界多会话编排；每个会话仍只有可靠消息通道。
+//! 单身份/单WSS的有界多会话及三类型通道编排。
 //! WSS 自动恢复；已接受会话可按授权的新代重建连接，不是原地 ICE restart。
+mod channels;
 #[cfg(test)]
 mod multiconnection_tests;
 mod reset;
 mod session_map;
+use crate::outbound::OutboundBudget;
+pub use channels::{
+    ChannelValidity, SdkByteStream, SdkChannel, SdkIncomingChannels, SdkMessageChannel,
+    SdkMessageSender, SdkStreamReader, SdkStreamWriter, SendDisposition,
+};
 use session_map::SessionMap;
 const MAX_CONNECTIONS: usize = 32;
 use crate::{
@@ -44,6 +50,8 @@ pub struct SdkConfig {
     pub max_connections: usize,
     pub max_channels_per_connection: usize,
     pub auto_reconnect: bool,
+    pub outbound_max_bytes: usize,
+    pub outbound_max_messages: usize,
 }
 impl SdkConfig {
     pub fn new(origin: String, application_id: String) -> Self {
@@ -56,6 +64,8 @@ impl SdkConfig {
             max_connections: 1,
             max_channels_per_connection: 1,
             auto_reconnect: true,
+            outbound_max_bytes: 4 * 1024 * 1024,
+            outbound_max_messages: 1024,
         }
     }
 }
@@ -132,17 +142,15 @@ impl Gate {
         self.changed.notify_waiters();
     }
 }
-struct SendRequest {
-    data: Vec<u8>,
-    expires: Instant,
-    result: oneshot::Sender<Result<(), SdkError>>,
-}
 /// 不暴露 raw transport；截止后旧接收队列也不能继续向应用交付。
 pub struct Connection {
     session_id: String,
+    peer_device_id: String,
+    request_id: Option<String>,
     generation: u64,
-    commands: mpsc::Sender<SendRequest>,
-    messages: mpsc::Receiver<Vec<u8>>,
+    default: SdkMessageChannel,
+    channels: mpsc::Sender<channels::OpenRequest>,
+    incoming: Option<SdkIncomingChannels>,
     gate: Arc<Gate>,
     sdk: mpsc::Sender<Command>,
 }
@@ -171,43 +179,19 @@ impl Connection {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+    pub fn peer_device_id(&self) -> &str {
+        &self.peer_device_id
+    }
+    /// Original outgoing request; incoming connections have no local request ID.
+    pub fn request_id(&self) -> Option<&str> {
+        self.request_id.as_deref()
+    }
+
     pub async fn send(&self, data: &[u8]) -> Result<(), SdkError> {
-        self.gate.check()?;
-        if data.len() > 65536 {
-            return Err(SdkError::MessageTooLarge);
-        }
-        let (result, completion) = oneshot::channel();
-        self.commands
-            .try_send(SendRequest {
-                data: data.to_vec(),
-                expires: Instant::now() + Duration::from_secs(30),
-                result,
-            })
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => SdkError::QueueFull,
-                _ => SdkError::Closed,
-            })?;
-        completion.await.map_err(|_| SdkError::Closed)?
+        self.default.send(data).await.map(|_| ())
     }
     pub async fn receive(&mut self) -> Result<Vec<u8>, SdkError> {
-        loop {
-            let changed = self.gate.changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            self.gate.check()?;
-            let deadline = self
-                .gate
-                .deadline
-                .lock()
-                .map_err(|_| SdkError::Closed)?
-                .ok_or(SdkError::AuthorizationExpired)?;
-            tokio::select! {
-                biased;
-                _=&mut changed=>continue,
-                _=tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))=>continue,
-                data=self.messages.recv()=>{let data=data.ok_or(SdkError::Closed)?;self.gate.check()?;return Ok(data);}
-            }
-        }
+        self.default.receive().await
     }
     pub async fn close(self) -> Result<(), SdkError> {
         self.gate.close();
@@ -283,7 +267,11 @@ impl DeviceSdk {
         store: Arc<dyn IdentityStore>,
     ) -> Result<IdentitySession, SdkError> {
         if !(1..=MAX_CONNECTIONS).contains(&config.max_connections)
-            || config.max_channels_per_connection != 1
+            || !(1..=32).contains(&config.max_channels_per_connection)
+            || config.max_channels_per_connection > config.transport.max_channels
+            || config.transport.max_channels > 128
+            || !(1..=64 * 1024 * 1024).contains(&config.outbound_max_bytes)
+            || !(1..=65536).contains(&config.outbound_max_messages)
         {
             return Err(SdkError::InvalidConfiguration);
         }
@@ -440,6 +428,7 @@ impl Drop for Worker {
 }
 struct Session {
     id: String,
+    initial_request_id: Option<String>,
     source: String,
     target: String,
     guard: LeaseGuard,
@@ -456,6 +445,7 @@ struct Session {
 type RefreshOutcome = (Result<(), IdentityError>, Option<StoredIdentity>);
 
 struct Actor {
+    outbound: OutboundBudget,
     installation_closed: Arc<AtomicBool>,
     config: SdkConfig,
     identity: Arc<tokio::sync::Mutex<IdentitySession>>,
@@ -492,6 +482,8 @@ impl Actor {
             let _ = events.try_send(SdkEvent::IdentityPersistencePending);
         }
         Self {
+            outbound: OutboundBudget::new(config.outbound_max_bytes, config.outbound_max_messages)
+                .expect("validated outbound budget"),
             sessions: SessionMap::new(config.max_connections)
                 .expect("validated connection capacity"),
             config,
@@ -1060,6 +1052,11 @@ impl Actor {
                     .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?;
                 let session = Session {
                     id: id.clone(),
+                    initial_request_id: if source == self.stored.device_id {
+                        request.map(str::to_owned)
+                    } else {
+                        None
+                    },
                     source: source.clone(),
                     target: target.clone(),
                     guard,
@@ -1227,9 +1224,16 @@ impl Actor {
         let (stop, stopped) = oneshot::channel();
         let id = session.id.clone();
         let generation = session.generation;
+        let peer_device_id = if session.source == self.stored.device_id {
+            session.target.clone()
+        } else {
+            session.source.clone()
+        };
+        let request_id = session.initial_request_id.clone();
         let gate = session.gate.clone();
-        let mut config = self.config.transport.clone();
-        config.max_channels = 1;
+        let config = self.config.transport.clone();
+        let active_channels = self.config.max_channels_per_connection;
+        let outbound = self.outbound.clone();
         let managed_relay =
             if self.config.managed_relays && config.policy != ConnectionPolicy::DirectOnly {
                 Some(ManagedRelayRequest {
@@ -1253,6 +1257,10 @@ impl Actor {
                 stopped,
                 events,
                 sdk,
+                active_channels,
+                outbound,
+                peer_device_id,
+                request_id,
             )
             .await;
         });
@@ -1381,6 +1389,7 @@ impl Actor {
         });
     }
     async fn close_all(&mut self) {
+        self.outbound.close();
         self.sessions.close_admission();
         self.sessions.drain_pending();
         // Fence every connection before the first await, then stop all workers.
@@ -1446,26 +1455,6 @@ fn backoff(attempt: u32) -> Duration {
     Duration::from_millis((max + random).min(30000))
 }
 
-async fn guarded_send(channel: &MessageChannel, gate: &Gate, data: &[u8]) -> Result<(), SdkError> {
-    loop {
-        let changed = gate.changed.notified();
-        tokio::pin!(changed);
-        changed.as_mut().enable();
-        gate.check()?;
-        let deadline = gate
-            .deadline
-            .lock()
-            .map_err(|_| SdkError::Closed)?
-            .ok_or(SdkError::AuthorizationExpired)?;
-        tokio::select! {
-            biased;
-            _=&mut changed=>{gate.check()?;},
-            _=tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))=>{gate.check()?;},
-            result=channel.send(data)=>return result.map_err(SdkError::Transport),
-        }
-    }
-}
-
 fn valid_message_metadata(metadata: &device_transport_webrtc::ChannelMetadata) -> bool {
     metadata.label == "peerloom.reliable"
         && metadata.protocol.is_empty()
@@ -1504,6 +1493,10 @@ async fn transport_worker(
     mut stop: oneshot::Receiver<()>,
     events: mpsc::Sender<Internal>,
     sdk: mpsc::Sender<Command>,
+    active_channels: usize,
+    outbound: OutboundBudget,
+    peer_device_id: String,
+    request_id: Option<String>,
 ) {
     if let Some(relay) = managed_relay {
         let fetch = async {
@@ -1540,7 +1533,7 @@ async fn transport_worker(
     }
     let requires_relay = config.policy == ConnectionPolicy::RelayOnly;
     let peer = match PeerTransport::new(config).await {
-        Ok(peer) => peer,
+        Ok(peer) => Arc::new(peer),
         Err(error) => {
             gate.close();
             report_worker_closed(
@@ -1570,7 +1563,10 @@ async fn transport_worker(
                 ))
                 .await
                 .map_err(|_| SdkError::Closed)?;
-            peer.accept_channel().await.map_err(SdkError::Transport)?
+            match peer.accept_incoming().await.map_err(SdkError::Transport)? {
+                device_transport_webrtc::IncomingChannel::ReliableMessage(channel) => channel,
+                _ => return Err(SdkError::Transport(TransportError::UnsupportedChannel)),
+            }
         } else {
             let channel = peer
                 .create_channel("peerloom.reliable", ChannelMode::ReliableMessage)
@@ -1611,54 +1607,20 @@ async fn transport_worker(
             return Err(SdkError::Transport(TransportError::RelayRequired));
         }
         gate.check()?;
-        let (send, mut sends) = mpsc::channel::<SendRequest>(32);
-        let (receive, messages) = mpsc::channel(32);
-        events
-            .send(Internal::Ready(
-                id.clone(),
-                generation,
-                Connection {
-                    session_id: id.clone(),
-                    generation,
-                    commands: send,
-                    messages,
-                    gate: gate.clone(),
-                    sdk,
-                },
-            ))
-            .await
-            .map_err(|_| SdkError::Closed)?;
-        loop {
-            let changed = gate.changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            gate.check()?;
-            let deadline = gate
-                .deadline
-                .lock()
-                .map_err(|_| SdkError::Closed)?
-                .ok_or(SdkError::AuthorizationExpired)?;
-            tokio::select! {
-                _ = &mut changed => { gate.check()?; },
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => { gate.check()?; },
-                request = sends.recv() => {
-                    let Some(request) = request else { return Ok(()); };
-                    let result = if Instant::now() >= request.expires {
-                        Err(SdkError::Transport(TransportError::Timeout))
-                    } else {
-                        gate.check()?;
-                        guarded_send(&channel, &gate, &request.data).await
-                    };
-                    let _ = request.result.send(result);
-                },
-                _ = peer.wait_interrupted() => return Err(SdkError::Transport(TransportError::Ice)),
-                data = channel.receive() => match data {
-                    Ok(data) => { gate.check()?; receive.try_send(data).map_err(|_|SdkError::QueueFull)?; },
-                    Err(TransportError::Timeout) => {},
-                    Err(error) => return Err(SdkError::Transport(error)),
-                }
-            }
-        }
+        channels::run(
+            peer.clone(),
+            channel,
+            id.clone(),
+            generation,
+            gate.clone(),
+            active_channels,
+            outbound,
+            events.clone(),
+            sdk,
+            peer_device_id,
+            request_id,
+        )
+        .await
     };
     let result = tokio::select! {
         biased;
@@ -1851,6 +1813,10 @@ mod tests {
                 stopped,
                 events,
                 sdk,
+                1,
+                OutboundBudget::new(4 * 1024 * 1024, 1024).unwrap(),
+                uuid::Uuid::nil().to_string(),
+                None,
             ));
             let (_socket, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
                 .await
@@ -1913,6 +1879,10 @@ mod tests {
             stopped,
             events,
             sdk,
+            1,
+            OutboundBudget::new(4 * 1024 * 1024, 1024).unwrap(),
+            uuid::Uuid::nil().to_string(),
+            None,
         )
         .await;
         server.await.unwrap();
@@ -1968,23 +1938,7 @@ mod tests {
         assert_eq!(backoff(10), Duration::from_secs(30));
     }
     fn connection() -> (Connection, Arc<Gate>, mpsc::Sender<Vec<u8>>) {
-        let (commands, _) = mpsc::channel(1);
-        let (send, messages) = mpsc::channel(1);
-        let (sdk, _) = mpsc::channel(1);
-        let gate = Arc::new(Gate::default());
-        gate.update(Some(Instant::now() + Duration::from_secs(60)));
-        (
-            Connection {
-                generation: 1,
-                session_id: uuid::Uuid::new_v4().to_string(),
-                commands,
-                messages,
-                gate: gate.clone(),
-                sdk,
-            },
-            gate,
-            send,
-        )
+        channels::test_connection()
     }
     #[test]
     fn readonly_validity_observer_tracks_expiry_and_owner_drop() {

@@ -6,11 +6,16 @@ public struct PeerloomConfiguration: Encodable, Sendable {
     public let applicationID: String
     public var developmentLoopback = false
     public var autoReconnect = true
+    public var maxConnections = 1
+    public var maxChannelsPerConnection = 1
+    public var maxChannelCreationsPerConnection = 8
     private let abiVersion = 1
     private let storage = "external"
     enum CodingKeys: String, CodingKey {
         case origin, applicationID = "application_id", developmentLoopback = "development_loopback"
         case autoReconnect = "auto_reconnect", abiVersion = "abi_version", storage
+        case maxConnections = "max_connections", maxChannelsPerConnection = "max_channels_per_connection"
+        case maxChannelCreationsPerConnection = "max_channel_creations_per_connection"
     }
     public init(origin: String, applicationID: String) { self.origin = origin; self.applicationID = applicationID }
 }
@@ -42,7 +47,7 @@ public struct PeerloomEvents: AsyncSequence, Sendable {
     public func makeAsyncIterator() -> AsyncIterator { AsyncIterator(core: core) }
 }
 
-/// Source wrapper for the current capacity-one reliable-message ABI, not a complete five-platform SDK.
+/// Bounded parent-scoped connections/channels; explicit native shutdown remains mandatory.
 public final class PeerloomSDK: @unchecked Sendable {
     private let core: NativeCore
     public var events: PeerloomEvents { PeerloomEvents(core: core) }
@@ -81,6 +86,22 @@ public final class PeerloomSDK: @unchecked Sendable {
     }
     public func refreshCredentials() async throws { _ = try await core.perform(operation: 5, connection: 0, input: Data()) }
     public func closeConnection(_ connection: UInt64) async throws { _ = try await core.perform(operation: 6, connection: connection, input: Data()) }
+    public func resetIdentity(expectedDeviceID: String, retry: Bool = false) async throws {
+        struct Reset: Encodable { let expected_device_id: String; let retry: Bool }
+        _ = try await core.perform(operation: 7, connection: 0, input: encodeJSON(Reset(expected_device_id: expectedDeviceID, retry: retry)))
+    }
+    public func openChannel(on connection: UInt64, mode: PeerloomChannelMode, label: String, queue: PeerloomMessageQueue? = nil) async throws -> PeerloomChannel {
+        struct Open: Encodable { let mode: PeerloomChannelMode; let label: String; let queue: PeerloomMessageQueue? }
+        let value = try await core.performDetailed(operation: 8, connection: connection, input: encodeJSON(Open(mode: mode, label: label, queue: queue)))
+        guard value.channel != 0 else { throw PeerloomError.invalidEvent }
+        return try PeerloomChannel(core: core, connection: connection, handle: value.channel, metadata: value.payload)
+    }
+    /// Only CHANNEL_READY events are constructible as typed incoming children.
+    public func incomingChannel(from event: PeerloomEvent) throws -> PeerloomChannel {
+        guard event.kind == 12, event.channel != 0 else { throw PeerloomError.invalidEvent }
+        guard core.channelIsValid(connection: event.connection, channel: event.channel) else { throw PeerloomError.native(5) }
+        return try PeerloomChannel(core: core, connection: event.connection, handle: event.channel, metadata: event.consumePayload())
+    }
     /// Waits for native quiescence, external storage work and successful release. Not a forced timeout/kill.
     public func close() async throws { try await core.close() }
 }

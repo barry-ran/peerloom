@@ -257,3 +257,57 @@ async fn cancelling_peer_settings_wait_does_not_resend_local_settings() {
     source.close().await.unwrap();
     target.close().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn idle_read_timeout_preserves_sequence_partial_buffer_and_fin() {
+    use device_transport_webrtc::TransportError;
+    use std::{sync::Arc, time::Duration};
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        operation_timeout: Duration::from_secs(2),
+        ..TransportConfig::default()
+    };
+    let a = Arc::new(PeerTransport::new(config.clone()).await.unwrap());
+    let b = Arc::new(PeerTransport::new(config).await.unwrap());
+    let aa = a.clone();
+    let bb = b.clone();
+    let operation = tokio::spawn(async move {
+        let mut source = aa.create_stream("idle").await.unwrap();
+        let offer = aa.create_offer().await.unwrap();
+        let answer = bb.answer_offer(offer).await.unwrap();
+        aa.apply_answer(answer).await.unwrap();
+        let mut target = bb.accept_stream().await.unwrap();
+        let (x, y) = tokio::join!(source.wait_open(), target.wait_open());
+        x.unwrap();
+        y.unwrap();
+        let mut bytes = [0; 2];
+        assert_eq!(
+            target.read(&mut bytes).await,
+            Err(StreamError::Transport(TransportError::Timeout))
+        );
+        assert_eq!(source.write(b"abcd").await.unwrap(), 4);
+        assert_eq!(target.read(&mut bytes).await.unwrap(), 2);
+        assert_eq!(&bytes, b"ab");
+        // Buffered remainder is retained even after an idle delay longer than the poll deadline.
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        assert_eq!(target.read(&mut bytes).await.unwrap(), 2);
+        assert_eq!(&bytes, b"cd");
+        assert_eq!(
+            target.read(&mut bytes).await,
+            Err(StreamError::Transport(TransportError::Timeout))
+        );
+        source.shutdown_write().await.unwrap();
+        assert_eq!(target.read(&mut bytes).await.unwrap(), 0);
+        target.write(b"ok").await.unwrap();
+        assert_eq!(source.read(&mut bytes).await.unwrap(), 2);
+        assert_eq!(&bytes, b"ok");
+        source.close().await.unwrap();
+        target.close().await.unwrap();
+    });
+    let result = tokio::time::timeout(Duration::from_secs(20), operation).await;
+    a.close().await.unwrap();
+    b.close().await.unwrap();
+    result.expect("bounded idle timeout regression").unwrap();
+}

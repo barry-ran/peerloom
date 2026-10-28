@@ -1,6 +1,6 @@
 # C 语言接口模块
 
-`src/device-sdk/device-ffi` 提供当前 Rust `DeviceSdk` 的原生异步 C ABI。**当前仅 Linux 实际构建、运行并开放 create；不是五端完整 SDK，也不等同原始设计头文件的全部功能。**
+`src/device-sdk/device-ffi` 提供当前 Rust `DeviceSdk` 的原生异步 C ABI。**本次多连接、三类通道扩展已在 Linux 通过真实 C/Go/WebRTC 联合测试；Kotlin/Swift 扩展仍需对应原生 CI，不能沿用旧单通道平台结果冒充本次五端验收。**
 
 唯一规范头文件是 [`device_sdk.h`](../src/device-sdk/device-ffi/include/device_sdk.h)。不要维护第二份手写声明。ABI 主版本为 1；事件携带 `abi_version`、`struct_size`，状态与事件种类使用固定宽度整数。C11 与 C++17 均已编译验证。
 
@@ -13,11 +13,12 @@
 | 自动 WSS 重连、轮换后重新认证 | 沿用 Rust facade；重连本身不延长旧授权 |
 | 存储 | 显式 `memory` 或宿主异步 `external` CAS；无默认明文落盘 |
 | 安全整数句柄、有界回调、取消、关闭 | 已实现并运行真实 C 生命周期与服务集成测试 |
-| 字节流、低延迟、多连接、多通道、身份 reset | 尚未接入此 ABI；未知操作立即返回 `UNSUPPORTED` |
-| 数据传输失败后自动重建会话、ICE restart | 尚未完成；不能用 WSS 自动重连冒充 |
-| Android JNI、Swift、Windows 封装及五端安全存储 | 不属于本 ABI 的已验收范围；非 Linux create 明确拒绝 |
+| 显式身份 reset | 已增加能力位、确认 DeviceID、CAS tombstone 与未知结果恢复；本地真实服务专项已通过，最新候选 CI 待验收 |
+| 字节流、低延迟、多连接、多通道 | 已接入父子句柄和独立有界 worker；真实三设备、两连接、三类通道测试通过 |
+| 数据传输失败后恢复 | Core 已实现重建 PeerConnection/Channel 的恢复路径，新增组合仍须精确 CI；不宣称原地 ICE restart |
+| Android JNI、Swift、Windows 封装及五端安全存储 | 沿用各平台 create/TLS/存储边界；本次新增接口须各平台精确 CI。Apple 签名生产 Keychain 与真机仍有独立验收条件 |
 
-`dp_capabilities()` 当前返回可靠消息、异步 CAS、显式内存存储三个能力位。每实例最多一个活动或待确认会话、一条可靠消息通道；进程最多 16 个实例。工程限额不是最终产品 SLA。
+`dp_capabilities()` 按位返回可靠消息、异步 CAS、显式内存存储、reset，以及新增多连接、typed channel、可靠字节流、低延迟消息能力；位定义只以规范头为准，不能把总和值当 ABI 版本。默认仍一连接、一条默认可靠消息通道；`max_connections` 为 1..32，`max_channels_per_connection` 为 1..32（包含默认通道）。独立的 `max_channel_creations_per_connection` 为 active 限额..128，默认 8，关闭不返还累计 DCEP 预算。进程最多 16 实例，工程限额不是吞吐 SLA。
 
 ## 线程与所有权
 
@@ -36,7 +37,7 @@ flowchart LR
     Callback --> HostQueue[宿主复制后调度UI]
 ```
 
-- SDK、connection、request 都是全局单调、溢出即拒绝的 `uint64_t`，不是地址；释放后永不复用。connection 必须属于传入 SDK。
+- SDK、connection、channel、request 都是全局单调、溢出即拒绝的 `uint64_t`，不是地址；释放后永不复用。connection 必须属于传入 SDK，channel 必须属于传入 connection 及其当前 generation。注册表只保存当前对象，不靠无限历史集合防复用。
 - 输入在调用返回前复制。非零长度的地址仍必须由 C 调用方保证可读、输出地址可写且正确对齐；空指针检查不能证明任意悬空指针安全。
 - Tokio 任务只持有 Rust 拥有的数据，不跨异步保存调用方缓冲区。`context` 是宿主选择的整数标识，库不解释、不释放。
 - `dp_event` 及其 payload 只在 callback 期间借用。没有返回拥有型字节块，因此没有无用途的 `dp_bytes_free`；需要保留时宿主自己复制。
@@ -61,6 +62,20 @@ unsafe 仅限 `boundary.rs` 的 C 指针/导出边界；Rust core/storage/transp
 立即失败时输出 request=0，不产生 completion。每个接受的普通操作预留一个终态事件信用额，最多 32 个；信用在终态 callback 返回后释放，确保慢 callback 不造成无限积压。消息最多 32 个、其他控制事件最多 32 个；shutdown 另有独立信用，底层事件队列总容量 97。非终态溢出会停止实例，不静默丢弃后继续声称健康。
 
 completion 可能早于 `submit` 返回；宿主应按 request ID 关联，不假设线程时序。连接 Ready 与消息在 callback 派发前再次检查只读 `ConnectionValidity`、本地关闭与 shutdown 状态。已经开始的 callback 或已经提交的网络发送不可追回。
+
+### Typed channel 与多连接
+
+保留原操作 1..7 与 `dp_event` 原字段偏移；`channel` 只追加在结构末尾，读取前检查 `struct_size`。新增 `OPEN_CHANNEL` 返回 child handle；对端开通道通过 `CHANNEL_READY` 通知。Ready 包含 session/generation/peer DeviceID，源端保留 CONNECT 的 request 关联，失败不冒用另一个连接。
+
+`dp_channel_submit(sdk, connection, channel, operation, ...)` 与旧 API 共享实例 32 个终态信用额：
+
+- 消息 SEND 返回本地 `sent` 或明确策略 `dropped`，不是远端业务确认。发送队列按配置支持 Fail/DropOldest/DropNewest 与 TTL；从 ABI 受理开始计算绝对截止，不因转发 worker 重新起算。
+- 流 READ 的 `max_bytes` 为 1..65536，返回原始部分数据，零字节成功表示 EOF；单流最多一个 pending READ，但其反向 WRITE、其他通道与控制面继续运行。
+- WRITE 返回实际 `written`，调用方只推进该数量；不得自动重发未知结果。FIN 仅结束写半边，反向读仍可用。流拒绝消息 queue 配置；WRITE/FIN 当前固定 30 秒发送截止，包含 ABI 排队时间。超期关闭整个流，不跳过中间字节。接收端只有有界回压，没有新接收 TTL。
+- 关闭 child 不关闭兄弟；关闭父连接、租约失效、generation 替换或 reset 立即使子对象失效。FIN/close 接受后不可取消。READ 已接受后即使授权过期也必须结算一次：清除数据并返回 CLOSED，不能悄悄丢 completion。
+- native callback 与宿主实际消费时均重验 validity。Kotlin 的 READ 宿主交付另限 32 个；Swift READ 完整传递 caller isolation，在调用者 actor 恢复后重验并释放操作信用；旧系统 AsyncSequence 的事件不公开 Data，必须同步调用单次 `consumePayload()`，事件信用持有到消费或丢弃。库移交 Data 后，应用自行再次排队/复制不属于 SDK 可撤回范围。
+
+Kotlin 暴露 MessageChannel/ByteStream、typed send disposition/partial-write count/read bytes、resetIdentity 与可注入异步 IdentityStorage（默认仍 Keystore）。Swift 对应 PeerloomChannel 的模式检查和 async read/write/FIN/reset；Swift 编译器最低为 Swift 6.0（当前 CI Xcode 16.4），语言模式保留 v5、最低系统仍 iOS 15/macOS 12；不依赖仅新系统可用的 AsyncIterator runtime。新增真实编译、暂停 actor 与消费信用测试必须由 Xcode CI 给出证据。
 
 ### 取消与不确定结果
 
@@ -91,7 +106,7 @@ sequenceDiagram
 - shutdown 期间仍须处理已发出的存储请求，否则凭证持久化可能失败。内存适配与测试 C 适配不等于安全持久存储。
 - payload 包含敏感凭证，只交给可信适配器；不得记录日志。当前不声称清除了所有 JSON/HTTP 内存副本。
 
-HTTPS/WSS 已统一使用同一 platform verifier 配置，保留证书和主机名验证；明文仅允许显式 development 模式的 IP 字面量 loopback。Android 仍缺 JNI JVM/Application Context 与匹配 verifier 组件初始化，因此不能据 Linux 测试声称 Android TLS 可用。
+HTTPS/WSS 已统一使用同一 platform verifier 配置，保留证书和主机名验证；明文仅允许显式 development 模式的 IP 字面量 loopback。Android 已在同一 Rust 映像初始化 JVM/Application Context 与匹配 verifier，既有 4K/16K 模拟器 TLS 正负测试通过；本次新增 channel 绑定仍须原生回归，不能据 Linux 测试声称移动平台新能力已验收。
 
 ## 退出协议
 
@@ -141,3 +156,7 @@ python3 src/device-sdk/device-ffi/tests/run-service.py
 ```
 
 fixture 必须为 0600；runner 自动生成并删除 0600 临时 C 输入，不输出凭证。未提供 fixture 不等于测试通过。Linux 的这些结果不证明五端后台挂起、系统安全存储、移动网络切换或真实公网 NAT 已验收。
+
+### 多通道联合验证
+
+`TEST_MULTICONNECTION_FIXTURE_FILE` 指向管理 HTTP 创建的 source/target/third 三设备新 0600 fixture，配合 `TEST_IDENTITY_BASE_URL` 运行 `python3 src/device-sdk/device-ffi/tests/run-channels.py`。测试覆盖两条跨应用授权连接、三类通道、256KiB 部分读写、同时双向流、FIN、跨父句柄拒绝和兄弟连接存活；真实低延迟链路不承诺全部消息必达。原 service.c 洪泛与 reset 测试继续保留，含无秘密阶段/计数诊断；本地通过不解释此前远端偶发洪泛超时，精确 CI 仍必须通过。

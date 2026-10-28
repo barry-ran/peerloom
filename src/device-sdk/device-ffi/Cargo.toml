@@ -16,6 +16,7 @@ unsafe_op_in_unsafe_fn = "deny"
 all = "warn"
 
 [dependencies]
+device-protocol = { path = "../device-protocol" }
 device-core = { path = "../device-core" }
 device-transport-webrtc = { path = "../device-transport-webrtc" }
 device-storage = { path = "../device-storage" }

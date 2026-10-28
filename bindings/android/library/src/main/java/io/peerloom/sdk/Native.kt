@@ -15,6 +15,17 @@ object Native {
     @JvmStatic
     external fun submit(sdk: Long, operation: Int, connection: Long, input: ByteArray): LongArray
 
+    @JvmStatic
+    external fun channelSubmit(
+        sdk: Long,
+        connection: Long,
+        channel: Long,
+        operation: Int,
+        input: ByteArray,
+    ): LongArray
+
+    @JvmStatic external fun channelValid(sdk: Long, connection: Long, channel: Long): Int
+
     @JvmStatic external fun cancel(sdk: Long, request: Long): Int
 
     @JvmStatic

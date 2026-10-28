@@ -23,37 +23,57 @@ root = pathlib.Path.cwd()
 if name == 'cargo':
     p = pathlib.Path(os.environ['TEST_MULTICONNECTION_FIXTURE_FILE'])
     assert p.exists() and stat.S_IMODE(p.stat().st_mode) == 0o600
-    assert os.environ['TEST_LEASE_ADMIN_FIXTURE'] == 'admin'
-    assert 'sdk_multiconnection' in sys.argv and '--ignored' in sys.argv
-    (root / 'multiconnection-ran').touch()
-    sys.exit(7 if os.environ['FAIL'] == 'multiconnection' else 0)
+    stage = 'channels' if 'sdk_channels' in sys.argv else 'multiconnection'
+    if stage == 'multiconnection':
+        assert os.environ['TEST_LEASE_ADMIN_FIXTURE'] == 'admin'
+    else:
+        assert not (p.parent / 'multiconnection.json').exists()
+    assert '--ignored' in sys.argv
+    (root / (stage + '-ran')).touch()
+    sys.exit(7 if os.environ['FAIL'] == stage else 0)
 if name == 'python3' and 'prepare-multiconnection-fixture.py' in sys.argv[1]:
     output = pathlib.Path(sys.argv[sys.argv.index('--output') + 1])
     assert not output.exists() and not (output.parent / 'recovery.json').exists()
     output.write_text('{}')
     output.chmod(0o600)
-    sys.exit(7 if os.environ['FAIL'] == 'multiconnection-prepare' else 0)
+    stage = ('ffi-channels' if output.name == 'ffi-channels.json' else
+             'channels' if output.name == 'channels.json' else 'multiconnection')
+    if stage == 'ffi-channels':
+        assert not (output.parent / 'channels.json').exists()
+    sys.exit(7 if os.environ['FAIL'] == stage + '-prepare' else 0)
 if name == 'python3' and 'prepare-lifecycle-fixture.py' in sys.argv[1]:
     output = pathlib.Path(sys.argv[sys.argv.index('--pair-output') + 1])
     assert not output.exists()
     assert stat.S_IMODE(output.parent.stat().st_mode) == 0o700
     direct = '--direct-reset' in sys.argv
     if not direct:
-        assert not (output.parent / 'reset.json').exists()
+        assert not list(output.parent.glob('reset-*.json'))
     output.write_text(json.dumps({'direct_reset_enabled': direct, 'secret': 'never-log-this-secret'}))
     output.chmod(0o600)
     (root / 'owned-directory').write_text(str(output.parent))
     sys.exit(7 if os.environ['FAIL'] == 'prepare' else 0)
+if name == 'python3' and 'run-channels.py' in sys.argv[1]:
+    p = pathlib.Path(os.environ['TEST_MULTICONNECTION_FIXTURE_FILE'])
+    assert p.exists() and p.name == 'ffi-channels.json'
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert not (p.parent / 'channels.json').exists()
+    (root / 'ffi-channels-ran').touch()
+    sys.exit(7 if os.environ['FAIL'] == 'ffi-channels' else 0)
 if name == 'python3':
     p = pathlib.Path(os.environ['TEST_SIGNAL_FIXTURE_FILE'])
     assert json.loads(p.read_text())['direct_reset_enabled'] is True
     assert stat.S_IMODE(p.stat().st_mode) == 0o600
     (root / 'c-ran').touch()
-    sys.exit(7 if os.environ['FAIL'] == 'c' else 0)
+    counter = root / 'c-count'
+    count = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(count))
+    assert p.name == 'reset-' + str(count) + '.json'
+    fail = os.environ['FAIL'] == 'c' or (os.environ['FAIL'] == 'c-round2' and count == 2)
+    sys.exit(7 if fail else 0)
 assert '--recovery' in sys.argv
 p = pathlib.Path(sys.argv[sys.argv.index('--pair-fixture') + 1])
 assert json.loads(p.read_text())['direct_reset_enabled'] is False
-assert not (p.parent / 'reset.json').exists()
+assert not list(p.parent.glob('reset-*.json'))
 (root / 'recovery-ran').touch()
 sys.exit(7 if os.environ['FAIL'] == 'recovery' else 0)
 '''
@@ -77,15 +97,24 @@ class LifecycleScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 7 if failure else 0, result.stderr)
             self.assertFalse(Path((root / 'owned-directory').read_text()).exists())
             self.assertNotIn('never-log-this-secret', result.stdout + result.stderr)
+            if failure == 'c-round2':
+                self.assertEqual((root / 'c-count').read_text(), '2')
+                self.assertFalse((root / 'recovery-ran').exists())
             if not failure:
                 self.assertTrue((root / 'c-ran').exists())
+                self.assertEqual((root / 'c-count').read_text(), '3')
                 self.assertTrue((root / 'recovery-ran').exists())
                 self.assertTrue((root / 'multiconnection-ran').exists())
+                self.assertTrue((root / 'channels-ran').exists())
+                self.assertTrue((root / 'ffi-channels-ran').exists())
 
     def test_success_uses_distinct_private_pairs(self):
         self.run_shell('')
     def test_prepare_failure_cleanup(self):
         self.run_shell('prepare')
+    def test_second_c_round_failure_stops_without_retry_or_later_stages(self):
+        self.run_shell('c-round2')
+
     def test_c_failure_cleanup_and_no_recovery(self):
         self.run_shell('c')
     def test_recovery_failure_cleanup(self):
@@ -96,6 +125,18 @@ class LifecycleScriptTests(unittest.TestCase):
 
     def test_multiconnection_failure_cleanup(self):
         self.run_shell('multiconnection')
+
+    def test_channels_prepare_failure_cleanup(self):
+        self.run_shell('channels-prepare')
+
+    def test_channels_failure_cleanup(self):
+        self.run_shell('channels')
+
+    def test_ffi_channels_prepare_failure_cleanup(self):
+        self.run_shell('ffi-channels-prepare')
+
+    def test_ffi_channels_failure_cleanup(self):
+        self.run_shell('ffi-channels')
 
     def test_direct_mode_is_explicit_http_patch(self):
         with tempfile.TemporaryDirectory() as directory:

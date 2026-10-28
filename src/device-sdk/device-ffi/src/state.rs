@@ -1,4 +1,27 @@
-use device_core::sdk::ConnectionValidity;
+use crate::handles::{ChannelKind, HandleError, HandleRegistry, ScopedValidity, Validity};
+use device_core::sdk::{ChannelValidity, ConnectionValidity};
+#[derive(Clone)]
+pub enum Authority {
+    Connection(ConnectionValidity),
+    Channel(ChannelValidity),
+}
+impl Validity for Authority {
+    fn is_valid(&self) -> bool {
+        match self {
+            Self::Connection(value) => value.is_valid(),
+            Self::Channel(value) => value.is_valid(),
+        }
+    }
+}
+pub fn handle_error(error: HandleError) -> u32 {
+    match error {
+        HandleError::InvalidConfiguration => INVALID,
+        HandleError::InvalidHandle => HANDLE,
+        HandleError::Closed => CLOSED,
+        HandleError::Full => FULL,
+        HandleError::Allocator => INTERNAL,
+    }
+}
 use std::{
     collections::HashMap,
     sync::{
@@ -48,16 +71,19 @@ pub struct Operation {
     pub id: u64,
     pub kind: u32,
     pub connection: u64,
+    pub channel: u64,
     pub input: Vec<u8>,
+    pub deadline: Option<std::time::Instant>,
     pub phase: Arc<AtomicUsize>,
 }
 pub struct Event {
     pub kind: u32,
     pub request: u64,
     pub connection: u64,
+    pub channel: u64,
     pub status: u32,
     pub payload: Vec<u8>,
-    pub validity: Option<ConnectionValidity>,
+    pub validity: Option<ScopedValidity<Authority>>,
     pub class: u8,
 }
 impl Event {
@@ -66,6 +92,7 @@ impl Event {
             kind,
             request,
             connection,
+            channel: 0,
             status,
             payload,
             validity: None,
@@ -95,11 +122,10 @@ pub struct Instance {
     pub shutting: AtomicBool,
     pub stop: Notify,
     pub runtime_done: AtomicBool,
+    pub failed: AtomicBool,
     pub callback_done: AtomicBool,
     pub shutdown_id: AtomicU64,
-    pub connection_id: AtomicU64,
-    pub connection_validity: Mutex<Option<(u64, ConnectionValidity)>>,
-    pub closing_connection: AtomicU64,
+    pub handles: Mutex<HandleRegistry<Authority>>,
     pub data_count: AtomicUsize,
     pub control_count: AtomicUsize,
     pub threads: Mutex<Vec<JoinHandle<()>>>,
@@ -115,7 +141,7 @@ impl Instance {
     pub fn emit(&self, mut event: Event) -> bool {
         let count = if event.kind == COMPLETE || event.kind == SHUTDOWN {
             None
-        } else if event.kind == 6 {
+        } else if matches!(event.kind, 6 | 14) {
             event.class = 1;
             Some(&self.data_count)
         } else {
@@ -166,13 +192,39 @@ impl Instance {
             self.reset_active.store(false, Ordering::Release);
         }
         op.phase.store(3, Ordering::Release);
-        self.emit(Event::new(COMPLETE, op.id, op.connection, status, payload));
+        let mut event = Event::new(COMPLETE, op.id, op.connection, status, payload);
+        event.channel = op.channel;
+        self.emit(event);
     }
     pub fn submit(&self, kind: u32, connection: u64, input: Vec<u8>) -> Result<u64, u32> {
+        if !(1..=8).contains(&kind) {
+            return Err(UNSUPPORTED);
+        }
+        self.submit_scoped(kind, connection, 0, input)
+    }
+    pub fn submit_channel(
+        &self,
+        kind: u32,
+        connection: u64,
+        channel: u64,
+        input: Vec<u8>,
+    ) -> Result<u64, u32> {
+        if !(1..=5).contains(&kind) {
+            return Err(UNSUPPORTED);
+        }
+        self.submit_scoped(63 + kind, connection, channel, input)
+    }
+    fn submit_scoped(
+        &self,
+        kind: u32,
+        connection: u64,
+        channel: u64,
+        input: Vec<u8>,
+    ) -> Result<u64, u32> {
         if self.shutting.load(Ordering::Acquire) {
             return Err(CLOSED);
         }
-        if !(1..=7).contains(&kind) {
+        if !(1..=8).contains(&kind) && !(64..=68).contains(&kind) {
             return Err(UNSUPPORTED);
         }
         let mut ops = self.operations.lock().map_err(|_| INTERNAL)?;
@@ -202,21 +254,56 @@ impl Instance {
                 return Err(INVALID);
             }
         }
-        if matches!(kind, 4 | 6) {
-            if connection == 0 || self.connection_id.load(Ordering::Acquire) != connection {
-                return Err(HANDLE);
+        let mut handles = self.handles.lock().map_err(|_| INTERNAL)?;
+        if matches!(kind, 4 | 6 | 8) {
+            handles.connection(connection).map_err(handle_error)?;
+        }
+        if kind >= 64 {
+            let mode = handles
+                .channel_kind(connection, channel)
+                .map_err(handle_error)?;
+            let stream = mode == ChannelKind::ReliableStream;
+            if (kind == 64 && stream) || (matches!(kind, 65..=67) && !stream) {
+                return Err(UNSUPPORTED);
             }
-            if self.closing_connection.load(Ordering::Acquire) == connection {
-                return Err(CLOSED);
+            if matches!(kind, 66 | 67) {
+                handles
+                    .check_writable(connection, channel)
+                    .map_err(handle_error)?;
+            }
+            if kind == 65 {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Read {
+                    max_bytes: usize,
+                }
+                let read: Read = serde_json::from_slice(&input).map_err(|_| INVALID)?;
+                if !(1..=65536).contains(&read.max_bytes) {
+                    return Err(INVALID);
+                }
             }
         }
-        if kind == 6 && !input.is_empty() {
+        if matches!(kind, 6 | 67 | 68) && !input.is_empty() {
             return Err(INVALID);
         }
+        let now = std::time::Instant::now();
+        let deadline = match kind {
+            4 | 66 | 67 => Some(
+                now.checked_add(std::time::Duration::from_secs(30))
+                    .ok_or(INVALID)?,
+            ),
+            64 => Some(
+                handles
+                    .message_deadline(connection, channel, now)
+                    .map_err(handle_error)?,
+            ),
+            _ => None,
+        };
         let id = next_id()?;
         // Reserve queue space before irreversible reset/close admission or cancellation.
         let permit = self.commands.try_reserve().map_err(|_| FULL)?;
         if kind == 7 {
+            handles.clear();
             self.resetting.store(true, Ordering::Release);
             self.reset_active.store(true, Ordering::Release);
             for phase in ops.values() {
@@ -224,19 +311,96 @@ impl Instance {
             }
         }
         if kind == 6 {
-            self.closing_connection.store(connection, Ordering::Release);
+            handles.close_connection(connection).map_err(handle_error)?;
+        }
+        if kind == 67 {
+            handles
+                .finish_write(connection, channel)
+                .map_err(handle_error)?;
+        }
+        if kind == 68 {
+            handles
+                .close_channel(connection, channel)
+                .map_err(handle_error)?;
         }
         // Close/reset admission cannot be cancelled after its local fence takes effect.
-        let phase = Arc::new(AtomicUsize::new(if matches!(kind, 6 | 7) { 4 } else { 0 }));
+        let phase = Arc::new(AtomicUsize::new(if matches!(kind, 6 | 7 | 67 | 68) {
+            4
+        } else {
+            0
+        }));
         permit.send(Operation {
             id,
             kind,
             connection,
+            channel,
             input,
+            deadline,
             phase: phase.clone(),
         });
         ops.insert(id, phase);
         Ok(id)
+    }
+}
+
+/// Every routed worker operation owns its terminal credit through abort/panic as well.
+/// A running task dropped without an observed result is unknown, never falsely cancelled.
+pub struct CompletionGuard {
+    instance: Arc<Instance>,
+    operation: Option<Operation>,
+}
+impl CompletionGuard {
+    pub fn start(instance: Arc<Instance>, operation: Operation) -> Option<Self> {
+        let expected = if matches!(operation.kind, 6 | 7 | 67 | 68) {
+            4
+        } else {
+            0
+        };
+        if operation
+            .phase
+            .compare_exchange(expected, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            instance.finish(operation, CANCELLED, Vec::new());
+            return None;
+        }
+        Some(Self {
+            instance,
+            operation: Some(operation),
+        })
+    }
+    pub fn operation(&self) -> &Operation {
+        self.operation.as_ref().expect("live operation")
+    }
+    pub fn finish(
+        mut self,
+        status: u32,
+        payload: Vec<u8>,
+        validity: Option<ScopedValidity<Authority>>,
+    ) {
+        let operation = self.operation.take().expect("live operation");
+        operation.phase.store(3, Ordering::Release);
+        let mut event = Event::new(
+            COMPLETE,
+            operation.id,
+            operation.connection,
+            status,
+            payload,
+        );
+        event.channel = operation.channel;
+        event.validity = validity;
+        self.instance.emit(event);
+    }
+    pub fn opened(mut self, channel: u64, payload: Vec<u8>, validity: ScopedValidity<Authority>) {
+        self.operation.as_mut().expect("live operation").channel = channel;
+        self.finish(OK, payload, Some(validity));
+    }
+}
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        if let Some(operation) = self.operation.take() {
+            self.instance.finish(operation, UNKNOWN, Vec::new());
+        }
     }
 }
 
@@ -260,14 +424,13 @@ mod reset_tests {
                 shutting: AtomicBool::new(false),
                 stop: Notify::new(),
                 runtime_done: AtomicBool::new(false),
+                failed: AtomicBool::new(false),
                 callback_done: AtomicBool::new(false),
                 shutdown_id: AtomicU64::new(0),
-                connection_id: AtomicU64::new(0),
-                connection_validity: Mutex::new(None),
+                handles: Mutex::new(HandleRegistry::new(1, 1).unwrap()),
                 device_id: Mutex::new(Some(DEVICE.into())),
                 resetting: AtomicBool::new(false),
                 reset_active: AtomicBool::new(false),
-                closing_connection: AtomicU64::new(0),
                 data_count: AtomicUsize::new(0),
                 control_count: AtomicUsize::new(0),
                 threads: Mutex::new(Vec::new()),

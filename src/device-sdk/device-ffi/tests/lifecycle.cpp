@@ -68,7 +68,7 @@ std::uint64_t wait_storage() {
 } // namespace
 int main() {
     char config[] = "{\"abi_version\":1,\"origin\":\"http://127.0.0.1:1\",\"application_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"storage\":\"external\",\"development_loopback\":true}";
-    CHECK(dp_abi_version() == 1 && dp_capabilities() == 15);
+    CHECK(dp_abi_version() == 1 && dp_capabilities() == 255);
     std::uint64_t handle = 99;
     CHECK(dp_sdk_create(nullptr, 1, callback, 721, &handle) == DP_INVALID_ARGUMENT && handle == 0);
     CHECK(dp_sdk_create(reinterpret_cast<const std::uint8_t *>(config), sizeof(config) - 1, callback, 721, &handle) == DP_OK && handle != 0);

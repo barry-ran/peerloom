@@ -95,6 +95,10 @@ impl PeerTransport {
 }
 
 impl ByteStream {
+    pub async fn metadata(&self) -> Result<crate::ChannelMetadata, StreamError> {
+        self.channel.metadata().await.map_err(StreamError::from)
+    }
+
     pub(crate) fn new(channel: MessageChannel) -> Self {
         let max_chunk = MAX_CHUNK.min(channel.max_message_bytes - HEADER);
         Self {
@@ -230,6 +234,9 @@ impl ByteStream {
         }
         let frame = match self.channel.receive().await {
             Ok(frame) => frame,
+            // receive returns complete SCTP messages atomically. A timeout while
+            // awaiting the next event consumed no frame and advances no sequence.
+            Err(TransportError::Timeout) => return Err(TransportError::Timeout.into()),
             Err(error) => {
                 self.failed = true;
                 return Err(error.into());

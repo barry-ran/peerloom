@@ -24,13 +24,35 @@ class ScopeTest(unittest.TestCase):
             directory = base / name
             directory.mkdir()
             env = {'RUNNER_TEMP': temp, 'GITHUB_ACTIONS': 'true'}
-            self.assertEqual(service.validate_scope(directory, name, env, 'win32'), directory)
+            self.assertEqual(service.validate_scope(directory, name, env, 'win32'), directory.resolve())
             for platform, environment, path, distro in (
                 ('linux', env, directory, name), ('win32', {**env, 'GITHUB_ACTIONS': 'false'}, directory, name),
                 ('win32', env, base, name), ('win32', env, directory, 'Ubuntu'),
             ):
                 with self.assertRaises(ValueError):
                     service.validate_scope(path, distro, environment, platform)
+
+    @unittest.skipUnless(service.os.name == 'nt', 'requires native Windows pathname API')
+    def test_windows_short_and_long_names_use_same_owned_scope(self):
+        import ctypes
+        from ctypes import wintypes
+        short_name = ctypes.WinDLL('kernel32', use_last_error=True).GetShortPathNameW
+        short_name.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+        short_name.restype = wintypes.DWORD
+        with tempfile.TemporaryDirectory() as temp:
+            name = 'PeerloomCI-' + 'b' * 32
+            directory = Path(temp) / name
+            directory.mkdir()
+            long_base = Path(temp).resolve()
+            buffer = ctypes.create_unicode_buffer(32768)
+            count = short_name(str(long_base), buffer, len(buffer))
+            self.assertTrue(0 < count < len(buffer))
+            short_base = Path(buffer.value)
+            self.assertTrue(short_base.samefile(long_base))
+            for supplied, configured in ((short_base, long_base), (long_base, short_base)):
+                env = {'RUNNER_TEMP': str(configured), 'GITHUB_ACTIONS': 'true'}
+                self.assertEqual(service.validate_scope(supplied / name, name, env, 'win32'), directory.resolve())
+            print('Windows short pathname alias exercised=' + str(str(short_base).casefold() != str(long_base).casefold()))
 
     def test_wsl_mount_mapping_never_accepts_unc(self):
         self.assertEqual(service.wsl_mounted_path(r'D:\a\test folder\redis.archive'), '/mnt/d/a/test folder/redis.archive')

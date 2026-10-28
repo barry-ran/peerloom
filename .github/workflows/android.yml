@@ -72,10 +72,27 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 dist/android/sample-debug.apk
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 dist/android/library-debug-androidTest.apk
           (cd dist/android && find . -type f ! -path './SHA256SUMS' -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: src/device-server/go.sum
+      - name: Android release AAR 与 Cargo/Maven 原文证据映射
+        run: |
+          python3 scripts/test-package-release.py
+          python3 scripts/package-third-party.py
+          python3 scripts/package-release.py --platform android --output dist/android/release-package
+          (cd dist/android && find . -type f ! -path './SHA256SUMS' -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: peerloom-android-${{ github.sha }}
           path: dist/android/
+          if-no-files-found: error
+          retention-days: 14
+      - name: 保存 Android release-only SDK 包（证据状态见元数据）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-android-release-${{ github.sha }}
+          path: dist/android/release-package/
           if-no-files-found: error
           retention-days: 14
   emulator:

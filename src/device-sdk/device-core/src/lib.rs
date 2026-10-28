@@ -3,6 +3,7 @@
 
 pub mod identity;
 pub mod lease;
+pub mod outbound;
 pub mod relay;
 pub mod sdk;
 pub mod signaling;
@@ -40,6 +41,7 @@ pub enum QueueError {
     MessageTooLarge,
     Full,
     DeadlineOverflow,
+    Expired,
     ClockMovedBackwards,
     /// 字节流缺少一段便不能继续传输；丢弃整个队列，终止该流。
     StreamExpired,
@@ -53,6 +55,7 @@ impl std::fmt::Display for QueueError {
             Self::MessageTooLarge => "MESSAGE_TOO_LARGE",
             Self::Full => "BUFFER_FULL",
             Self::DeadlineOverflow => "DEADLINE_OVERFLOW",
+            Self::Expired => "MESSAGE_EXPIRED",
             Self::ClockMovedBackwards => "CLOCK_MOVED_BACKWARDS",
             Self::StreamExpired => "STREAM_EXPIRED",
             Self::Closed => "QUEUE_CLOSED",

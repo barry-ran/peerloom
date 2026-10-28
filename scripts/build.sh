@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
+python3 "$root/scripts/test-package-release.py"
 mkdir -p "$root/dist"
 (
   cd "$root/src/device-server"
@@ -44,18 +45,9 @@ if [ "$(uname -s)" = Linux ]; then
   printf '%s\n' 'Linux原生C ABI检查产物；ABI版本见device_sdk.h。不是五端SDK或生产发布承诺。' > "$abi/产物范围.txt"
 fi
 cp "$root/LICENSE" "$root/dist/LICENSE"
-python3 "$root/scripts/package-third-party.py"
-# Browser console build-tool evidence is separate from Rust/Go third-party inventory.
-# The report retains incomplete optional-platform evidence; this is not legal clearance.
-mkdir -p "$root/dist/third-party/admin-web-build"
-cp -R "$root/third_party/admin-web-build/." "$root/dist/third-party/admin-web-build/"
-cp "$root/src/admin-web/package-lock.json" "$root/dist/third-party/admin-web-build/package-lock.json"
-# path回移依赖仍标incomplete；同时携带原第三方许可与固定补丁来源，不改为项目MIT。
+# 只由明确producer补齐status/admin/vendor原文的SHA，未知extra仍拒绝。
 python3 "$root/scripts/test-vendored-nix.py"
-mkdir -p "$root/dist/third-party/vendor/nix-0.31.3"
-cp "$root/third_party/rust/nix-0.31.3/crate/LICENSE" \
-  "$root/third_party/rust/nix-0.31.3/来源.json" \
-  "$root/third_party/rust/nix-0.31.3/上游补丁.patch" \
-  "$root/third_party/rust/nix-0.31.3/应用补丁.patch" \
-  "$root/third_party/rust/nix-0.31.3/回移说明.md" \
-  "$root/dist/third-party/vendor/nix-0.31.3/"
+python3 "$root/scripts/package-third-party.py" --include-build-notices
+
+# 包内 metadata 固定当前提交、项目版本与默认 feature；完整 SHA 覆盖第三方证据。
+python3 "$root/scripts/package-release.py" --platform linux-x86_64 --output "$root/dist/release/linux-x86_64"

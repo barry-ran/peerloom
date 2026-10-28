@@ -147,6 +147,7 @@ mod tests {
                 session_id.clone(),
                 Session {
                     id: session_id.clone(),
+                    initial_request_id: None,
                     source: source.clone(),
                     target: target.clone(),
                     guard: LeaseGuard::new(session_id.clone(), source, target).unwrap(),

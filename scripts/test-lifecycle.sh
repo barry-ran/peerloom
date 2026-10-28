@@ -25,11 +25,16 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-python3 scripts/prepare-lifecycle-fixture.py --base-url "$base_url" \
-  --admin-fixture "$admin" --pair-output "$fixture/reset.json" --direct-reset
-TEST_IDENTITY_BASE_URL="$base_url" TEST_SIGNAL_FIXTURE_FILE="$fixture/reset.json" \
-  python3 src/device-sdk/device-ffi/tests/run-service.py
-rm -f -- "$fixture/reset.json"
+# Three independent all-pass pressure rounds, never retry an admitted operation.
+# A failed round exits immediately under set -e; original C 45s bound is unchanged.
+for round in 1 2 3; do
+  echo "C ABI pressure/reset round=$round/3"
+  python3 scripts/prepare-lifecycle-fixture.py --base-url "$base_url" \
+    --admin-fixture "$admin" --pair-output "$fixture/reset-$round.json" --direct-reset
+  TEST_IDENTITY_BASE_URL="$base_url" TEST_SIGNAL_FIXTURE_FILE="$fixture/reset-$round.json" \
+    python3 src/device-sdk/device-ffi/tests/run-service.py
+  rm -f -- "$fixture/reset-$round.json"
+done
 python3 scripts/prepare-lifecycle-fixture.py --base-url "$base_url" \
   --admin-fixture "$admin" --pair-output "$fixture/recovery.json"
 ./scripts/test-managed-relay.sh --recovery --base-url "$base_url" \
@@ -42,3 +47,16 @@ TEST_IDENTITY_BASE_URL="$base_url" TEST_MULTICONNECTION_FIXTURE_FILE="$fixture/m
   TEST_LEASE_ADMIN_FIXTURE="$admin" \
   cargo test --manifest-path src/device-sdk/Cargo.toml -p device-core --test sdk_multiconnection \
     --locked -- --ignored --nocapture
+
+rm -f -- "$fixture/multiconnection.json"
+python3 scripts/prepare-multiconnection-fixture.py --base-url "$base_url" \
+  --admin-fixture "$admin" --output "$fixture/channels.json"
+TEST_IDENTITY_BASE_URL="$base_url" TEST_MULTICONNECTION_FIXTURE_FILE="$fixture/channels.json" \
+  cargo test --manifest-path src/device-sdk/Cargo.toml -p device-core --test sdk_channels \
+    --locked -- --ignored --nocapture
+
+rm -f -- "$fixture/channels.json"
+python3 scripts/prepare-multiconnection-fixture.py --base-url "$base_url" \
+  --admin-fixture "$admin" --output "$fixture/ffi-channels.json"
+TEST_IDENTITY_BASE_URL="$base_url" TEST_MULTICONNECTION_FIXTURE_FILE="$fixture/ffi-channels.json" \
+  python3 src/device-sdk/device-ffi/tests/run-channels.py

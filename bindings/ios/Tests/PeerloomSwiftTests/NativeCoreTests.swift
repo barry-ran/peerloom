@@ -16,24 +16,51 @@ final class MockNative: NativeAPI, @unchecked Sendable {
     private var context: UInt64 = 0
     private var sequence: UInt64 = 10
     private var final = false
-    var isValid = true
+    private var validValue = true
+    var isValid: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return validValue }
+        set { lock.lock(); validValue = newValue; lock.unlock() }
+    }
+    var holdReads = false
+    let readSubmitted = DispatchSemaphore(value: 0)
+    let validityChecked = DispatchSemaphore(value: 0)
+    private var heldRead: (@Sendable () -> Void)?
+    func completeHeldRead() {
+        lock.lock(); let action = heldRead; heldRead = nil; lock.unlock(); action?()
+    }
     var released = 0
     func create(_ data: Data, callback: NativeCallback, context: UInt64) -> (UInt32, UInt64) {
         lock.lock(); self.callback = callback; self.context = context; lock.unlock()
         return (0, 1)
     }
-    func emit(kind: UInt32, request: UInt64 = 0, connection: UInt64 = 0, status: UInt32 = 0, data: Data = Data()) {
+    func emit(kind: UInt32, request: UInt64 = 0, connection: UInt64 = 0, channel: UInt64 = 0, status: UInt32 = 0, data: Data = Data()) {
         lock.lock(); let callback = callback, context = context; lock.unlock()
         data.withUnsafeBytes { bytes in
             var event = dp_event(abi_version: 1, kind: kind, request_id: request, connection: connection,
                 status: status, struct_size: UInt32(MemoryLayout<dp_event>.size),
-                payload: bytes.bindMemory(to: UInt8.self).baseAddress, payload_len: numericCast(data.count))
+                payload: bytes.bindMemory(to: UInt8.self).baseAddress, payload_len: numericCast(data.count), channel: channel)
             withUnsafePointer(to: &event) { callback?(context, $0) }
         }
     }
     func submit(_ sdk: UInt64, operation: UInt32, connection: UInt64, data: Data) -> (UInt32, UInt64) {
         lock.lock(); sequence += 1; let request = sequence; lock.unlock()
         DispatchQueue.global().async { self.emit(kind: 1, request: request, data: data) }
+        return (0, request)
+    }
+    func channelValid(_ sdk: UInt64, connection: UInt64, channel: UInt64) -> UInt32 { let result: UInt32 = isValid ? 0 : 5; validityChecked.signal(); return result }
+    func channelSubmit(_ sdk: UInt64, connection: UInt64, channel: UInt64, operation: UInt32, data: Data) -> (UInt32, UInt64) {
+        lock.lock(); sequence += 1; let request = sequence; lock.unlock()
+        if operation == 2 && holdReads {
+            lock.lock()
+            heldRead = { [self] in self.emit(kind: 1, request: request, connection: connection, channel: channel, data: Data([7, 8])) }
+            lock.unlock()
+            readSubmitted.signal()
+            return (0, request)
+        }
+        DispatchQueue.global().async {
+            let result = operation == 3 ? Data("{\"written\":2}".utf8) : Data("{\"disposition\":\"dropped\"}".utf8)
+            self.emit(kind: 1, request: request, connection: connection, channel: channel, data: result)
+        }
         return (0, request)
     }
     func cancel(_ sdk: UInt64, request: UInt64) -> UInt32 { 11 }
@@ -54,6 +81,87 @@ final class MockNative: NativeAPI, @unchecked Sendable {
     func storage(_ sdk: UInt64, request: UInt64, status: UInt32, data: Data) -> UInt32 { 0 }
 }
 final class NativeCoreTests: XCTestCase {
+    func testRetainedEventRechecksAtSynchronousConsumption() async throws {
+        let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
+        try core.create(Data())
+        native.emit(kind: 6, connection: 42, data: Data([1, 2]))
+        let retained = try await core.nextEvent()
+        XCTAssertNotNil(retained)
+        let copy = retained
+        native.isValid = false
+        XCTAssertThrowsError(try retained!.consumePayload()) { error in
+            XCTAssertEqual(error as? PeerloomError, .native(5))
+        }
+        XCTAssertThrowsError(try copy!.consumePayload()) { error in
+            XCTAssertEqual(error as? PeerloomError, .invalidEvent)
+        }
+        try await core.close()
+    }
+    func testRetainedEventsKeepBoundedCreditsUntilConsumption() async throws {
+        let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
+        try core.create(Data())
+        var retained: [PeerloomEvent] = []
+        for _ in 0..<32 {
+            native.emit(kind: 6, connection: 42, data: Data([1]))
+            let event = try await core.nextEvent()
+            retained.append(try XCTUnwrap(event))
+        }
+        native.emit(kind: 6, connection: 42, data: Data([2]))
+        do { _ = try await core.nextEvent(); XCTFail("retained payloads lost their credits") }
+        catch { XCTAssertEqual(error as? PeerloomError, .eventOverflow) }
+        XCTAssertEqual(retained.count, 32)
+        retained.removeAll()
+        try await core.close()
+    }
+    @MainActor
+    func testReadRechecksAfterCallerActorResumes() async throws {
+        let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
+        native.holdReads = true
+        try core.create(Data())
+        let stream = try PeerloomChannel(core: core, connection: 42, handle: 52,
+            metadata: Data("{\"mode\":\"reliable_stream\",\"label\":\"stream\"}".utf8))
+        let reading = Task { @MainActor in try await stream.read(maxBytes: 2) }
+        let submitted = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global().async {
+                continuation.resume(returning: native.readSubmitted.wait(timeout: .now() + 5) == .success)
+            }
+        }
+        XCTAssertTrue(submitted)
+        let invalidated = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            native.completeHeldRead()
+            // A broken nonisolated implementation may check on its generic executor here;
+            // the correct implementation cannot resume while this MainActor is blocked.
+            _ = native.validityChecked.wait(timeout: .now() + 1)
+            native.isValid = false
+            invalidated.signal()
+        }
+        XCTAssertEqual(invalidated.wait(timeout: .now() + 5), .success)
+        do { _ = try await reading.value; XCTFail("expired read reached caller actor") }
+        catch { XCTAssertEqual(error as? PeerloomError, .native(5)) }
+        try await core.close()
+    }
+
+    func testTypedChildMetadataAndPartialWriteResult() async throws {
+        let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
+        try core.create(Data())
+        let message = try PeerloomChannel(core: core, connection: 42, handle: 51,
+            metadata: Data("{\"mode\":\"low_latency_message\",\"label\":\"test\"}".utf8))
+        let disposition = try await message.send(Data([1, 2, 3]))
+        XCTAssertEqual(disposition, .dropped)
+        let stream = try PeerloomChannel(core: core, connection: 42, handle: 52,
+            metadata: Data("{\"mode\":\"reliable_stream\",\"label\":\"stream\"}".utf8))
+        let written = try await stream.write(Data([1, 2, 3]))
+        XCTAssertEqual(written, 2)
+        native.emit(kind: 12, connection: 42, channel: 51)
+        native.emit(kind: 14, connection: 42, channel: 51, data: Data([9]))
+        native.isValid = false
+        native.emit(kind: 3)
+        let event = try await core.nextEvent()
+        XCTAssertEqual(event?.kind, 3)
+        try await core.close()
+    }
+
     func testEarlyCompletionsAndQuiescentRelease() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
         try core.create(Data())

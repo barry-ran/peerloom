@@ -183,7 +183,7 @@ async fn three_devices_share_one_wss_with_bounded_admission_and_reset() {
         }
         event => panic!("expected precisely correlated denial: {event:?}"),
     }
-    a.connect(b.device_id()).await.unwrap();
+    let accepted_request = a.connect_with_request(b.device_id()).await.unwrap();
     // Neither peer has approved or created a transport. Pending authorization
     // must already consume both local slots, rather than overbooking capacity.
     assert_eq!(a.connect(b.device_id()).await, Err(SdkError::Busy));
@@ -202,6 +202,12 @@ async fn three_devices_share_one_wss_with_bounded_admission_and_reset() {
     let mut c_a = ready(&mut c).await;
     assert_eq!(b_a.session_id(), ab);
     assert_eq!(c_a.session_id(), ac);
+    assert_eq!(a_b.peer_device_id(), b.device_id());
+    assert_eq!(a_c.peer_device_id(), c.device_id());
+    assert_eq!(a_b.request_id(), Some(accepted_request.as_str()));
+    assert_eq!(a_c.request_id(), Some(surviving_request.as_str()));
+    assert_eq!(b_a.peer_device_id(), a.device_id());
+    assert!(b_a.request_id().is_none());
     exchange(&mut a_b, &mut b_a, &[0, 255, 1, 0]).await;
     exchange(&mut a_c, &mut c_a, "第三个设备".as_bytes()).await;
     assert_eq!(a.connect(c.device_id()).await, Err(SdkError::Busy));

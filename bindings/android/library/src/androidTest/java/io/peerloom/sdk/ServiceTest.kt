@@ -19,6 +19,7 @@ private fun config(device: JSONObject) =
     JSONObject()
         .put("origin", ORIGIN)
         .put("development_loopback", true)
+        .put("max_channels_per_connection", 4)
         .put("application_id", device.getString("application_id"))
 
 private fun fixture(name: String): JSONObject {
@@ -210,6 +211,62 @@ class ServiceTest {
                 assertArrayEquals(message, next(targetQueue, 6).payload)
                 await(cb.send(message))
                 assertArrayEquals(message, next(sourceQueue, 6).payload)
+                val typed =
+                    await(ca.openChannel(ChannelMode.RELIABLE_MESSAGE, "typed")).channel
+                        as MessageChannel
+                val remoteTyped = next(targetQueue, 12).channel as MessageChannel
+                assertEquals(
+                    SendDisposition.SENT,
+                    typed.send(message).completion.get(30, TimeUnit.SECONDS),
+                )
+                val typedEvent = next(targetQueue, 14)
+                assertEquals(remoteTyped.handle, typedEvent.channel!!.handle)
+                assertArrayEquals(message, typedEvent.payload)
+                val low =
+                    await(ca.openChannel(ChannelMode.LOW_LATENCY_MESSAGE, "low")).channel
+                        as MessageChannel
+                val remoteLow = next(targetQueue, 12).channel as MessageChannel
+                assertEquals(ChannelMode.LOW_LATENCY_MESSAGE, remoteLow.mode)
+                repeat(8) {
+                    assertEquals(
+                        SendDisposition.SENT,
+                        low.send(message).completion.get(30, TimeUnit.SECONDS),
+                    )
+                }
+                assertArrayEquals(message, next(targetQueue, 14).payload)
+                val stream =
+                    await(ca.openChannel(ChannelMode.RELIABLE_STREAM, "stream")).channel
+                        as ByteStream
+                val remoteStream = next(targetQueue, 12).channel as ByteStream
+                val pendingReverse = stream.read(4093)
+                assertEquals(
+                    message.size,
+                    stream.write(message).completion.get(30, TimeUnit.SECONDS),
+                )
+                assertArrayEquals(
+                    message,
+                    remoteStream.read(4093).completion.get(30, TimeUnit.SECONDS),
+                )
+                assertEquals(
+                    message.size,
+                    remoteStream.write(message).completion.get(30, TimeUnit.SECONDS),
+                )
+                assertArrayEquals(message, pendingReverse.completion.get(30, TimeUnit.SECONDS))
+                await(stream.finishWrite())
+                assertEquals(0, remoteStream.read(4093).completion.get(30, TimeUnit.SECONDS).size)
+                // FIN must not close the reverse direction.
+                assertEquals(
+                    message.size,
+                    remoteStream.write(message).completion.get(30, TimeUnit.SECONDS),
+                )
+                assertArrayEquals(message, stream.read(4093).completion.get(30, TimeUnit.SECONDS))
+                await(remoteStream.finishWrite())
+                assertEquals(0, stream.read(4093).completion.get(30, TimeUnit.SECONDS).size)
+                await(typed.close())
+                assertFalse(typed.isValid())
+                assertTrue(ca.isValid())
+                await(low.close())
+                await(stream.close())
                 await(a.refreshCredentials())
                 next(sourceQueue, 2)
                 // Proven host-queue negative case: a real message has scheduled a paused

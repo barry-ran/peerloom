@@ -132,7 +132,7 @@ void callback(uint64_t context, const dp_event *event) noexcept {
         env->CallVoidMethod(
             client->receiver, client->method, static_cast<jlong>(client->sdk.load()),
             static_cast<jint>(event->kind), static_cast<jlong>(event->request_id),
-            static_cast<jlong>(event->connection), static_cast<jint>(event->status), payload);
+            static_cast<jlong>(event->connection), static_cast<jlong>(event->channel), static_cast<jint>(event->status), payload);
         const bool failed = clear_exception(env);
         env->PopLocalFrame(nullptr);
         if (failed) {
@@ -208,7 +208,7 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_io_peerloom_sdk_Native_create(JNIEn
             forget(client, env);
             return result(env, output, DP_INTERNAL, 0);
         }
-        client->method = env->GetMethodID(type, "onNativeEvent", "(JIJJI[B)V");
+        client->method = env->GetMethodID(type, "onNativeEvent", "(JIJJJI[B)V");
         failed = clear_exception(env);
         env->DeleteLocalRef(type);
         if (!client->method || failed) {
@@ -272,6 +272,23 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_io_peerloom_sdk_Native_submit(
     } catch (...) {
         return result(env, output, DP_INTERNAL, 0);
     }
+}
+extern "C" JNIEXPORT jlongArray JNICALL Java_io_peerloom_sdk_Native_channelSubmit(
+    JNIEnv *env, jclass, jlong sdk, jlong connection, jlong channel, jint operation, jbyteArray data) {
+    jlongArray output = env->NewLongArray(2);
+    if (!output) { return nullptr; }
+    try {
+        std::vector<uint8_t> input;
+        if (!bytes(env, data, 65536, input)) { return result(env, output, DP_INVALID_ARGUMENT, 0); }
+        uint64_t request = 0;
+        const uint32_t status = dp_channel_submit(static_cast<uint64_t>(sdk), static_cast<uint64_t>(connection),
+            static_cast<uint64_t>(channel), static_cast<uint32_t>(operation), input.data(), input.size(), &request);
+        return result(env, output, status, request);
+    } catch (...) { return result(env, output, DP_INTERNAL, 0); }
+}
+extern "C" JNIEXPORT jint JNICALL Java_io_peerloom_sdk_Native_channelValid(
+    JNIEnv *, jclass, jlong sdk, jlong connection, jlong channel) {
+    return static_cast<jint>(dp_channel_is_valid(static_cast<uint64_t>(sdk), static_cast<uint64_t>(connection), static_cast<uint64_t>(channel)));
 }
 extern "C" JNIEXPORT jint JNICALL Java_io_peerloom_sdk_Native_cancel(JNIEnv *, jclass, jlong sdk,
                                                                      jlong request) {
