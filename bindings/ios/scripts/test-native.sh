@@ -135,7 +135,10 @@ PY
     run_capture ios-create 30 xcrun simctl create "PeerloomValidation-$$" "$TYPE" "$RUNTIME"
     DEVICE=$(python3 - "$OUT/phase-ios-create.stdout" <<'PY'
 import pathlib,sys,uuid
-print(uuid.UUID(pathlib.Path(sys.argv[1]).read_text().strip()))
+value=pathlib.Path(sys.argv[1]).read_text().strip()
+assert value.isascii() and len(value)==36 and str(uuid.UUID(value)).lower()==value.lower()
+# Preserve simctl's exact spelling for Xcode destination matching.
+print(value)
 PY
 )
     printf '%s\n' "$DEVICE" > "$OUT/phase-ios-device-id.txt"
@@ -167,7 +170,9 @@ PY
     if [[ -f "$OUT/phase-ios-device-id.txt" ]]; then
       DEVICE=$(python3 - "$OUT/phase-ios-device-id.txt" <<'PYID'
 import pathlib,sys,uuid
-print(uuid.UUID(pathlib.Path(sys.argv[1]).read_text().strip()))
+value=pathlib.Path(sys.argv[1]).read_text().strip()
+assert value.isascii() and len(value)==36 and str(uuid.UUID(value)).lower()==value.lower()
+print(value)
 PYID
 )
     fi

@@ -5,6 +5,7 @@ import json
 import importlib.util
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -164,6 +165,23 @@ class WatchdogTests(unittest.TestCase):
         self.assertNotIn("-skip-testing", source)
         self.assertEqual(source.count("    verify_tls"), 2)
         self.assertIn("state['rejected_handshakes'] >= 1 and state['accepted_handshakes'] == 0", source)
+
+    def test_simulator_id_validation_preserves_exact_case_and_rejects_multiple_ids(self):
+        source = SCRIPT.with_name("test-native.sh").read_text()
+        validators = re.findall(r"import pathlib,sys,uuid\n.*?(?=\nPY(?:ID)?\n)", source, re.S)
+        self.assertEqual(len(validators), 2, "creation and cleanup must both validate the original UUID")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "device-id"
+            original = "E3662E63-E85F-4982-B0F4-79F2E786CA4F"
+            for validator in validators:
+                for value in (original, original.lower()):
+                    path.write_text(value + "\n")
+                    result = subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, value + "\n")
+                for bad in ("invalid", original + "\n" + original, "", original.replace("-", ""), "{" + original + "}"):
+                    path.write_text(bad)
+                    self.assertNotEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
 
     def test_shell_helpers_preserve_failure_under_or_and_if(self):
         with tempfile.TemporaryDirectory() as directory:
