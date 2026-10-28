@@ -35,6 +35,11 @@ if name == "docker":
         (root / "private-proof").write_text(json.dumps({"fixture": str(config.parent), "password": (config.parent / "password").read_text()}))
         if os.environ["TEST_FAIL"] == "docker":
             sys.exit(9)
+    elif "logs" in sys.argv:
+        proof = json.loads((root / "private-proof").read_text())
+        print("ERROR: diagnostic-redaction-test " + proof["password"])
+    elif "inspect" in sys.argv:
+        print("TURN state=exited exit=1 oom=false")
     elif "rm" in sys.argv:
         (root / "container-cleaned").touch()
 if name == "cargo":
@@ -73,6 +78,8 @@ class TurnScriptTest(unittest.TestCase):
             import json
             proof = json.loads((root / "private-proof").read_text())
             self.assertNotIn(proof["password"], result.stdout + result.stderr)
+            if failure:
+                self.assertIn("diagnostic-redaction-test [redacted]", result.stderr)
             if failure != "docker":
                 self.assertTrue((root / "test-invoked").exists())
 

@@ -9,8 +9,30 @@ umask 077
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/peerloom-turn.XXXXXXXX")"
 container="peerloom-turn-$(basename "$fixture")"
 cleanup() {
+  result=$?
+  if [ "$result" -ne 0 ]; then
+    # 仅状态字段与脱敏错误类别；禁止docker inspect完整配置/环境或原始日志。
+    docker inspect --format 'TURN state={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' "$container" 2>/dev/null || true
+    docker logs "$container" > "$fixture/diagnostic.log" 2>&1 || true
+    python3 - "$fixture" <<'DIAGNOSTIC' || true
+from pathlib import Path
+import re
+import sys
+p = Path(sys.argv[1])
+text = (p / 'diagnostic.log').read_text(errors='replace')
+for name in ('username', 'password'):
+    if (p / name).exists():
+        secret = (p / name).read_text()
+        if secret:
+            text = text.replace(secret, '[redacted]')
+lines = [line for line in text.splitlines() if re.search(r'error|warn|fail|denied|unknown|cannot|invalid', line, re.I)]
+for line in lines[-20:]:
+    print('TURN diagnostic: ' + line[:500], file=sys.stderr)
+DIAGNOSTIC
+  fi
   docker rm -f -v "$container" > /dev/null 2>&1 || true
   rm -rf -- "$fixture"
+  return "$result"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -55,7 +77,7 @@ for file in p.iterdir():
     file.chmod(0o600)
 CONFIG
 # host network 只用于本脚本；配置明确仅绑定loopback，绝不映射公网端口。
-docker run --detach --rm --name "$container" \
+docker run --detach --name "$container" \
   --network host --user "$(id -u):$(id -g)" \
   --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --tmpfs /var/lib/coturn:rw,noexec,nosuid,size=1m \
