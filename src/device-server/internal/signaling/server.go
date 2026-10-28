@@ -34,6 +34,7 @@ type peer struct {
 	cancel context.CancelFunc
 }
 type Server struct {
+	closing     sync.WaitGroup
 	installs    [64]sync.Mutex
 	connections map[*websocket.Conn]context.CancelFunc
 	handlers    sync.WaitGroup
@@ -160,13 +161,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previous := s.peers[peerKey(device)]
+	if previous != nil {
+		s.closing.Add(1)
+	}
 	s.peers[peerKey(device)] = p
 	s.mu.Unlock()
 	installed = true
 	install.Unlock()
 	if previous != nil {
-		previous.cancel()
-		previous.conn.CloseNow()
+		// Best-effort explicit policy close lets a superseded SDK stop reconnecting.
+		// Network loss can still hide the close frame; clients must bound retries.
+		go func() {
+			defer s.closing.Done()
+			_ = previous.conn.Close(websocket.StatusPolicyViolation, "connection replaced")
+			previous.cancel()
+		}()
 	}
 	defer func() {
 		s.mu.Lock()
@@ -341,4 +350,5 @@ func (s *Server) Stop() {
 		p.conn.CloseNow()
 	}
 	s.handlers.Wait()
+	s.closing.Wait()
 }

@@ -41,6 +41,10 @@ jobs:
         timeout-minutes: 5
         working-directory: src/device-sdk
         run: cargo test -p device-transport-webrtc --test native_pair --locked -- --ignored --nocapture
+      - name: 原生 WebRTC 字节流与半关闭
+        timeout-minutes: 2
+        working-directory: src/device-sdk
+        run: cargo test -p device-transport-webrtc --test stream_pair --locked -- --ignored --nocapture
       - name: 构建可下载检查产物
         run: ./scripts/build.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -3,8 +3,10 @@ package signaling
 import (
 	"context"
 	"errors"
+	"github.com/coder/websocket"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/barry-ran/peerloom/src/device-server/internal/authorization"
 	"github.com/barry-ran/peerloom/src/device-server/internal/identity"
@@ -54,5 +56,22 @@ func TestDuplicateIDWithNewSequenceIsRejected(t *testing.T) {
 func TestClosedDeliveryDoesNotInventSession(t *testing.T) {
 	if closedDeliveries(authorization.Session{}, "request") != nil {
 		t.Fatal("invented closure")
+	}
+}
+
+func TestTakeoverReportsPermanentPolicyClose(t *testing.T) {
+	s := New(&testAuth{}, &testPresence{}, nil)
+	h := httptest.NewServer(s)
+	defer h.Close()
+	defer s.Stop()
+	first, _ := connect(t, h.URL)
+	defer first.CloseNow()
+	second, _ := connect(t, h.URL)
+	defer second.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _, err := first.Read(ctx)
+	if websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+		t.Fatalf("replacement did not report permanent policy close: %v", err)
 	}
 }

@@ -83,6 +83,29 @@ PAIR
 )
 rm -f -- "$fixture"
 fixture=""
+# facade 验证使用第三份新pair，不能复用已授权/关闭的会话设备。
+fixture="$(mktemp "$PWD/.secrets/identity-fixture.XXXXXX")"
+chmod 600 "$fixture"
+"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-bootstrap device-server --development --pair > "$fixture"
+python3 - "$fixture" <<'PAIR'
+import json
+import sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        data = json.load(stream)
+    for side in ("source", "target"):
+        for key in ("application_id", "device_id", "device_credential", "expires_at"):
+            assert isinstance(data[side][key], str) and data[side][key]
+except Exception:
+    raise SystemExit("disposable pair fixture validation failed; contents withheld") from None
+PAIR
+(
+  cd src/device-sdk
+  TEST_IDENTITY_BASE_URL=http://127.0.0.1:18080 TEST_SIGNAL_FIXTURE_FILE="$fixture" \
+    cargo test -p device-core --test sdk_service --locked -- --ignored --nocapture
+)
+rm -f -- "$fixture"
+fixture=""
 "${compose[@]}" restart device-server
 "${compose[@]}" up -d --wait device-server gateway
 curl --fail --silent --show-error http://127.0.0.1:18080/readyz > /dev/null
