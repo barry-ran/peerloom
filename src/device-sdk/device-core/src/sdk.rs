@@ -148,6 +148,7 @@ pub struct Connection {
     peer_device_id: String,
     request_id: Option<String>,
     generation: u64,
+    gathering_outcome: device_transport_webrtc::GatheringOutcome,
     default: SdkMessageChannel,
     channels: mpsc::Sender<channels::OpenRequest>,
     incoming: Option<SdkIncomingChannels>,
@@ -172,6 +173,9 @@ impl ConnectionValidity {
 impl Connection {
     pub fn validity(&self) -> ConnectionValidity {
         ConnectionValidity(self.gate.clone())
+    }
+    pub fn gathering_outcome(&self) -> device_transport_webrtc::GatheringOutcome {
+        self.gathering_outcome
     }
     pub fn negotiation_generation(&self) -> u64 {
         self.generation
@@ -1274,25 +1278,36 @@ impl Actor {
     async fn internal(&mut self, event: Internal) -> Result<(), SdkError> {
         match event {
             Internal::Description(id, generation, kind, sdp) => {
-                if self
-                    .sessions
-                    .get(&id)
-                    .is_some_and(|session| session.generation == generation)
-                    && self
-                        .send(kind, Some(&id), json!({"sdp":sdp}))
-                        .await
-                        .is_err()
+                if self.sessions.get(&id).is_some_and(|session| {
+                    session.generation == generation
+                        && session.guard.is_authorized(Instant::now())
+                        && session.gate.check().is_ok()
+                }) && self
+                    .send(kind, Some(&id), json!({"sdp":sdp}))
+                    .await
+                    .is_err()
                 {
                     self.close_session(&id, SdkError::Offline, false).await;
                 }
             }
             Internal::Ready(id, generation, connection) => {
                 if self.sessions.get(&id).is_some_and(|session| {
-                    session.generation == generation && session.guard.is_authorized(Instant::now())
+                    session.generation == generation
+                        && session.guard.is_authorized(Instant::now())
+                        && session.gate.check().is_ok()
                 }) {
                     self.sessions.get_mut(&id).expect("current session").ready = true;
                     let _ = self.send("session.connected", Some(&id), json!({})).await;
-                    self.emit(SdkEvent::ConnectionReady(connection))?;
+                    // Reporting connected can wait for WSS admission. Reset or
+                    // lease expiry during that wait must not publish a stale Ready.
+                    if self.sessions.get(&id).is_some_and(|session| {
+                        session.generation == generation
+                            && session.guard.is_authorized(Instant::now())
+                            && session.gate.check().is_ok()
+                    }) && connection.gate.check().is_ok()
+                    {
+                        self.emit(SdkEvent::ConnectionReady(connection))?;
+                    }
                 }
             }
             Internal::Closed(id, generation, error) => {
@@ -1603,6 +1618,7 @@ async fn transport_worker(
                 .answer_offer(offer)
                 .await
                 .map_err(SdkError::Transport)?;
+            gate.check()?;
             events
                 .send(Internal::Description(
                     id.clone(),
@@ -1628,6 +1644,7 @@ async fn transport_worker(
             #[cfg(feature = "test-diagnostics")]
             diagnostic.enter("create-offer");
             let offer = peer.create_offer().await.map_err(SdkError::Transport)?;
+            gate.check()?;
             events
                 .send(Internal::Description(
                     id.clone(),

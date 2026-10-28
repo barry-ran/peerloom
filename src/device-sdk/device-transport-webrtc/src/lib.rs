@@ -7,6 +7,9 @@ mod diagnostics;
 #[cfg(feature = "test-diagnostics")]
 use diagnostics::{Phase, Trace};
 
+mod gathering;
+pub use gathering::GatheringOutcome;
+
 pub mod stream;
 pub use stream::{ByteStream, StreamError};
 
@@ -266,6 +269,7 @@ struct Handler {
     #[cfg(feature = "test-diagnostics")]
     diagnostics: Arc<IncomingDiagnostics>,
     gathered: watch::Sender<bool>,
+    candidates: watch::Sender<()>,
     states: watch::Sender<RTCPeerConnectionState>,
     incoming: mpsc::Sender<Arc<dyn DataChannel>>,
     channel_count: Arc<AtomicUsize>,
@@ -283,6 +287,12 @@ fn reserve_channel(count: &AtomicUsize, max: usize) -> Result<(), TransportError
 
 #[async_trait]
 impl PeerConnectionEventHandler for Handler {
+    async fn on_ice_candidate(&self, _event: webrtc::peer_connection::RTCPeerConnectionIceEvent) {
+        // Upstream registers this candidate before emitting the callback. Never
+        // await the peer core from its event handler; wake the external waiter.
+        self.candidates.send_replace(());
+    }
+
     async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
         #[cfg(feature = "test-diagnostics")]
         eprintln!("PeerloomTestDiag gathering state={state:?}");
@@ -328,6 +338,9 @@ pub struct PeerTransport {
     peer: Arc<dyn PeerConnection>,
     config: TransportConfig,
     gathered: Mutex<watch::Receiver<bool>>,
+    candidates: watch::Receiver<()>,
+    close_signal: watch::Sender<bool>,
+    gathering_outcome: AtomicU8,
     states: watch::Receiver<RTCPeerConnectionState>,
     incoming: Mutex<IncomingQueue>,
     channel_count: Arc<AtomicUsize>,
@@ -381,6 +394,8 @@ impl PeerTransport {
     pub async fn new(config: TransportConfig) -> Result<Self, TransportError> {
         config.validate()?;
         let (gather_tx, gather_rx) = watch::channel(false);
+        let (candidate_tx, candidate_rx) = watch::channel(());
+        let (close_signal, _) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
         let (incoming_tx, incoming_rx) = mpsc::channel(config.max_channels);
         let count = Arc::new(AtomicUsize::new(0));
@@ -390,6 +405,7 @@ impl PeerTransport {
             #[cfg(feature = "test-diagnostics")]
             diagnostics: diagnostics.clone(),
             gathered: gather_tx,
+            candidates: candidate_tx,
             states: state_tx,
             incoming: incoming_tx,
             channel_count: count.clone(),
@@ -433,6 +449,9 @@ impl PeerTransport {
             peer: Arc::new(peer),
             config,
             gathered: Mutex::new(gather_rx),
+            candidates: candidate_rx,
+            close_signal,
+            gathering_outcome: AtomicU8::new(0),
             states: state_rx,
             incoming: Mutex::new(IncomingQueue {
                 receiver: incoming_rx,
@@ -594,40 +613,6 @@ impl PeerTransport {
         Ok(self.wrap_channel(channel))
     }
 
-    async fn gathered_description(&self) -> Result<SessionDescription, TransportError> {
-        #[cfg(feature = "test-diagnostics")]
-        let mut diagnostic = Trace::new(Phase::GatherLock);
-        tokio::time::timeout(self.config.operation_timeout, async {
-            let mut gathered = self.gathered.lock().await;
-            #[cfg(feature = "test-diagnostics")]
-            diagnostic.enter(Phase::GatherWait);
-            loop {
-                if *gathered.borrow_and_update() {
-                    break;
-                }
-                gathered
-                    .changed()
-                    .await
-                    .map_err(|_| TransportError::Closed)?;
-            }
-            #[cfg(feature = "test-diagnostics")]
-            diagnostic.enter(Phase::GatherReadLocal);
-            let description = self
-                .peer
-                .local_description()
-                .await
-                .ok_or(TransportError::WebRtc)?;
-            #[cfg(feature = "test-diagnostics")]
-            diagnostic.enter(Phase::GatherValidate);
-            validate_remote_sdp(&self.config, &description)?;
-            #[cfg(feature = "test-diagnostics")]
-            diagnostic.enter(Phase::GatherDone);
-            Ok(description)
-        })
-        .await
-        .map_err(|_| TransportError::Timeout)?
-    }
-
     pub async fn create_offer(&self) -> Result<SessionDescription, TransportError> {
         self.ensure_open()?;
         self.negotiation
@@ -676,6 +661,7 @@ impl PeerTransport {
 
     pub async fn close(&self) -> Result<(), TransportError> {
         self.closed.store(true, Ordering::Release);
+        self.close_signal.send_replace(true);
         tokio::time::timeout(self.config.operation_timeout, self.peer.close())
             .await
             .map_err(|_| TransportError::Timeout)?

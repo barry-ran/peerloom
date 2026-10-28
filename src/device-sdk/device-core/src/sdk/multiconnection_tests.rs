@@ -1,4 +1,5 @@
 use super::*;
+use crate::lease::ServerClockBound;
 
 #[tokio::test]
 async fn target_closed_session_ignores_late_snapshot_and_offer() {
@@ -98,5 +99,107 @@ async fn target_terminal_session_ignores_late_snapshot_and_offer(reject: bool) {
         assert_eq!(actor.sessions.len(), 0);
         assert!(actor.sessions.has_seen(&session_id));
         assert!(initial.closed.load(Ordering::Acquire));
+    }
+}
+
+#[tokio::test]
+async fn queued_local_description_rechecks_generation_lease_and_reset_gate() {
+    for invalidation in ["generation", "lease", "local", "installation", "valid"] {
+        use device_storage::{IdentityScope, MemoryIdentityStore, SecretString};
+        let app = uuid::Uuid::new_v4().to_string();
+        let source = uuid::Uuid::new_v4().to_string();
+        let target = uuid::Uuid::new_v4().to_string();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let config = SdkConfig::new("https://reset.example".into(), app.clone());
+        let store = Arc::new(MemoryIdentityStore::default());
+        let stored = StoredIdentity {
+            device_id: target.clone(),
+            device_credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
+            expires_at: "2099-01-01T00:00:00Z".into(),
+        };
+        store
+            .save(
+                &IdentityScope {
+                    server_origin: "https://reset.example/".into(),
+                    application_id: app,
+                },
+                0,
+                stored.clone(),
+            )
+            .await
+            .unwrap();
+        let identity = DeviceSdk::identity(&config, store).await.unwrap();
+        let (commands, _command_rx) = mpsc::channel(32);
+        let (events, _event_rx) = mpsc::channel(32);
+        let mut actor = Actor::new(config, identity, stored, commands, events);
+        let installation = actor.installation_closed.clone();
+        let initial = Arc::new(Gate {
+            installation_closed: installation.clone(),
+            ..Gate::default()
+        });
+        actor
+            .sessions
+            .insert_incoming(
+                session_id.clone(),
+                Session {
+                    id: session_id.clone(),
+                    initial_request_id: None,
+                    source: source.clone(),
+                    target: target.clone(),
+                    guard: LeaseGuard::new(session_id.clone(), source.clone(), target.clone())
+                        .unwrap(),
+                    gate: initial.clone(),
+                    worker: None,
+                    renew_at: Instant::now(),
+                    ready: true,
+                    generation: 1,
+                    recovery_at: None,
+                    recovery_attempt: 0,
+                    sync_pending: false,
+                    requests: std::collections::VecDeque::new(),
+                },
+            )
+            .unwrap();
+
+        let now = Instant::now();
+        let clock = ServerClockBound::from_hello("2026-10-28T00:00:00Z", now).unwrap();
+        let message: Envelope = serde_json::from_value(json!({
+            "v":1,"type":"session.updated","id":uuid::Uuid::new_v4().to_string(),
+            "session_id":session_id,"connection_generation":1,
+            "fencing_token":"12345678901234567890123456789012","seq":1,
+            "sent_at":"2026-10-28T00:00:00Z",
+            "payload":{"session_id":session_id,"source_device_id":source,
+                "target_device_id":target,"state":"connecting","lease_generation":1,
+                "lease_expires_at":"2026-10-28T00:01:00Z",
+                "source_lease_expires_at":"2026-10-28T00:01:00Z",
+                "target_lease_expires_at":"2026-10-28T00:01:00Z"}
+        }))
+        .unwrap();
+        let session = actor.sessions.get_mut(&session_id).unwrap();
+        session.guard.apply(&message, &clock, now).unwrap();
+        initial.update(session.guard.deadline());
+        match invalidation {
+            "generation" => session.generation = 2,
+            "lease" => session.guard.invalidate(),
+            "local" => initial.close(),
+            "installation" => installation.store(true, Ordering::Release),
+            "valid" => {}
+            _ => unreachable!(),
+        }
+        actor
+            .internal(Internal::Description(
+                session_id.clone(),
+                1,
+                "session.offer",
+                "not logged".into(),
+            ))
+            .await
+            .unwrap();
+        // There is deliberately no WSS. A valid description attempts submission
+        // and closes Offline; an invalid queued description must never submit.
+        assert_eq!(
+            actor.sessions.get(&session_id).is_none(),
+            invalidation == "valid"
+        );
     }
 }

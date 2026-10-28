@@ -59,6 +59,10 @@ jobs:
         timeout-minutes: 5
         working-directory: src/device-sdk
         run: cargo test -p device-transport-webrtc --test native_pair --locked -- --ignored --nocapture
+      - name: Auto 不可达 TURN 的有界直连与 RelayOnly 失效关闭
+        timeout-minutes: 5
+        working-directory: src/device-sdk
+        run: cargo test -p device-transport-webrtc --test auto_unreachable_turn --locked -- --ignored --nocapture
       - name: 原生 WebRTC 字节流与半关闭
         if: ${{ !cancelled() && steps.static-checks.outcome == 'success' && steps.compose-setup.outcome == 'success' }}
         timeout-minutes: 2

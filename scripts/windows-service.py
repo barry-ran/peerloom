@@ -126,7 +126,7 @@ def owned_wsl_redactions(argv):
 
 def wsl_status_diagnostic(redactions):
     try:
-        result = subprocess.run(['wsl.exe', '--status'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        result = subprocess.run(['wsl.exe', '--status'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 timeout=20, check=False)
         text = wsl_import_diagnostic(result.returncode, result.stdout, result.stderr, redactions)
         print(text.replace('Owned WSL1 import diagnostic:', 'Read-only WSL status diagnostic:', 1), file=sys.stderr)
@@ -135,7 +135,13 @@ def wsl_status_diagnostic(redactions):
 
 
 def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import_diagnostic=False):
-    process = subprocess.Popen(argv, env=env, cwd=cwd, stdout=stdout, stderr=subprocess.PIPE)
+    owned_import = (import_diagnostic and len(argv) == 7 and argv[:2] == ['wsl.exe', '--import']
+                    and argv[-2:] == ['--version', '1'])
+    # The non-interactive import must not inherit an absent runner console handle.
+    # Keep stdout/stderr captured for the existing bounded diagnostic; no retry.
+    process = subprocess.Popen(argv, env=env, cwd=cwd,
+                               stdin=subprocess.DEVNULL if owned_import else None,
+                               stdout=stdout, stderr=subprocess.PIPE)
     try:
         output, errors = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:

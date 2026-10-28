@@ -62,6 +62,23 @@ class ScopeTest(unittest.TestCase):
 
 
 class ProcessTest(unittest.TestCase):
+    def test_owned_import_has_explicit_null_stdin_and_captured_outputs(self):
+        args = ['wsl.exe', '--import', 'PeerloomCI-' + 'a'*32,
+                r'C:\owned\wsl', r'C:\owned\archive', '--version', '1']
+        child = Mock(returncode=0)
+        child.communicate.return_value = (b'completed', b'')
+        with patch.object(service.subprocess, 'Popen', return_value=child) as spawn:
+            self.assertEqual(service.run(args, import_diagnostic=True), b'completed')
+            self.assertEqual(spawn.call_args.kwargs['stdin'], service.subprocess.DEVNULL)
+            self.assertEqual(spawn.call_args.kwargs['stdout'], service.subprocess.PIPE)
+            self.assertEqual(spawn.call_args.kwargs['stderr'], service.subprocess.PIPE)
+            child.communicate.assert_called_once_with(timeout=180)
+            spawn.assert_called_once()
+        for argv, diagnostic in ((['postgres', '--version'], True), (args, False)):
+            with patch.object(service.subprocess, 'Popen', return_value=child) as spawn:
+                service.run(argv, import_diagnostic=diagnostic)
+                self.assertIsNone(spawn.call_args.kwargs['stdin'])
+
     def test_timeout_targets_only_admitted_parent_tree_before_kill(self):
         child = Mock(pid=12345)
         child.communicate.side_effect = service.subprocess.TimeoutExpired('cargo', 1)
@@ -108,7 +125,7 @@ class ProcessTest(unittest.TestCase):
             service.wsl_status_diagnostic(['private-home'])
             self.assertNotIn('private-home', output.getvalue())
             self.assertIn('Read-only WSL status diagnostic:', output.getvalue())
-            probe.assert_called_once_with(['wsl.exe', '--status'], stdout=service.subprocess.PIPE,
+            probe.assert_called_once_with(['wsl.exe', '--status'], stdin=service.subprocess.DEVNULL, stdout=service.subprocess.PIPE,
                                           stderr=service.subprocess.PIPE, timeout=20, check=False)
 
     def test_other_process_stderr_stays_private(self):

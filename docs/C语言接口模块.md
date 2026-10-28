@@ -65,7 +65,7 @@ completion 可能早于 `submit` 返回；宿主应按 request ID 关联，不�
 
 ### Typed channel 与多连接
 
-保留原操作 1..7 与 `dp_event` 原字段偏移；`channel` 只追加在结构末尾，读取前检查 `struct_size`。新增 `OPEN_CHANNEL` 返回 child handle；对端开通道通过 `CHANNEL_READY` 通知。Ready 包含 session/generation/peer DeviceID，源端保留 CONNECT 的 request 关联，失败不冒用另一个连接。
+保留原操作 1..7 与 `dp_event` 原字段偏移；`channel` 只追加在结构末尾，读取前检查 `struct_size`。新增 `OPEN_CHANNEL` 返回 child handle；对端开通道通过 `CHANNEL_READY` 通知。Ready 包含 session/generation/peer DeviceID，源端保留 CONNECT 的 request 关联，失败不冒用另一个连接。 CONNECTION_READY 的 JSON 增加可选 `ice_gathering` 元数据（`complete`、`partial_at_deadline`，未完成时为 `pending`）；只描述本地 SDP 收集状态，不表示连接类型或绕过授权。旧字段与 C 结构布局不变；消费 JSON 的应用应忽略未知可选字段。Kotlin/Swift 包装继续传递受 gate 保护的 payload，不使用拒绝未知字段的 Ready 解码器。
 
 `dp_channel_submit(sdk, connection, channel, operation, ...)` 与旧 API 共享实例 32 个终态信用额：
 

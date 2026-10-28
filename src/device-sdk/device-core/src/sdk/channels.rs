@@ -368,6 +368,7 @@ pub(super) async fn run(
                 peer_device_id,
                 request_id,
                 generation,
+                gathering_outcome: peer.gathering_outcome(),
                 default,
                 channels,
                 incoming: Some(SdkIncomingChannels {
@@ -490,6 +491,7 @@ pub(super) fn test_connection() -> (Connection, Arc<Gate>, mpsc::Sender<Vec<u8>>
             peer_device_id: uuid::Uuid::nil().to_string(),
             request_id: None,
             generation: 1,
+            gathering_outcome: device_transport_webrtc::GatheringOutcome::Complete,
             default,
             channels,
             incoming: Some(SdkIncomingChannels {

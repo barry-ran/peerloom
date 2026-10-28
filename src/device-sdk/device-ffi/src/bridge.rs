@@ -184,6 +184,11 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
                     Some(SdkEvent::ConnectionReady(connection)) => {
                         let session = connection.session_id().to_owned();
                         let generation = connection.negotiation_generation();
+                        let gathering = match connection.gathering_outcome() {
+                            device_transport_webrtc::GatheringOutcome::Complete => "complete",
+                            device_transport_webrtc::GatheringOutcome::PartialAtDeadline => "partial_at_deadline",
+                            device_transport_webrtc::GatheringOutcome::Pending => "pending",
+                        };
                         let peer_device_id = connection.peer_device_id().to_owned();
                         let request_id = connection.request_id().map(str::to_owned);
                         let old = connections.iter().find(|(_, (value, _))| value == &session).map(|(id, _)| *id);
@@ -199,7 +204,7 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
                         let Ok((id, validity)) = admitted else { drop(connection); instance.stop(); continue; };
                         match crate::channels::spawn_connection(instance.clone(), id, validity.clone(), connection) {
                             Ok(task) => {
-                                let payload = json!({"session_id":session,"generation":generation,"peer_device_id":peer_device_id,"request_id":request_id}).to_string().into_bytes();
+                                let payload = json!({"session_id":session,"generation":generation,"peer_device_id":peer_device_id,"request_id":request_id,"ice_gathering":gathering}).to_string().into_bytes();
                                 connections.insert(id, (session, task));
                                 let mut event = Event::new(5, 0, id, OK, payload);
                                 event.validity = Some(validity);
