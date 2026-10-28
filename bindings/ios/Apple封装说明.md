@@ -2,9 +2,9 @@
 
 ## 当前状态与交付边界
 
-本目录提供 iOS 15+/macOS 12+ 的 Swift 源码封装、Keychain 存储、XCTest、独立 XCFramework 构建与验证入口。**Apple 原生门禁已在精确提交 `2db4a06d9748cd0fa127b5c0f7c4306e68855d6e` 实际通过，仍不是正式发布的 Apple SDK。** [真实运行](https://github.com/barry-ran/peerloom/actions/runs/40682077497) 包含五 slice XCFramework、macOS XCTest 10 项、Rust TLS 2 项、iOS Simulator XCTest 8 项及 unsigned device build；新提交仍需重新满足门禁。macOS 使用下文的隔离 DEBUG 文件 Keychain，iOS 使用 Xcode 生成的 Simulator 应用宿主；不能据此宣称生产签名 DP Keychain 宿主或真机已验证。 验证分支可开放 macOS/iOS C create，但必须在该同一版本通过原生门禁后才能晋升；主分支不能仅凭 Linux 检查通过开放。
+本目录提供 iOS 15+/macOS 12+ 的 Swift 源码封装、Keychain 存储、XCTest、独立 XCFramework 构建与验证入口。**[精确提交 `cf3c50a1a7b213b39eac12c24898d56037f8d89a` 的 Apple job](https://github.com/barry-ran/peerloom/actions/runs/40752590811/job/123043607293) 已完整通过；正式交付仍以同一提交全部必需门禁与实际 Release 资产为准。** 实际包含五 slice XCFramework、macOS XCTest 14 项、Rust TLS 2 项、iOS Simulator XCTest 12 项、unsigned device build、独立真实 Go 服务链及最终打包；新提交仍须满足自己的完整门禁。macOS 使用下文的隔离 DEBUG 文件 Keychain，iOS 使用 Xcode 生成的 Simulator 应用宿主，不能据此宣称生产签名 DP Keychain 宿主或真机已验证。主分支不能仅凭 Linux 检查通过开放新的平台能力。
 
-封装只消费 `src/device-sdk/device-ffi/include/device_sdk.h`，不复制 Rust 内部布局或维护第二套手写 C 声明。生成的 XCFramework 复制这份规范头，并校验 SHA-256 一致；Swift package 链接其 `CPeerloom` 模块。已实现多连接、可靠消息/低延迟消息/字节流的 typed 通道与 reset 包装；默认 1 个会话、1 个活动通道，可各配置至 32，累计通道创建预算默认 8、最高 128。新增通道与暂停执行器安全回归尚须当前提交的 Xcode 原生门禁，不能沿用上述旧提交证明。硬件标识、独立 Agent、业务界面不在此封装内。
+封装只消费 `src/device-sdk/device-ffi/include/device_sdk.h`，不复制 Rust 内部布局或维护第二套手写 C 声明。生成的 XCFramework 复制这份规范头，并校验 SHA-256 一致；Swift package 链接其 `CPeerloom` 模块。已实现多连接、可靠消息/低延迟消息/字节流的 typed 通道与 reset 包装；默认 1 个会话、1 个活动通道，可各配置至 32，累计通道创建预算默认 8、最高 128。typed 通道与暂停执行器安全回归已包含在上述精确提交的原生门禁中，后续变更仍需重新验收。硬件标识、独立 Agent、业务界面不在此封装内。
 
 Swift package 要求 Swift 6.0 或更高编译器，保持 Swift 5 语言模式及 iOS 15/macOS 12 最低系统；不依赖仅新系统才有的 AsyncIterator 隔离协议 witness。固定 Xcode 16.4 提供相应编译器，最低系统声明不等于已在每个旧系统版本实测。
 
@@ -79,11 +79,11 @@ try await sdk.close()
 
 ## 独立真实服务链验收
 
-`ServiceTests/SwiftServiceTests.swift` 与 `PeerloomSwiftService` scheme 新增一个独立 iOS Simulator 场景，**尚待首次原生 CI 执行**；不替换既有 macOS 14 项/iOS 12 项、TLS 或签名检查。它不注入 MockNative 或内存存储：宿主仅为独立第四个 App 签发一次性注册 grant，不预注册其设备；Swift 先确认该 App 的真实默认 DP Keychain 为空，通过公开 `start(registration:idempotencyKey:)` 首次注册并持久化，关闭后新建 SDK，以 `start()` 恢复且核对同一设备 ID。其后三设备通道场景保持独立：真实 Go 管理 API 创建三个不同 App 的安装身份及方向性授权，Swift 将身份写入真实默认 DP Keychain 后由 SDK 恢复、认证 WSS、明确接受会话，再验证两条连接、可靠/低延迟消息、256 KiB 字节流、双工读写、FIN 半关闭与父子失效。首次注册与恢复断言仍在同一个具名 service case 内，不增加或替换既有 14/12 项原生测试。
+`ServiceTests/SwiftServiceTests.swift` 与 `PeerloomSwiftService` scheme 提供一个独立 iOS Simulator 场景，**已在上述精确提交实际通过**；不替换既有 macOS 14 项/iOS 12 项、TLS 或签名检查。它不注入 MockNative 或内存存储：宿主仅为独立第四个 App 签发一次性注册 grant，不预注册其设备；Swift 先确认该 App 的真实默认 DP Keychain 为空，通过公开 `start(registration:idempotencyKey:)` 首次注册并持久化，关闭后新建 SDK，以 `start()` 恢复且核对同一设备 ID。其后三设备通道场景保持独立：真实 Go 管理 API 创建三个不同 App 的安装身份及方向性授权，Swift 将身份写入真实默认 DP Keychain 后由 SDK 恢复、认证 WSS、明确接受会话，再验证两条连接、可靠/低延迟消息、256 KiB 字节流、双工读写、FIN 半关闭与父子失效。首次注册与恢复断言仍在同一个具名 service case 内，不增加或替换既有 14/12 项原生测试。
 
 仅在 macOS CI 自己的回环地址启动 PostgreSQL、Redis 和 Go；先只读探测预装的精确版本，不匹配时校验官方归档 SHA-256 后在用户私有目录编译。缓存按 runner/镜像、依赖 manifest 与构建脚本区分，恢复后核对文件哈希和实际版本，绝不缓存 PGDATA、配置秘密或测试身份，也不调用 `brew services`、提权或操作已有数据库。依赖原始许可证随构建缓存保留，不代替第三方法律审查。
 
-fixture 只在本次 Simulator 应用的 Documents 中以 0600 保存，不改已签名的 bundle；Go/数据库日志、凭证、测试 xcresult 和运行时原始日志只留在临时私有目录并在结束清理。公开证据仅包含固定测试名、结果、无秘密阶段标记与编译日志；失败时也尝试删除已确认 UUID 的本次 Simulator，并逐项停止自己创建的前台服务；清理未完成会明确失败，不承诺在创建结果不确定或 runner 被强制终止时仍能清理。测试使用显式 developmentLoopback HTTP/WSS 与真实 WebRTC，不能外推为生产正向 HTTPS 信任或真机验证；现有双平台 TLS 拒绝测试仍独立必需。
+fixture 只在本次 Simulator 应用的 Documents 中以 0600 保存，不改已签名的 bundle；Go/数据库日志、凭证、测试 xcresult 和运行时原始日志只留在临时私有目录并在结束清理。公开证据仅包含固定测试名、结果、无秘密阶段标记与编译日志；失败时也尝试删除已确认 UUID 的本次 Simulator，并逐项停止自己创建的前台服务；清理未完成会明确失败，不承诺在创建结果不确定或 runner 被强制终止时仍能清理。测试使用显式 developmentLoopback HTTP/WS 与真实 WebRTC，不能外推为生产正向 HTTPS 信任或真机验证；现有双平台 TLS 拒绝测试仍独立必需。
 
 ## 原生构建与验收门禁
 
@@ -100,7 +100,7 @@ bindings/ios/scripts/test-native.sh
 
 XCFramework 包含独立的 iOS device arm64、iOS simulator arm64+x86_64、macOS arm64+x86_64 分片，只在同一平台内用 lipo，绝不把 device/simulator arm64 混在一个 fat archive。Swift 源码 package 与原生 `CPeerloom.xcframework` 一同交付，设备构建不等于真机运行。遵循 [Apple XCFramework 指南](https://developer.apple.com/documentation/xcode/creating-a-multi-platform-binary-framework-bundle)。
 
-验收必须实际执行：macOS Swift/XCTest、独立临时 Keychain 锁定失败和两进程 CAS、真实 C create/load/shutdown、宿主排队后过期重验、宿主事件溢出、macOS Rust 系统 TLS 负向，以及 Swift macOS/iOS 两次真实自签握手拒绝（服务器侧计数，绝不安装信任根）；iOS 18.5 模拟器 XCTest/DP Keychain；unsigned iOS device build 与三类 XCFramework 结构。真机签名/安装、真机锁屏、后台暂停、生产 entitlement、完整双端 Swift 通信尚不能仅由这些门禁替代。
+验收必须实际执行：macOS Swift/XCTest、独立临时 Keychain 锁定失败和两进程 CAS、真实 C create/load/shutdown、宿主排队后过期重验、宿主事件溢出、macOS Rust 系统 TLS 负向，以及 Swift macOS/iOS 两次真实自签握手拒绝（服务器侧计数，绝不安装信任根）；iOS 18.5 模拟器 XCTest/DP Keychain；unsigned iOS device build 与三类 XCFramework 结构。真机签名/安装、真机锁屏、后台暂停与生产 entitlement 不能由这些门禁替代；回环环境下完整双端 Swift 通信另由上述真实服务场景证明。
 
 iOS 测试使用 `SimulatorHost` 中的空应用宿主和显式 XCTest target，直接引用原有 `KeychainTests.swift` / `NativeCoreTests.swift`，保留原 8 项并加入 typed 通道、延后消费/信用及暂停 actor 回归，当前共 12 项。裸 SwiftPM 测试由 Xcode `xctest` agent 托管，实际返回 `errSecMissingEntitlement` 时不能归咎为锁文件失败或改用明文存储。标准 `TEST_HOST` 将测试注入本次构建的应用 executable。[Apple TEST_HOST 定义](https://developer.apple.com/documentation/xcode/build-settings-reference)、[Keychain entitlement 错误](https://developer.apple.com/documentation/security/errsecmissingentitlement)
 
@@ -108,4 +108,4 @@ iOS 测试使用 `SimulatorHost` 中的空应用宿主和显式 XCTest target，
 
 为尽快定位模拟器问题，CI 先构建独立单 arm64 Simulator 诊断包并执行相同 12 项测试；此产物不是发布 XCFramework。诊断通过后仍须完成全部五 slice 构建与全部原生门禁，失败不会跳过检查晋级。
 
-Linux 可运行 `python3 bindings/ios/scripts/test-static.py`，只覆盖打包平台/头一致性与脚本拒绝伪构建。既有 Swift/Keychain/Xcode 用例已有上述真实证据；macOS 严格 14 项及 iOS 12 项已在[精确提交 702a04 的原生阶段](https://github.com/barry-ran/peerloom/actions/runs/40702942734)实测通过；这不表示该提交的打包步骤或全部必需工作流成功。上文独立真实服务场景仍待原生 CI，正式交付仍须当前完整门禁。产物保留项目 MIT；第三方按自身许可，已有 notice/SBOM 的缺项及非法律清关状态继续保留。
+Linux 可运行 `python3 bindings/ios/scripts/test-static.py`，只覆盖打包边界与脚本，不替代原生运行。上述精确提交的原 14/12 项、独立服务场景及包装均已真实通过；服务 artifact `12847506114` 的 SHA256 为 `f37a8c7582c96904bccba29ba2b1ace370b84a93fe719d3b51d37b78386412c1`，明确记录 Swift 首次注册与重开同 ID。release-profile artifact `12847091166` 已通过未修改的 `release-policy.verify_zip` 整包校验，包含三平台变体/五架构、统一规范 C 头、notice/SBOM 与已记录缺项；正式交付仍须当前提交所有必需门禁及审核后的发布步骤。项目 MIT 不覆盖第三方，证据收集不等于法律清关，也不等于生产签名或真机验收。

@@ -230,7 +230,35 @@ def context(env, event, plan):
     before = P.sha(event.get('before'))
     P.require(before != '0' * 40 and before != commit, 'PUSH_RANGE_REQUIRED')
     P.require(plan.get('administration_sha') == 'event', 'PLAN_EVENT_BINDING_REQUIRED')
+    allowed_event_paths = {('administration_sha',)}
+    branches = plan.get('branches')
+    bound_index = None
+    if isinstance(branches, list):
+        for index, item in enumerate(branches):
+            if isinstance(item, dict) and item.get('sha') == 'event':
+                P.require(plan.get('operation') == 'cleanup' and bound_index is None,
+                          'ONE_CLEANUP_EVENT_BRANCH_REQUIRED')
+                P.require(item.get('branch') in P.TASK_BRANCHES and item.get('inactive') is True
+                          and item.get('no_wip') is True and item.get('proof') == 'ancestor',
+                          'EVENT_BRANCH_NOT_APPROVED')
+                bound_index = index
+                allowed_event_paths.add(('branches', index, 'sha'))
+    def check_event(value, path=()):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                check_event(child, (*path, key))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                check_event(child, (*path, index))
+        elif value == 'event':
+            P.require(path in allowed_event_paths, 'EVENT_OUTSIDE_APPROVED_BINDING')
+    check_event(plan)
     plan = dict(plan, administration_sha=commit)
+    if bound_index is not None:
+        # Never mutate the stored plan or consult dynamic HEAD. All subsequent
+        # retention, fresh-ref and exact deletion lease checks remain unchanged.
+        plan['branches'] = [dict(item, sha=commit) if index == bound_index else dict(item)
+                            for index, item in enumerate(branches)]
     return plan, commit
 
 def verify_plan_changed(api, event, commit):
@@ -285,7 +313,7 @@ def main():
     api = GitHub()
     verify_plan_changed(api, event, commit)
     admin = Admin(api, plan, commit)
-    deadline = time.monotonic() + 90 * 60
+    deadline = time.monotonic() + 120 * 60
     while True:
         try:
             runs = admin.validate()

@@ -74,7 +74,7 @@ flowchart LR
 | `Connection::send` / `receive` | 有界可靠消息收发；不暴露可绕过授权守卫的 raw transport |
 | `Connection::close` / `DeviceSdk::close` | 先禁止新收发，再有界等待资源清理；正常 SDK 退出允许正在执行的有界凭证变更结束 |
 
-`max_connections` 默认 1，可设 1..32（当前工程硬上界，不是吞吐承诺）；pending、待授权、协商、Ready 与恢复中的会话全部占位。`max_channels_per_connection` 默认 1，可设 1..32，含保留的默认可靠消息通道和正在创建/握手的通道，且不得超过 `transport.max_channels`。C/Kotlin/Swift 本切片仍只曝光单连接，不能仅凭 Rust 配置宣称五端多连接完成。每会话初始仍创建默认可靠消息通道以保持旧 `send/receive`；Ready 前检查 label 为 `peerloom.reliable`、protocol 为空，并且有序、没有有限重传次数或期限，不能把低延迟或字节流通道伪装为可靠消息。
+`max_connections` 默认 1，可设 1..32（当前工程硬上界，不是吞吐承诺）；pending、待授权、协商、Ready 与恢复中的会话全部占位。`max_channels_per_connection` 默认 1，可设 1..32，含保留的默认可靠消息通道和正在创建/握手的通道，且不得超过 `transport.max_channels`。[C ABI](C语言接口模块.md)、[Kotlin](Android封装模块.md)与[Swift](../bindings/ios/Apple封装说明.md)已暴露多连接及三类型 typed 通道，保留默认单连接兼容入口；各平台真实验收独立于 Rust 测试，不能据配置上限推断长期并发或所有系统版本已通过。每会话初始仍创建默认可靠消息通道以保持旧 `send/receive`；Ready 前检查 label 为 `peerloom.reliable`、protocol 为空，并且有序、没有有限重传次数或期限，不能把低延迟或字节流通道伪装为可靠消息。
 
 连接请求被拒时发出同样的 `ConnectionRequestFailed`（reason 为拒绝错误），不会释放其他目标的 pending，也不会关闭已获准的兄弟会话。未知或旧代响应不作用于当前代。服务端已分配会话后的事件继续以 session_id 关联。ABI1 保持事件布局与编号不变：请求失败映射既有 CONNECTION_CLOSED（connection_id=0、session_id 为空），JSON 追加 request_id 和 target_device_id；旧客户端可忽略新增字段。
 
@@ -191,7 +191,9 @@ cargo test --locked -p device-core --test sdk_service -- --ignored --nocapture
 
 fixture 必须是 0600 私有文件；不把凭证放入命令行参数、日志或仓库。当前新增阶段的远端 CI 尚需按准确提交确认，不能以本地结果替代。
 
-尚未完成的验收包括授权业务链路中的自动 TURN 回退、网络切换/休眠恢复、24 小时级凭证生命周期与长期续租压力、长期多连接多通道压力、五端安全存储、稳定 C ABI 与 Android/iOS 原生绑定。当前 Rust 三类型通道已接入同一 facade；C/Kotlin/Swift 新多连接/多通道包装需独立验收，不由 Rust 测试代替。接口和测试不得把这些目标写成已交付能力。
+当前已实现 Rust/C/Kotlin/Swift 的多连接与三类型通道、显式身份 reset，以及 Linux Secret Service、Windows DPAPI、Android Keystore 和 Apple Keychain 存储。原生 C 前缀兼容和有界生命周期已有独立测试，但不据此宣称 ABI 永久稳定或正式发布。Auto 遇不可达 TURN 时的有界候选快照回退已有真实黑洞/Host-Host/DTLS 数据与授权 C 链路验收，详见[原生传输模块](原生传输模块.md)；不是任意 NAT、动态切路或移动网络切换保证。
+
+仍待专项验收的是网络切换/系统休眠、24小时级凭证生命周期与长期续租/多连接多通道压力，以及平台生产签名、真机权限与长期后台行为。Android 已有4K/16K模拟器真实通道、有限后台、控制面短断与真实授权撤销用例；Windows 已有原生 Go/DPAPI/双端通信、实际租约期限与进程重启用例；Apple 的测试 Keychain、Simulator 与生产签名 DP Keychain/真机必须区分。参见[平台存储](存储模块.md)、[Windows原生验收](Windows原生验收.md)和各封装模块；新提交是否通过必须查同一 SHA 的实际完整门禁，不能由历史或 Rust 单测替代。
 
 托管中继的真实验收使用新的一对设备夹具（权限0600，经过目标批准的定向grant），服务端已配置批准的coturn REST节点：
 

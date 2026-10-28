@@ -13,7 +13,7 @@ jobs:
   preflight:
     if: github.repository == 'barry-ran/peerloom' && github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 130
     outputs:
       enabled: ${{ steps.plan.outputs.enabled }}
     steps:

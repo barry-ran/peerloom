@@ -432,6 +432,68 @@ class CleanupTests(unittest.TestCase):
             admin.cleanup(fail)
         self.assertEqual(len(calls), 1)
 
+class CleanupEventBindingTests(unittest.TestCase):
+    def fixture(self):
+        env={'GITHUB_EVENT_NAME':'push','GITHUB_REPOSITORY':P.REPO,'GITHUB_REF':'refs/heads/master','GITHUB_SHA':MASTER}
+        event={'repository':{'full_name':P.REPO},'ref':'refs/heads/master','before':SHA,'after':MASTER}
+        plan={'administration_sha':'event','operation':'cleanup','branches':[{'branch':'feat/validation-release-packaging','sha':'event','inactive':True,'no_wip':True,'proof':'ancestor'}]}
+        return env,event,plan
+
+    def test_trusted_event_resolves_without_mutating_plan(self):
+        env,event,plan=self.fixture();original=copy.deepcopy(plan)
+        bound,commit=A.context(env,event,plan)
+        self.assertEqual(plan,original);self.assertEqual(commit,MASTER)
+        self.assertEqual(bound['branches'][0]['sha'],MASTER)
+        self.assertEqual(P.validate_cleanup(bound['branches'][0],MASTER,None,lambda a,b:a==b)[1],MASTER)
+
+    def test_policy_without_trusted_context_rejects_event(self):
+        with self.assertRaises(P.Rejected):
+            P.validate_cleanup(self.fixture()[2]['branches'][0],MASTER,None,lambda *a:True)
+
+    def test_master_unrelated_active_or_equivalent_event_ref_rejected(self):
+        for change in ({'branch':'master'},{'branch':'feat/user-work'},{'inactive':False},{'no_wip':False},{'proof':'equivalent_tree'}):
+            env,event,plan=self.fixture();plan['branches'][0].update(change)
+            with self.subTest(change=change),self.assertRaises(P.Rejected):A.context(env,event,plan)
+
+    def test_only_one_event_cleanup_ref(self):
+        env,event,plan=self.fixture();plan['branches'].append(dict(plan['branches'][0],branch='feat/validation-multichannel'))
+        with self.assertRaises(P.Rejected):A.context(env,event,plan)
+
+    def test_noncleanup_or_event_in_other_fields_rejected(self):
+        for change in ({'operation':'release'},{'release_sha':'event'},{'artifacts':{'apple':{'source':'event'}}},{'source':'event'}):
+            env,event,plan=self.fixture();plan.update(change)
+            with self.subTest(change=change),self.assertRaises(P.Rejected):A.context(env,event,plan)
+        for key in ('proof','retained_equivalent_commit','expected_tree'):
+            env,event,plan=self.fixture();plan['branches'][0][key]='event'
+            with self.subTest(key=key),self.assertRaises(P.Rejected):A.context(env,event,plan)
+
+    def test_event_cannot_bypass_trusted_push_identity(self):
+        for change in ({'GITHUB_EVENT_NAME':'pull_request'},{'GITHUB_REF':'refs/heads/feat/test'},{'GITHUB_REPOSITORY':'fork/repo'},{'GITHUB_SHA':SHA}):
+            env,event,plan=self.fixture();env.update(change)
+            with self.subTest(change=change),self.assertRaises(P.Rejected):A.context(env,event,plan)
+
+    def test_resolved_ref_exact_lease_and_missing_rerun(self):
+        env,event,plan=self.fixture();bound,commit=A.context(env,event,plan)
+        class API:
+            deleted=False
+            def call(self,endpoint,**kw):
+                if endpoint.endswith('/master'):return {'object':{'sha':MASTER}}
+                return None if self.deleted else {'object':{'sha':MASTER}}
+        api=API();admin=A.Admin(api,bound,commit);admin.ancestor=lambda a,b:a==b;calls=[]
+        def execute(command):calls.append(command);api.deleted=True
+        admin.cleanup(execute);admin.cleanup(execute)
+        self.assertEqual(len(calls),1)
+        self.assertIn('--force-with-lease=refs/heads/feat/validation-release-packaging:'+MASTER,calls[0])
+
+    def test_resolved_ref_movement_rejected(self):
+        env,event,plan=self.fixture();bound,commit=A.context(env,event,plan)
+        class API:
+            def call(self,endpoint,**kw):return {'object':{'sha':MASTER if endpoint.endswith('/master') else SHA}}
+        admin=A.Admin(API(),bound,commit);admin.ancestor=lambda a,b:a==b;calls=[]
+        with self.assertRaisesRegex(P.Rejected,'BRANCH_MOVED'):admin.cleanup(calls.append)
+        self.assertEqual(calls,[])
+
+
 class ReleaseTests(unittest.TestCase):
     def setup_admin(self):
         plan = {'tag': 'v0.1.0', 'notes': 'approved notes', 'prerelease': True, 'release_sha': SHA}
@@ -538,6 +600,30 @@ class ExtraBoundaryTests(unittest.TestCase):
         self.assertIn('scripts/maven-gap-policy.py',paths)
         self.assertIn('release/maven-license-gaps.json',paths)
         api.assert_not_called()
+
+    def test_preflight_120_minute_boundary_and_execute_never_waits(self):
+        from unittest.mock import patch, Mock
+        env={'GITHUB_EVENT_NAME':'push','GITHUB_REPOSITORY':P.REPO,'GITHUB_REF':'refs/heads/master','GITHUB_SHA':MASTER,'GITHUB_EVENT_PATH':'/fixture/event.json'}
+        event={'repository':{'full_name':P.REPO},'ref':'refs/heads/master','before':SHA,'after':MASTER}
+        plan={'approved':True,'administration_sha':'event','operation':'cleanup'}
+        reads=lambda path,*a,**kw:json.dumps(event if str(path)=='/fixture/event.json' else plan)
+        for execute in (False,True):
+            admin=Mock();admin.validate.side_effect=A.Pending('not terminal')
+            with self.subTest(execute=execute),patch.dict(A.os.environ,env,clear=True),patch.object(Path,'read_text',reads),patch.object(A.subprocess,'check_output',return_value=MASTER+'\n'),patch.object(A.subprocess,'run',return_value=Mock(returncode=0)),patch.object(A,'GitHub'),patch.object(A,'verify_plan_changed'),patch.object(A,'Admin',return_value=admin),patch.object(A.time,'monotonic',side_effect=[100,7299,7300]),patch.object(A.time,'sleep') as sleep,patch('sys.argv',['release-admin.py']+(['--execute'] if execute else [])),self.assertRaisesRegex(P.Rejected,'REQUIRED_WORKFLOW_NOT_TERMINAL'):
+                A.main()
+            if execute:sleep.assert_not_called();self.assertEqual(admin.validate.call_count,1)
+            else:sleep.assert_called_once_with(30);self.assertEqual(admin.validate.call_count,2)
+            admin.cleanup.assert_not_called();admin.publish.assert_not_called()
+
+    def test_preflight_job_budget_keeps_write_budget_unchanged(self):
+        source=(Path(__file__).resolve().parents[1]/'.github/workflows/release-admin.yml').read_text(encoding='utf-8')
+        preflight=source.split('  preflight:',1)[1].split('  apply-approved-plan:',1)[0]
+        apply=source.split('  apply-approved-plan:',1)[1]
+        self.assertIn('    timeout-minutes: 130\n',preflight)
+        self.assertIn('    timeout-minutes: 25\n',apply)
+        self.assertNotIn('permissions:',preflight)
+        self.assertIn('permissions:\n  contents: read\n  actions: read',source)
+        self.assertIn('permissions:\n      contents: write\n      actions: read',apply)
 
     def test_required_workflow_cannot_be_omitted(self):
         class API:
