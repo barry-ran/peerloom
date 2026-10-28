@@ -334,6 +334,56 @@ class PlainTarTest(unittest.TestCase):
         self.assertEqual(pins['tar_sha256'], 'c0bb584a1fe79db423329609b8c8280ca755e99fdee6be4555420061bdd08cde')
 
 
+class PostgreSQLDiagnosticTest(unittest.TestCase):
+    def test_exact_owned_startup_failure_redacts_generated_secrets_and_paths(self):
+        directory=Path('/owned-private');secret='generated-password-'+'a'*32
+        for stage,binary,tail in (('initdb','initdb.exe',[]),('start','pg_ctl.exe',['start'])):
+            child=Mock(returncode=7)
+            child.communicate.return_value=(b'', ('could not start at '+str(directory)+' secret='+secret).encode())
+            argv=[str(directory/'postgresql/pgsql/bin'/binary),'-D',str(directory/'data'),*tail]
+            with patch.object(service.subprocess,'Popen',return_value=child),patch('sys.stderr',new_callable=io.StringIO) as output,self.assertRaises(RuntimeError):
+                service.run(argv,postgres_diagnostic=(stage,directory,[secret]))
+            text=output.getvalue()
+            self.assertIn('stage='+stage+' exit=7',text)
+            self.assertIn('could not start',text)
+            self.assertNotIn(secret,text);self.assertNotIn(str(directory),text)
+            self.assertLessEqual(len(text.encode()),2048)
+
+    def test_arbitrary_command_or_other_data_path_never_prints_capture(self):
+        directory=Path('/owned-private');child=Mock(returncode=1);child.communicate.return_value=(b'private-output',b'private-error')
+        for argv in (['psql','-D',str(directory/'data')],
+                     [str(directory/'postgresql/pgsql/bin/pg_ctl.exe'),'-D','/other','start'],
+                     [str(directory/'postgresql/pgsql/bin/pg_ctl.exe'),'-D',str(directory/'data'),'stop']):
+            with patch.object(service.subprocess,'Popen',return_value=child),patch('sys.stderr',new_callable=io.StringIO) as output,self.assertRaises(RuntimeError):
+                service.run(argv,postgres_diagnostic=('start',directory,[]))
+            self.assertEqual(output.getvalue(),'')
+
+    def test_pg_init_failure_precedes_and_prevents_wsl_import_or_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp);name='PeerloomCI-'+'a'*32;private=base/name;private.mkdir();public=base/(name+'-public');public.mkdir()
+            args=['windows-service.py','--directory',str(private),'--distro',name,'--public-directory',str(public)]
+            calls=[]
+            def fail_init(argv,**kwargs):
+                calls.append(argv)
+                if Path(argv[0]).name=='postgres.exe':return b'postgres (PostgreSQL) 18.6'
+                raise RuntimeError('synthetic init failure')
+            with patch.object(service.sys,'argv',args),patch.object(service,'validate_scope',return_value=private),patch.object(service,'download'),patch.object(service,'extract_postgres'),patch.object(service,'free_port',return_value=16379),patch.object(service,'run',side_effect=fail_init),patch.object(service,'prepare_wsl_tar') as prepare,self.assertRaisesRegex(RuntimeError,'init failure'):
+                service.main()
+            self.assertEqual([Path(x[0]).name for x in calls],['postgres.exe','initdb.exe'])
+            prepare.assert_not_called()
+            source=(ROOT/'windows-service.py').read_text(encoding='utf-8')
+            self.assertLess(source.index("STAGE = 'initialize-private-native-postgresql'"),source.index("STAGE = 'import-owned-wsl1'"))
+            self.assertLess(source.index("STAGE = 'start-private-native-postgresql'"),source.index("STAGE = 'build-real-redis-in-owned-wsl1'"))
+
+    def test_multibyte_control_secret_and_oversize_output_safe(self):
+        secret='a'*43
+        for data in (('错误 '+secret+' \x1b[31mprivatepath').encode('utf-8'),
+                     ('错误 '+secret+' privatepath').encode('utf-16-le'), b'x'*9000+secret.encode()):
+            text=service.postgres_startup_diagnostic('initdb',1,data,b'',Path('privatepath'),[secret])
+            self.assertNotIn(secret,text);self.assertNotIn('privatepath',text);self.assertNotIn('\x1b',text)
+            self.assertLessEqual(len(text.encode('utf-8')),2048)
+
+
 class PrivateRedisTest(unittest.TestCase):
     def test_stdin_handle_closed_and_child_owned_before_return_no_secret_args_env(self):
         with tempfile.TemporaryDirectory() as temp:

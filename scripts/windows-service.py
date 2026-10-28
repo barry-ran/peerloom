@@ -171,7 +171,17 @@ def wsl_status_diagnostic(redactions):
         print('Read-only WSL status diagnostic unavailable: category=' + type(error).__name__, file=sys.stderr)
 
 
-def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import_diagnostic=False):
+def postgres_startup_diagnostic(stage, code, output, errors, directory, known_secrets):
+    if stage not in ('initdb', 'start'):
+        raise ValueError('unsupported PostgreSQL diagnostic stage')
+    redactions = [str(directory), os.environ.get('USERPROFILE', ''), os.environ.get('HOME', ''),
+                  os.environ.get('RUNNER_TEMP', ''), *known_secrets]
+    text = bounded_wsl_text(output, redactions) + '\n' + bounded_wsl_text(errors, redactions)
+    return 'Owned PostgreSQL startup diagnostic: stage=' + stage + ' exit=' + str(int(code)) + ' text=' + text
+
+
+def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import_diagnostic=False,
+        postgres_diagnostic=None):
     owned_import = (import_diagnostic and len(argv) == 7 and argv[:2] == ['wsl.exe', '--import']
                     and argv[-2:] == ['--version', '1'])
     # The non-interactive import must not inherit an absent runner console handle.
@@ -200,6 +210,18 @@ def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import
             raise RuntimeError('owned child tree cleanup unconfirmed') from None
         raise TimeoutError('owned command deadline') from None
     if process.returncode:
+        if postgres_diagnostic is not None:
+            stage, directory, known_secrets = postgres_diagnostic
+            binary = directory / 'postgresql/pgsql/bin' / ('initdb.exe' if stage == 'initdb' else 'pg_ctl.exe')
+            # Opt-in only for these exact owned startup executables and data path;
+            # arbitrary commands, query tools, argv and environment are never logged.
+            if (stage in ('initdb', 'start') and argv[0] == str(binary)
+                    and '-D' in argv and argv.index('-D') + 1 < len(argv) and argv[argv.index('-D') + 1] == str(directory / 'data')
+                    and (stage == 'initdb' or argv[-1] == 'start')):
+                if hasattr(sys.stderr, 'reconfigure'):
+                    sys.stderr.reconfigure(encoding='utf-8', errors='strict')
+                print(postgres_startup_diagnostic(stage, process.returncode, output, errors,
+                                                 directory, known_secrets), file=sys.stderr)
         if import_diagnostic and len(argv) == 7 and argv[:2] == ['wsl.exe', '--import'] and argv[-2:] == ['--version', '1']:
             if hasattr(sys.stderr, 'reconfigure'):
                 sys.stderr.reconfigure(encoding='utf-8', errors='strict')
@@ -379,6 +401,26 @@ def main():
         extract_postgres(directory / 'postgresql.archive', directory / 'postgresql')
         pg = directory / 'postgresql/pgsql/bin'
         assert b'18.6' in run([str(pg / 'postgres.exe'), '--version'])
+        pgport, redisport, httpport = free_port(), free_port(), free_port()
+        password, redispassword = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        pg_password = private('pg-password', password)
+        redis_password = private('redis-password', redispassword)
+        database = private('database-url', f'postgres://peerloom_test:{password}@127.0.0.1:{pgport}/postgres?sslmode=disable')
+        replay = private('replay-key', base64.b64encode(secrets.token_bytes(32)).decode())
+        env.update(PGPASSWORD=password, DATABASE_URL_FILE=str(database), REPLAY_KEY_FILE=str(replay),
+                   REDIS_PASSWORD_FILE=str(redis_password), REDIS_ADDRESS=f'127.0.0.1:{redisport}',
+                   LISTEN_ADDRESS=f'127.0.0.1:{httpport}')
+        pg_diagnostic_secrets = [password, redispassword, replay.read_text(encoding='utf-8'), database.read_text(encoding='utf-8')]
+        STAGE = 'initialize-private-native-postgresql'
+        run([str(pg / 'initdb.exe'), '-D', str(directory / 'data'), '-U', 'peerloom_test',
+             '--auth-host=scram-sha-256', '--auth-local=reject', '--pwfile=' + str(pg_password),
+             '--no-locale', '--encoding=UTF8'], env=env,
+            postgres_diagnostic=('initdb', directory, pg_diagnostic_secrets))
+        STAGE = 'start-private-native-postgresql'
+        pg_started = True
+        run([str(pg / 'pg_ctl.exe'), '-D', str(directory / 'data'), '-l', str(directory / 'postgres.log'),
+             '-o', f'-h 127.0.0.1 -p {pgport}', '-w', 'start'], env=env,
+            postgres_diagnostic=('start', directory, pg_diagnostic_secrets))
         STAGE = 'prepare-owned-wsl-tar'
         prepare_wsl_tar(public / 'ubuntu_base.archive', public / 'ubuntu_base.tar', dependencies['ubuntu_base'])
         STAGE = 'import-owned-wsl1'
@@ -397,22 +439,6 @@ def main():
         wsl('/usr/bin/make', '-C', '/root/peerloom-ci/src', '-j2', 'MALLOC=libc',
             'redis-server', 'redis-cli', timeout=600)
         assert b'v=8.10.3' in wsl('/root/peerloom-ci/src/redis-server', '--version')
-        pgport, redisport, httpport = free_port(), free_port(), free_port()
-        password, redispassword = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-        pg_password = private('pg-password', password)
-        redis_password = private('redis-password', redispassword)
-        database = private('database-url', f'postgres://peerloom_test:{password}@127.0.0.1:{pgport}/postgres?sslmode=disable')
-        replay = private('replay-key', base64.b64encode(secrets.token_bytes(32)).decode())
-        env.update(PGPASSWORD=password, DATABASE_URL_FILE=str(database), REPLAY_KEY_FILE=str(replay),
-                   REDIS_PASSWORD_FILE=str(redis_password), REDIS_ADDRESS=f'127.0.0.1:{redisport}',
-                   LISTEN_ADDRESS=f'127.0.0.1:{httpport}')
-        STAGE = 'start-private-native-postgresql'
-        run([str(pg / 'initdb.exe'), '-D', str(directory / 'data'), '-U', 'peerloom_test',
-             '--auth-host=scram-sha-256', '--auth-local=reject', '--pwfile=' + str(pg_password),
-             '--no-locale', '--encoding=UTF8'], env=env)
-        pg_started = True
-        run([str(pg / 'pg_ctl.exe'), '-D', str(directory / 'data'), '-l', str(directory / 'postgres.log'),
-             '-o', f'-h 127.0.0.1 -p {pgport}', '-w', 'start'], env=env)
         STAGE = 'start-private-real-redis'
         config = directory / 'redis.conf'
         with config.open('xb') as file:
