@@ -66,6 +66,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: 测试 watchdog 超时、子进程清理与证据边界
+        run: python3 bindings/ios/scripts/test-watchdog.py
       - name: 固定 Apple Rust 目标和 Xcode
         run: |
           set -euo pipefail
@@ -76,8 +78,22 @@ jobs:
           rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
       - name: 构建真实五 slice XCFramework 与 Swift Package
         run: ./bindings/ios/scripts/build-xcframework.sh
-      - name: macOS Keychain 与 iOS Simulator XCTest、真实 TLS 拒绝
-        run: ./bindings/ios/scripts/test-native.sh
+      - name: macOS XCTest、隔离 Keychain 与 Swift TLS 拒绝（进程限时）
+        run: ./bindings/ios/scripts/test-native.sh --stage macos-swift
+      - name: macOS Rust 系统 TLS 拒绝（进程限时）
+        run: ./bindings/ios/scripts/test-native.sh --stage macos-rust-tls
+      - name: iOS Simulator 启动、XCTest 与 Swift TLS 拒绝（进程限时）
+        run: ./bindings/ios/scripts/test-native.sh --stage ios-simulator
+      - name: unsigned iOS device build（非真机验证、进程限时）
+        run: ./bindings/ios/scripts/test-native.sh --stage ios-device
+      - name: 核对全部原生阶段真实通过
+        run: ./bindings/ios/scripts/test-native.sh --stage finalize
+      - name: 清理本次创建的模拟器（不操作宿主既有设备）
+        if: always()
+        run: |
+          if [[ -d "$PEERLOOM_APPLE_OUTPUT/SwiftPackage" ]]; then
+            ./bindings/ios/scripts/test-native.sh --stage cleanup
+          fi
       - name: 保存 Apple 检查产物（unsigned device build 非真机验证）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -100,5 +116,6 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/peerloom-apple-validation/*.xcresult
+            ${{ runner.temp }}/peerloom-apple-validation/phase-*.log
             ${{ runner.temp }}/peerloom-apple-validation/*.txt
             ${{ runner.temp }}/peerloom-apple-validation/*.json
