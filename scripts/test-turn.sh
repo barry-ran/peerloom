@@ -8,6 +8,7 @@ if [ "$(id -u)" = 0 ]; then echo 'TURN test requires a non-root caller' >&2; exi
 umask 077
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/peerloom-turn.XXXXXXXX")"
 container="peerloom-turn-$(basename "$fixture")"
+image="$container:local"
 cleanup() {
   result=$?
   if [ "$result" -ne 0 ]; then
@@ -31,6 +32,7 @@ for line in lines[-20:]:
 DIAGNOSTIC
   fi
   docker rm -f -v "$container" > /dev/null 2>&1 || true
+  docker image rm "$image" > /dev/null 2>&1 || true
   rm -rf -- "$fixture"
   return "$result"
 }
@@ -76,6 +78,19 @@ userdb=/tmp/turndb
 for file in p.iterdir():
     file.chmod(0o600)
 CONFIG
+# 上游文件带NET_BIND_SERVICE有效能力，cap-drop ALL会使execve拒绝执行。
+# 只在无网络构建层创建相同字节、无xattr的新inode；不增加运行期权限。
+# stdin Dockerfile没有构建上下文，因此凭证不会进入镜像层或构建缓存。
+docker build --network none --tag "$image" - <<'IMAGE'
+FROM coturn/coturn:4.18.0-r0@sha256:bbefd3e1fdfdc0d58770fe01b581fd8b00d9f3a5580d00acb77cf719a6bc78e3
+USER root
+RUN test ! -e /tmp/turnserver-unprivileged \
+    && cat /usr/bin/turnserver > /tmp/turnserver-unprivileged \
+    && test "$(sha256sum /usr/bin/turnserver | cut -d ' ' -f1)" = "$(sha256sum /tmp/turnserver-unprivileged | cut -d ' ' -f1)" \
+    && chmod 0755 /tmp/turnserver-unprivileged \
+    && mv /tmp/turnserver-unprivileged /usr/bin/turnserver
+USER nobody:nogroup
+IMAGE
 # host network 只用于本脚本；配置明确仅绑定loopback，绝不映射公网端口。
 docker run --detach --name "$container" \
   --network host --user "$(id -u):$(id -g)" \
@@ -85,7 +100,7 @@ docker run --detach --name "$container" \
   --pids-limit 64 --memory 128m --cpus 2 --stop-timeout 10 \
   --mount "type=bind,src=$fixture/turnserver.conf,dst=/etc/coturn/turnserver.conf,readonly" \
   --entrypoint /usr/bin/turnserver \
-  coturn/coturn:4.18.0-r0@sha256:bbefd3e1fdfdc0d58770fe01b581fd8b00d9f3a5580d00acb77cf719a6bc78e3 \
+  "$image" \
   -c /etc/coturn/turnserver.conf > /dev/null
 # 不打印服务配置/日志；真实STUN响应只作为ready，最终gate依赖真实relay消息。
 python3 - <<'READY'

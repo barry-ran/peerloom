@@ -18,13 +18,25 @@ if name == "python3":
         sys.exit(0)  # 本测试不声称执行网络探活。
     sys.exit(subprocess.run([os.environ["REAL_PYTHON"], *sys.argv[1:]], input=source, text=True).returncode)
 if name == "docker":
+    if "build" in sys.argv:
+        recipe = sys.stdin.read()
+        assert "@sha256:bbefd3e1" in recipe and "cat /usr/bin/turnserver > /tmp/turnserver-unprivileged" in recipe
+        assert "USER nobody:nogroup" in recipe and "sha256sum /usr/bin/turnserver" in recipe
+        assert sys.argv[sys.argv.index("--network") + 1] == "none"
+        assert sys.argv[-1] == "-"
+        (root / "image-built").touch()
+        fixture = next((root / "temp").iterdir())
+        (root / "private-proof").write_text(json.dumps({"fixture": str(fixture), "password": (fixture / "password").read_text()}))
+        if os.environ["TEST_FAIL"] == "build":
+            sys.exit(8)
     if "run" in sys.argv:
         args = sys.argv
         assert args[args.index("--network") + 1] == "host"
         assert args[args.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
         assert "--read-only" in args and "--cap-drop" in args and "no-new-privileges:true" in args
         assert args[args.index("--entrypoint") + 1] == "/usr/bin/turnserver"
-        assert any("@sha256:bbefd3e1" in arg for arg in args)
+        assert (root / "image-built").exists()
+        assert any(arg.endswith(":local") for arg in args)
         mount = args[args.index("--mount") + 1]
         config = pathlib.Path(mount.split("src=", 1)[1].split(",", 1)[0])
         assert stat.S_IMODE(config.stat().st_mode) == 0o600
@@ -40,6 +52,8 @@ if name == "docker":
         print("ERROR: diagnostic-redaction-test " + proof["password"])
     elif "inspect" in sys.argv:
         print("TURN state=exited exit=1 oom=false")
+    elif "image" in sys.argv:
+        (root / "image-cleaned").touch()
     elif "rm" in sys.argv:
         (root / "container-cleaned").touch()
 if name == "cargo":
@@ -74,13 +88,14 @@ class TurnScriptTest(unittest.TestCase):
             result = subprocess.run(["bash", "-x", str(script)], env=environment, capture_output=True, text=True)
             self.assertEqual(result.returncode, expected, result.stderr)
             self.assertTrue((root / "container-cleaned").exists())
+            self.assertTrue((root / "image-cleaned").exists())
             self.assertEqual(list((root / "temp").iterdir()), [])
             import json
             proof = json.loads((root / "private-proof").read_text())
             self.assertNotIn(proof["password"], result.stdout + result.stderr)
             if failure:
                 self.assertIn("diagnostic-redaction-test [redacted]", result.stderr)
-            if failure != "docker":
+            if failure not in ("docker", "build"):
                 self.assertTrue((root / "test-invoked").exists())
 
     def test_success(self):
@@ -88,6 +103,9 @@ class TurnScriptTest(unittest.TestCase):
 
     def test_cargo_failure(self):
         self.exercise("cargo", 7)
+
+    def test_build_failure(self):
+        self.exercise("build", 8)
 
     def test_container_failure(self):
         self.exercise("docker", 9)
