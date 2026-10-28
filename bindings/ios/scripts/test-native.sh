@@ -152,12 +152,18 @@ PY
     run ios-build-for-testing 600 xcodebuild -project "$IOS_PROJECT" -scheme PeerloomSimulatorHost -destination "platform=iOS Simulator,id=$DEVICE" \
       -derivedDataPath "$OUT/DerivedData-simulator" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
       "PEERLOOM_TLS_ORIGIN=$PEERLOOM_TLS_ORIGIN" build-for-testing
-    run ios-test-signing 45 python3 "$HERE/scripts/inspect-test-signing.py" \
-      "$OUT/DerivedData-simulator/Build/Products" "$DEVELOPER_DIR" --simulator-host
+    # Run real tests first; metadata diagnostics must not hide a runtime result.
+    test_status=0
+    signing_status=0
     run ios-simulator 180 xcodebuild -project "$IOS_PROJECT" -scheme PeerloomSimulatorHost -destination "platform=iOS Simulator,id=$DEVICE" \
       -derivedDataPath "$OUT/DerivedData-simulator" -resultBundlePath "$OUT/iOS模拟器测试.xcresult" \
       CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
-      "PEERLOOM_TLS_ORIGIN=$PEERLOOM_TLS_ORIGIN" test-without-building
+      "PEERLOOM_TLS_ORIGIN=$PEERLOOM_TLS_ORIGIN" test-without-building || test_status=$?
+    run ios-test-signing 45 python3 "$HERE/scripts/inspect-test-signing.py" \
+      "$OUT/DerivedData-simulator/Build/Products" "$DEVELOPER_DIR" --simulator-host || signing_status=$?
+    printf '[Apple iOS results] test_exit=%s signing_exit=%s\n' "$test_status" "$signing_status"
+    if [[ $test_status -ne 0 ]]; then exit "$test_status"; fi
+    if [[ $signing_status -ne 0 ]]; then exit "$signing_status"; fi
     run_capture ios-summary 30 xcrun xcresulttool get test-results summary --path "$OUT/iOS模拟器测试.xcresult"
     cp "$OUT/phase-ios-summary.stdout" "$OUT/iOS测试摘要.json"
     python3 - "$OUT/iOS测试摘要.json" <<'PY'
