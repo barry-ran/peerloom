@@ -130,6 +130,35 @@ class ProcessTest(unittest.TestCase):
             probe.assert_called_once_with(['wsl.exe', '--status'], stdin=service.subprocess.DEVNULL, stdout=service.subprocess.PIPE,
                                           stderr=service.subprocess.PIPE, timeout=20, check=False)
 
+    def test_both_owned_diagnostic_stderr_paths_survive_actual_cp1252(self):
+        argv = ['wsl.exe', '--import', 'PeerloomCI-' + 'a'*32,
+                r'C:\private\owned\wsl', r'C:\private\owned\archive', '--version', '1']
+        for status_only in (False, True):
+            with self.subTest(status_only=status_only):
+                sink = io.BytesIO()
+                stderr = io.TextIOWrapper(sink, encoding='cp1252', errors='strict')
+                raw = ('错误：句柄无效 ' + argv[3]).encode('utf-8')
+                child = Mock(returncode=1)
+                child.communicate.return_value = (raw, b'')
+                result = service.subprocess.CompletedProcess(['wsl.exe'], 1, raw, b'')
+                try:
+                    with patch.object(service.sys, 'stderr', stderr), \
+                         patch.object(service.subprocess, 'Popen', return_value=child), \
+                         patch.object(service.subprocess, 'run', return_value=result):
+                        if status_only:
+                            service.wsl_status_diagnostic([argv[3]])
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, 'child command failed'):
+                                service.run(argv, import_diagnostic=True)
+                    stderr.flush()
+                    text = sink.getvalue().decode('utf-8')
+                    self.assertIn('错误：句柄无效', text)
+                    self.assertNotIn('private', text)
+                    self.assertLessEqual(len(sink.getvalue()), 1024)
+                    self.assertEqual(stderr.errors, 'strict')
+                finally:
+                    stderr.detach()
+
     def test_other_process_stderr_stays_private(self):
         child = Mock(returncode=1)
         child.communicate.return_value = (b'private stdout', b'private stderr')
@@ -173,6 +202,25 @@ class ImportProbeTest(unittest.TestCase):
                 self.assertNotIn(name, output.getvalue())
                 self.assertLessEqual(len(output.getvalue().encode()), 1024)
 
+    def test_diagnostic_utf8_survives_actual_cp1252_stdout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            (directory/'import-output.txt').write_bytes(('错误：句柄无效 '+temp).encode('utf-8'))
+            args = ['windows-service.py', '--directory', temp, '--distro', 'PeerloomCI-'+'a'*32,
+                    '--diagnose-import-only', '--import-exit-code', '-1']
+            sink = io.BytesIO()
+            stdout = io.TextIOWrapper(sink, encoding='cp1252', errors='strict')
+            try:
+                with patch.object(service.sys, 'argv', args), patch.object(service, 'validate_scope', return_value=directory), patch.object(service.sys, 'stdout', stdout):
+                    service.main()
+                    stdout.flush()
+                result = sink.getvalue().decode('utf-8', errors='strict')
+                self.assertIn('错误：句柄无效', result)
+                self.assertNotIn(temp, result)
+                self.assertLessEqual(len(sink.getvalue()), 1024)
+            finally:
+                stdout.detach()
+
     def test_workflow_source_uses_utf8_under_windows_legacy_locale(self):
         original = Path.read_text
         def windows_default(path, encoding=None, errors=None):
@@ -184,6 +232,7 @@ class ImportProbeTest(unittest.TestCase):
         script = (ROOT/'test-windows-service.ps1').read_text(encoding='utf-8')
         workflow = (ROOT.parent/'.github/workflows/native.yml').read_text(encoding='utf-8')
         self.assertEqual(script.count('& wsl.exe --import '), 1)
+        self.assertLess(script.index('Owned direct import raw exit='), script.index('--diagnose-import-only'))
         self.assertIn("$drive.DriveFormat -ne 'NTFS'", script)
         self.assertIn("$drive.DriveType -ne 'Fixed'", script)
         self.assertIn('[System.IO.File]::OpenRead($tar)', script)

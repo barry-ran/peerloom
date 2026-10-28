@@ -45,7 +45,7 @@ def tree_copy(source, destination):
             raise PackageError('SPECIAL_PACKAGE_INPUT')
 
 def check_evidence(directory):
-    entries = (directory / 'SHA256SUMS').read_text().splitlines()
+    entries = (directory / 'SHA256SUMS').read_text(encoding='utf-8').splitlines()
     if not entries:
         raise PackageError('EMPTY_EVIDENCE_CHECKSUMS')
     seen = set()
@@ -104,10 +104,10 @@ def finish(root, output, platform, commit, sources, maven=None):
         raise PackageError('OUTPUT_MUST_BE_NEW')
     if os.environ.get('PEERLOOM_CARGO_FEATURES'):
         raise PackageError('NONDEFAULT_FEATURES_REQUIRE_SEPARATE_REVIEW')
-    version = tomllib.loads((root / 'src/device-sdk/Cargo.toml').read_text())['workspace']['package']['version']
+    version = tomllib.loads((root / 'src/device-sdk/Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version']
     proof = root / 'dist/third-party'
     check_evidence(proof)
-    report = json.loads((proof / 'report.json').read_text())
+    report = json.loads((proof / 'report.json').read_text(encoding='utf-8'))
     if report.get('evidence_status') not in ('incomplete', 'collected-not-legally-reviewed'):
         raise PackageError('EVIDENCE_STATUS_INVALID')
     for name in ('sbom.cdx.json', 'report.json', '第三方告知.md', 'SHA256SUMS'):
@@ -127,7 +127,7 @@ def finish(root, output, platform, commit, sources, maven=None):
     evidence = {'cargo_go': delivery_status}
     if maven:
         check_evidence(maven)
-        maven_report = json.loads((maven / 'report.json').read_text())
+        maven_report = json.loads((maven / 'report.json').read_text(encoding='utf-8'))
         if maven_report.get('evidence_status') not in ('incomplete', 'collected-not-legally-reviewed'):
             raise PackageError('MAVEN_EVIDENCE_STATUS_INVALID')
         tree_copy(maven, output / 'third-party/maven-configurations')
@@ -143,8 +143,8 @@ def finish(root, output, platform, commit, sources, maven=None):
     if platform == 'linux-x86_64':
         meta['installation_payload'] = 'peerloom-linux-x86_64.tar.gz'
         meta['executable_files'] = sorted(p.relative_to(output).as_posix() for p in output.rglob('*') if p.is_file() and p.stat().st_mode & 0o111)
-        (output / '安装说明.txt').write_text('GitHub Artifact 外层 ZIP 会丢失可执行位。请使用 peerloom-linux-x86_64.tar.gz 内的文件；解包后校验包内 SHA256SUMS。外层松散文件只供审阅，不作为可执行程序安装来源。\n')
-    (output / 'release-metadata.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+        (output / '安装说明.txt').write_text('GitHub Artifact 外层 ZIP 会丢失可执行位。请使用 peerloom-linux-x86_64.tar.gz 内的文件；解包后校验包内 SHA256SUMS。外层松散文件只供审阅，不作为可执行程序安装来源。\n', encoding='utf-8')
+    (output / 'release-metadata.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     entries = []
     for path in sorted(output.rglob('*')):
         if path.is_file():
@@ -152,7 +152,7 @@ def finish(root, output, platform, commit, sources, maven=None):
             if any(c in name for c in '\r\n'):
                 raise PackageError('UNSAFE_PACKAGE_FILENAME')
             entries.append(f'{digest(path)}  {name}\n')
-    (output / 'SHA256SUMS').write_text(''.join(entries))
+    (output / 'SHA256SUMS').write_text(''.join(entries), encoding='utf-8')
     if platform == 'linux-x86_64':
         # Actions ZIP normalizes file permissions. Preserve executable modes in
         # a self-contained, deterministic-metadata tar payload, not chmod advice.
@@ -176,7 +176,7 @@ def finish(root, output, platform, commit, sources, maven=None):
             if owned.exists():
                 shutil.rmtree(owned)
         outer = [f'{digest(p)}  {p.relative_to(output).as_posix()}\n' for p in sorted(output.rglob('*')) if p.is_file() and p != output / 'SHA256SUMS']
-        (output / 'SHA256SUMS').write_text(''.join(outer))
+        (output / 'SHA256SUMS').write_text(''.join(outer), encoding='utf-8')
     if meta['release_evidence_complete']:
         message = 'collected, legal review pending'
     elif meta['release_delivery_eligible']:

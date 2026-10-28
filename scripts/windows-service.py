@@ -164,6 +164,8 @@ def wsl_status_diagnostic(redactions):
         result = subprocess.run(['wsl.exe', '--status'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 timeout=20, check=False)
         text = wsl_import_diagnostic(result.returncode, result.stdout, result.stderr, redactions)
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='strict')
         print(text.replace('Owned WSL1 import diagnostic:', 'Read-only WSL status diagnostic:', 1), file=sys.stderr)
     except (OSError, subprocess.TimeoutExpired) as error:
         print('Read-only WSL status diagnostic unavailable: category=' + type(error).__name__, file=sys.stderr)
@@ -199,6 +201,8 @@ def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import
         raise TimeoutError('owned command deadline') from None
     if process.returncode:
         if import_diagnostic and len(argv) == 7 and argv[:2] == ['wsl.exe', '--import'] and argv[-2:] == ['--version', '1']:
+            if hasattr(sys.stderr, 'reconfigure'):
+                sys.stderr.reconfigure(encoding='utf-8', errors='strict')
             print(wsl_import_diagnostic(process.returncode, output, errors, owned_wsl_redactions(argv)), file=sys.stderr)
         # Never include command/environment or arbitrary server stderr in CI logs.
         raise RuntimeError('child command failed')
@@ -256,13 +260,17 @@ def main():
     args = parser.parse_args()
     directory = validate_scope(args.directory, args.distro, os.environ, sys.platform)
     root = Path(__file__).resolve().parent.parent
-    dependencies = json.loads((root / 'scripts/windows-service-dependencies.json').read_text())
+    dependencies = json.loads((root / 'scripts/windows-service-dependencies.json').read_text(encoding='utf-8'))
     if args.prepare_import_only:
         STAGE = 'prepare-import-probe'
         download(dependencies['ubuntu_base'], directory / 'ubuntu_base.archive')
         prepare_wsl_tar(directory / 'ubuntu_base.archive', directory / 'ubuntu_base.tar', dependencies['ubuntu_base'])
         return
     if args.diagnose_import_only:
+        # Actions logs are UTF-8; do not let a legacy Windows stdout code page
+        # hide the already-redacted diagnostic when WSL emits localized text.
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='strict')
         with (directory / 'import-output.txt').open('rb') as source:
             output = source.read(8193)
         print(wsl_import_diagnostic(args.import_exit_code, output, b'',
@@ -382,7 +390,7 @@ def main():
         management = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(management)
         assert (directory / 'admin.json').stat().st_size <= 65536
-        admin = json.loads((directory / 'admin.json').read_text())
+        admin = json.loads((directory / 'admin.json').read_text(encoding='utf-8'))
         pair = create_authorized_pair(management.Client(origin), admin['service_credential'])
         private('pair.json', json.dumps(pair))
         stores = directory / 'stores'
@@ -437,7 +445,7 @@ def main():
             handle.close()
         if cleanup_failed:
             raise RuntimeError('owned process/distro cleanup failed')
-    evidence.write_text(evidence_payload + 'Owned PostgreSQL/Redis/WSL cleanup: PASS\n')
+    evidence.write_text(evidence_payload + 'Owned PostgreSQL/Redis/WSL cleanup: PASS\n', encoding='utf-8')
 
 
 def failure_summary(stage, error):

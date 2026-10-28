@@ -13,7 +13,7 @@ import sys
 def write_status(output, returncode):
     if returncode not in (0, 2):
         raise ValueError("license collector failed")
-    report = json.loads((output / "report.json").read_text())
+    report = json.loads((output / "report.json").read_text(encoding='utf-8'))
     status = report["evidence_status"]
     if status not in ("incomplete", "collected-not-legally-reviewed"):
         raise ValueError("unknown evidence status")
@@ -25,7 +25,8 @@ def write_status(output, returncode):
     (output / "发布审查状态.txt").write_text(
         f"证据状态：{status}\n采集器原始退出码：{returncode}\n"
         "法律许可审查：未完成；本检查产物不是合规发布批准。\n"
-        "项目MIT许可不覆盖第三方组件。缺失项与范围限制请阅读report.json及第三方告知.md。\n"
+        "项目MIT许可不覆盖第三方组件。缺失项与范围限制请阅读report.json及第三方告知.md。\n",
+        encoding='utf-8',
     )
     return status
 
@@ -39,7 +40,7 @@ def append_owned_manifest(output, owned):
     """仅追加调用方明确拥有的新文件；已有未知文件不能被重新封印。"""
     manifest = output / 'SHA256SUMS'
     known = {}
-    for line in manifest.read_text().splitlines():
+    for line in manifest.read_text(encoding='utf-8').splitlines():
         match = re.fullmatch(r'([0-9a-f]{64})  (.+)', line)
         if not match:
             raise ValueError('invalid evidence checksum manifest')
@@ -65,7 +66,7 @@ def append_owned_manifest(output, owned):
     for name, checksum in expected.items():
         if sha_file(output / name) != checksum:
             raise ValueError('evidence bytes changed')
-    manifest.write_text(''.join(f'{value}  {name}\n' for name, value in sorted(expected.items())))
+    manifest.write_text(''.join(f'{value}  {name}\n' for name, value in sorted(expected.items())), encoding='utf-8')
 
 
 def copy_build_notices(root, output):
@@ -103,7 +104,16 @@ def copy_build_notices(root, output):
     append_owned_manifest(output, owned)
 
 
+def configure_output():
+    # This CLI emits repository-defined Chinese evidence labels, not localized
+    # command output. Keep its redirected Windows diagnostics explicitly UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='strict')
+
+
 def main():
+    configure_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--include-build-notices', action='store_true')
     args = parser.parse_args()

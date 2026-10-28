@@ -297,7 +297,7 @@ def cargo_vendor(record, root, patches, blobs):
             raise EvidenceError('VENDOR_SPECIAL_FILE')
     if actual != set(declared):
         raise EvidenceError('VENDOR_UNTRACKED_CONTENT')
-    info = tomllib.loads((crate / 'Cargo.toml').read_text())['package']
+    info = tomllib.loads((crate / 'Cargo.toml').read_text(encoding='utf-8'))['package']
     if (info['name'], info['version']) != identity or info.get('license') != proof['package']['declared_license']:
         raise EvidenceError('VENDOR_MANIFEST_MISMATCH')
     if not any(LICENSE_TEXT_NAME.match(Path(relative).name) for relative, _ in license_entries):
@@ -319,14 +319,14 @@ def cargo_vendor(record, root, patches, blobs):
 
 def collect(root):
     blobs, records, issues = {}, [], []
-    lock = tomllib.loads((root / "src/device-sdk/Cargo.lock").read_text())
-    cargo_manifest = tomllib.loads((root / "src/device-sdk/Cargo.toml").read_text())
+    lock = tomllib.loads((root / "src/device-sdk/Cargo.lock").read_text(encoding='utf-8'))
+    cargo_manifest = tomllib.loads((root / "src/device-sdk/Cargo.toml").read_text(encoding='utf-8'))
     workspace = cargo_manifest["workspace"]
     patches = cargo_manifest.get("patch", {}).get("crates-io", {})
     local = set()
     for member in workspace["members"]:
         member = safe_relative(member)
-        info = tomllib.loads((root / "src/device-sdk" / member / "Cargo.toml").read_text())["package"]
+        info = tomllib.loads((root / "src/device-sdk" / member / "Cargo.toml").read_text(encoding='utf-8'))["package"]
         version = workspace["package"]["version"] if isinstance(info["version"], dict) else info["version"]
         local.add((info["name"], version))
     cache = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))) / "registry/cache"
@@ -348,7 +348,7 @@ def collect(root):
         attempt(record, lambda: cargo_archive(record, paths[0], item.get("checksum", ""), blobs))
     go_dir = root / "src/device-server"
     sums = {}
-    for line in (go_dir / "go.sum").read_text().splitlines():
+    for line in (go_dir / "go.sum").read_text(encoding='utf-8').splitlines():
         name, version, value = line.split()
         if not version.endswith("/go.mod"):
             sums[(name, version)] = value

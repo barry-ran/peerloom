@@ -59,6 +59,7 @@ try {
             # Official documented CLI, not Python Popen or a replacement registration API.
             & wsl.exe --import $name $install $tar --version 1 *> (Join-Path $directory 'import-output.txt')
             $importCode = $LASTEXITCODE
+            Write-Output ('Owned direct import raw exit=' + [int64]$importCode)
             & python (Join-Path $PSScriptRoot 'windows-service.py') --directory $directory --distro $name --diagnose-import-only --import-exit-code $importCode
             if ($LASTEXITCODE -ne 0) { throw 'OWNED_IMPORT_DIAGNOSTIC_FAILED' }
             if ($importCode -ne 0) { throw 'OWNED_DIRECT_IMPORT_FAILED' }
