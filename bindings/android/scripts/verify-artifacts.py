@@ -6,19 +6,21 @@ import struct
 import sys
 import zipfile
 
-def verify_no_test_trust(archive):
+def verify_no_test_trust(archive, binary_manifest=False):
     """Test CA/resources must never leak into the distributable library AAR."""
     with zipfile.ZipFile(archive) as data:
         manifest = data.read("AndroidManifest.xml")
         import xml.etree.ElementTree as ET
-        ET.fromstring(manifest)  # AAR manifest is XML; unsupported formats fail closed.
+        if not binary_manifest:
+            ET.fromstring(manifest)  # AAR manifest is XML; unsupported formats fail closed.
+        forbidden = ("peerloom_test_", "TestCertificateAdmin", "android.app.device_admin", "BIND_DEVICE_ADMIN")
         for item in data.infolist():
             name = item.filename.lower()
             if "peerloom_test_" in name or name.endswith(".p12"):
                 raise ValueError("test trust material in release library")
             if name.endswith(".xml"):
                 value = data.read(item)
-                if b"peerloom_test_" in value or "peerloom_test_".encode("utf-16le") in value:
+                if any(marker.encode() in value or marker.encode("utf-16le") in value for marker in forbidden):
                     raise ValueError("test trust reference in release XML")
 
 if __name__ == "__main__":
@@ -26,6 +28,8 @@ if __name__ == "__main__":
         archive = Path(archive_name)
         if archive.suffix == ".aar":
             verify_no_test_trust(archive)
+        elif archive.name == "sample-debug.apk":
+            verify_no_test_trust(archive, binary_manifest=True)
         count = 0
         with zipfile.ZipFile(archive) as z:
             for item in z.infolist():

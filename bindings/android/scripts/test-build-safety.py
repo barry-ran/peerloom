@@ -63,6 +63,32 @@ class Checksums(unittest.TestCase):
                     checksums.verify(path)
 
 class ReleaseTrust(unittest.TestCase):
+    def test_admin_is_only_protected_test_receiver(self):
+        import xml.etree.ElementTree as ET
+        source = ROOT.parent / "library/src"
+        android = "{http://schemas.android.com/apk/res/android}"
+        test = ET.parse(source / "androidTest/AndroidManifest.xml").getroot().find("application")
+        self.assertEqual(test.attrib[android + "testOnly"], "true")
+        receiver = test.find("receiver")
+        self.assertEqual(receiver.attrib[android + "name"], "io.peerloom.sdk.TestCertificateAdmin")
+        self.assertEqual(receiver.attrib[android + "permission"], "android.permission.BIND_DEVICE_ADMIN")
+        for module in (source / "main", ROOT.parent / "sample/src/main"):
+            for path in module.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(b"TestCertificateAdmin", path.read_bytes())
+                    self.assertNotIn(b"BIND_DEVICE_ADMIN", path.read_bytes())
+
+    def test_release_admin_reference_and_binary_sample_rejected(self):
+        for binary in (False, True):
+            for marker in ("TestCertificateAdmin", "BIND_DEVICE_ADMIN", "android.app.device_admin"):
+                with self.subTest(binary=binary, marker=marker), tempfile.TemporaryDirectory() as temp:
+                    path = Path(temp) / ("sample-debug.apk" if binary else "library-release.aar")
+                    content = ("<manifest>" + marker + "</manifest>")
+                    with zipfile.ZipFile(path, "w") as out:
+                        out.writestr("AndroidManifest.xml", content.encode("utf-16le") if binary else content.encode())
+                    with self.assertRaises(ValueError):
+                        artifacts.verify_no_test_trust(path, binary_manifest=binary)
+
     def test_test_manifest_override_is_not_a_production_override(self):
         import xml.etree.ElementTree as ET
         android = ROOT.parent / "library/src"

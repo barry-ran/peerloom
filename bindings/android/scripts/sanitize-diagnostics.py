@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Keep crash categories/stack locations; never retain arbitrary device log messages."""
+import re
+import sys
+
+
+def sanitize(line):
+    if 'JNI DETECTED ERROR IN APPLICATION' in line:
+        return 'CheckJNI detected an error'
+    if re.search(r'Fatal signal \d+ \(', line):
+        match = re.search(r'Fatal signal (\d+) \((SIG[A-Z0-9]+)\)', line)
+        return f'native fatal signal={match[1]} category={match[2]}' if match else None
+    frame = re.search(r'\bat ([A-Za-z0-9_.$]+)\(([A-Za-z0-9_.$]+\.(?:java|kt):\d+|Native Method|Unknown Source)\)', line)
+    if frame:
+        return f'at {frame[1]}({frame[2]})'
+    error = re.search(r'\b((?:[a-zA-Z_][\w$]*\.)+[A-Za-z_$][\w$]*(?:Exception|Error))\b', line)
+    if error:
+        return f'exception_class={error[1]}'
+    # Process names and PID only. Drop unstructured system-provided reasons.
+    instrumentation = re.search(r'Crash of app (io\.peerloom\.sdk\.test(?::storeProbe)?) running instrumentation', line)
+    if instrumentation:
+        return f'instrumented_process_crashed name={instrumentation[1]}'
+    process = re.search(r'\bProcess (io\.peerloom\.sdk\.test(?::storeProbe)?) \(pid (\d+)\) has died', line)
+    if process:
+        return f'process_died name={process[1]} pid={process[2]}'
+    kill = re.search(r'\bKilling (\d+):io\.peerloom\.sdk\.test(?::storeProbe)?/', line)
+    if kill:
+        return f'process_killed pid={kill[1]} instrumentation_reason={"instrumentation" in line.lower()}'
+    if 'Force stopping io.peerloom.sdk.test' in line:
+        return f'package_force_stopped instrumentation_reason={"instrumentation" in line.lower()}'
+    phase = re.search(r'\bstore-probe-kill pid=(\d+)\b', line)
+    if phase:
+        return f'store-probe-kill pid={phase[1]}'
+    return None
+
+
+if __name__ == '__main__':
+    for index, line in enumerate(sys.stdin):
+        if index >= 20000:
+            print('diagnostic input bound reached')
+            break
+        result = sanitize(line)
+        if result:
+            print(result)

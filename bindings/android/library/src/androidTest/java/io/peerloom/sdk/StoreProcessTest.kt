@@ -20,13 +20,23 @@ class StoreProbeService : Service() {
         Messenger(
             Handler(Looper.getMainLooper()) { message ->
                 if (message.what == 3) {
+                    check(message.arg1 > 0 && message.arg1 != android.os.Process.myPid())
+                    check(android.app.Application.getProcessName().endsWith(":storeProbe"))
+                    android.util.Log.i(
+                        "PeerloomTestDiag",
+                        "store-probe-kill pid=${android.os.Process.myPid()}",
+                    )
                     android.os.Process.killProcess(android.os.Process.myPid())
                 } else {
                     val kind = message.what
                     val reply = message.replyTo
                     val data = Bundle(message.data)
                     work.execute {
-                        val result = Message.obtain().apply { what = kind }
+                        val result =
+                            Message.obtain().apply {
+                                what = kind
+                                arg2 = android.os.Process.myPid()
+                            }
                         try {
                             if (kind == 2) {
                                 val file =
@@ -78,13 +88,21 @@ class StoreProcessTest {
     @Test
     fun crossProcessCasAndKilledLockOwner() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        val instrumentation =
+            context.packageManager.getInstrumentationInfo(
+                ComponentName(context, "androidx.test.runner.AndroidJUnitRunner"),
+                0,
+            )
+        println(
+            "store-process instrumentation_targets=${instrumentation.targetProcesses ?: "<default>"}"
+        )
         val connected = CountDownLatch(1)
         val disconnected = CountDownLatch(1)
-        val responses = LinkedBlockingQueue<Pair<Int, Int>>()
+        val responses = LinkedBlockingQueue<Triple<Int, Int, Int>>()
         val replies =
             Messenger(
                 Handler(Looper.getMainLooper()) { message ->
-                    responses.offer(message.what to message.arg1)
+                    responses.offer(Triple(message.what, message.arg1, message.arg2))
                     true
                 }
             )
@@ -109,6 +127,7 @@ class StoreProcessTest {
         )
         try {
             assertTrue(connected.await(10, TimeUnit.SECONDS))
+            println("store-process bound caller_pid=${android.os.Process.myPid()}")
             val app = UUID.randomUUID().toString()
             val store = IdentityStore(context)
             val keys = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -140,6 +159,13 @@ class StoreProcessTest {
                 }
             val other = responses.poll(10, TimeUnit.SECONDS)!!
             assertEquals(1, other.first)
+            assertTrue(
+                "probe must be a distinct process",
+                other.third != android.os.Process.myPid(),
+            )
+            println(
+                "store-process CAS local=$local remote=${other.second} remote_pid=${other.third}"
+            )
             assertEquals(setOf(0, 11), setOf(local, other.second))
             assertEquals(2L, store.execute(storageRequest(app, "load")).getLong("revision"))
             remote.send(
@@ -155,13 +181,21 @@ class StoreProcessTest {
                         }
                 }
             )
-            assertEquals(2 to 0, responses.poll(10, TimeUnit.SECONDS))
+            assertEquals(Triple(2, 0, other.third), responses.poll(10, TimeUnit.SECONDS))
+            println("store-process remote-lock-held")
             try {
                 store.execute(storageRequest(app, "save", 2))
                 fail("another process holds the lock")
             } catch (_: IllegalStateException) {}
-            remote.send(Message.obtain().apply { what = 3 })
+            println("store-process local-lock-timeout-confirmed")
+            remote.send(
+                Message.obtain().apply {
+                    what = 3
+                    arg1 = android.os.Process.myPid()
+                }
+            )
             assertTrue(disconnected.await(10, TimeUnit.SECONDS))
+            println("store-process remote-disconnected")
             assertEquals(3L, store.execute(storageRequest(app, "save", 2)).getLong("revision"))
         } finally {
             context.unbindService(connection)

@@ -1,5 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
-    <application tools:replace="android:networkSecurityConfig" android:allowBackup="false" android:networkSecurityConfig="@xml/peerloom_test_network" android:usesCleartextTraffic="true">
+    <application android:testOnly="true" tools:replace="android:networkSecurityConfig" android:allowBackup="false" android:networkSecurityConfig="@xml/peerloom_test_network" android:usesCleartextTraffic="true">
         <service android:name="io.peerloom.sdk.StoreProbeService" android:exported="false" android:process=":storeProbe" />
+        <receiver android:name="io.peerloom.sdk.TestCertificateAdmin"
+            android:exported="true" android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data android:name="android.app.device_admin" android:resource="@xml/peerloom_test_admin" />
+            <intent-filter><action android:name="android.app.action.DEVICE_ADMIN_ENABLED" /></intent-filter>
+        </receiver>
     </application>
 </manifest>

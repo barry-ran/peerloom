@@ -24,6 +24,34 @@ class TlsTest {
     private fun serverContext(kind: String): SSLContext {
         val keys = KeyStore.getInstance("PKCS12")
         context.assets.open("$kind.p12").use { keys.load(it, "peerloom-test-only".toCharArray()) }
+        if (kind == "valid") {
+            val chain =
+                keys
+                    .getCertificateChain(keys.aliases().nextElement())
+                    .map { it as java.security.cert.X509Certificate }
+                    .toTypedArray()
+            val androidStore = KeyStore.getInstance("AndroidCAStore").apply { load(null) }
+            for ((label, trustStore) in
+                listOf("application-policy" to null, "android-ca-store" to androidStore)) {
+                val trust =
+                    javax.net.ssl.TrustManagerFactory.getInstance(
+                        javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()
+                    )
+                trust.init(trustStore as KeyStore?)
+                val manager =
+                    trust.trustManagers.filterIsInstance<javax.net.ssl.X509TrustManager>().single()
+                val outcome =
+                    try {
+                        android.net.http
+                            .X509TrustManagerExtensions(manager)
+                            .checkServerTrusted(chain, "RSA", "127.0.0.1")
+                        "trusted"
+                    } catch (error: java.security.cert.CertificateException) {
+                        error.javaClass.simpleName
+                    }
+                println("TLS fixture trust policy=$label outcome=$outcome")
+            }
+        }
         val managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
         managers.init(keys, "peerloom-test-only".toCharArray())
         return SSLContext.getInstance("TLS").apply { init(managers.keyManagers, null, null) }
@@ -63,7 +91,11 @@ class TlsTest {
                     it.outputStream.write(bytes)
                     it.outputStream.flush()
                     return true
-                } catch (_: java.io.IOException) {
+                } catch (error: java.io.IOException) {
+                    // Test fixtures only: exception classes, never request headers or payloads.
+                    println(
+                        "TLS test server rejected: ${error.javaClass.simpleName}; cause=${error.cause?.javaClass?.simpleName}"
+                    )
                     return false
                 }
             }
@@ -122,8 +154,13 @@ class TlsTest {
                             .get(20, TimeUnit.SECONDS)
                     try {
                         val status = sdk.start().completion.get(20, TimeUnit.SECONDS).status
-                        assertEquals(if (kind == "valid") 3 else 10, status)
-                        assertEquals(kind == "valid", response.get(20, TimeUnit.SECONDS))
+                        val exchanged = response.get(20, TimeUnit.SECONDS)
+                        assertEquals(
+                            "HTTPS fixture=$kind exchanged=$exchanged",
+                            if (kind == "valid") 3 else 10,
+                            status,
+                        )
+                        assertEquals(kind == "valid", exchanged)
                     } finally {
                         sdk.close().get(20, TimeUnit.SECONDS)
                     }

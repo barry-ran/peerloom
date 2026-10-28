@@ -18,7 +18,10 @@ jobs:
         with:
           persist-credentials: false
       - name: 隔离构建安全负例（不启动真实模拟器或修改KVM）
-        run: python3 bindings/android/scripts/test-build-safety.py
+        run: |
+          python3 bindings/android/scripts/test-build-safety.py
+          python3 bindings/android/scripts/test-diagnostics.py
+          python3 bindings/android/scripts/test-trust-fixture.py
       - name: 固定工具链
         run: |
           export JAVA_HOME="$JAVA_HOME_17_X64"

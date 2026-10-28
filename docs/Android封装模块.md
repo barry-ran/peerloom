@@ -85,11 +85,11 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 1. 构建两个 ABI，检查每个 ELF LOAD 段 >=16KB 对齐；对示例/测试 APK 执行 `zipalign -P 16`。
 2. CheckJNI 下多轮 create/start/close/release、无效句柄与 receiver 引用归零。
 3. Keystore 同进程/独立进程 CAS、持锁子进程强杀释放、tombstone、rename 故障和软链接拒绝、磁盘不含测试明文；通过独立 instrumentation 进程与 force-stop 验证重启读取。
-4. 测试 APK 专用临时 CA：HTTPS 与 WSS 分别验证正确 CA/SAN 接受、错误 SAN 和不可信 CA 拒绝；测试 trust configuration 不进入发布 AAR。
+4. 仅 GitHub Actions 独占临时 AVD 的测试 APK 可临时启用测试管理员，安装从已核验 APK 提取、按 DER SHA256 确认的单张临时 CA；HTTPS 与 WSS 分别验证正确 CA/SAN 接受、错误 SAN 和不可信 CA 拒绝。无论成功失败，先卸载并确认该 CA 消失，再移除管理员并确认失效，最后销毁本任务 AVD；清理失败必须 CI 失败。禁止批量清空 CA、修改宿主/用户设备或把管理员、测试 CA 带入 AAR/示例 APK。锁定的 verifier 使用 `AndroidCAStore`，不会读取应用 NSC 的自定义 raw CA；测试不通过修改生产验证器绕过此差异。
 5. 独立 Go/PostgreSQL/Redis 环境：真实 Android 注册、同租户跨应用授权确认、WebRTC 二进制收发、凭证旋转后进程重启仍用同设备身份。
 6. 应用 executor 暂停时确认真实消息已排队；远端关闭后读取 gate 已失效，再恢复 executor，消息不得交给应用。
 
-本地仅已完成 Rust host check、官方 JNI header 下 C++17 `-Werror` 静态编译，Kotlin 2.2.20 对官方 API36/AndroidX 类型的主库、示例与全部 instrumentation 编译，以及脚本/XML/YAML检查；上述 Android 门禁**尚未执行通过**。普通 emulator 不等于真机；移动网络切换、系统休眠、OEM Keystore 与长期后台生命周期仍需专项验收。
+本地仅已完成 Rust host check、官方 JNI header 下 C++17 `-Werror` 静态编译，Kotlin 2.2.20 对官方 API36/AndroidX 类型的主库、示例与全部 instrumentation 编译，以及脚本/XML/YAML检查；实际 CI 已完成两个 ABI/JNI/AAR/APK 构建和 16KB 对齐检查；4KB emulator 已通过生命周期、Keystore、跨进程 CAS/强杀锁释放及重启持久化，16KB 已通过生命周期与基础存储。TLS 测试信任注入与 16KB 跨进程崩溃正在按真实失败证据修复，整体 Android 门禁**尚未执行通过**。失败时只保留受限异常类、栈位置、进程类别和测试阶段，不上传原始 logcat 或凭证。普通 emulator 不等于真机；移动网络切换、系统休眠、OEM Keystore 与长期后台生命周期仍需专项验收。
 
 产物必须随带项目 MIT、Rust Android target 与 Maven runtime/test 分开的依赖/许可证证据。现有 Linux SBOM 不能冒充 AAR 完整清单；Maven 证据仍需配套发布流程补齐，不能仅凭 native tests 绿就宣布许可证审计完成。
 
@@ -101,3 +101,6 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 - [AGP 8.13 兼容矩阵](https://developer.android.com/build/releases/agp-8-13-0-release-notes)
 - [16KB 页面支持与验证](https://developer.android.com/guide/practices/page-sizes)
 - [rustls platform verifier Android 集成](https://github.com/rustls/rustls-platform-verifier)
+
+- [锁定 verifier 的 AndroidCAStore 实现](https://github.com/rustls/rustls-platform-verifier/blob/252e25161a91af476cbea620e29d277592d27ec7/android/rustls-platform-verifier/src/main/java/org/rustls/platformverifier/CertificateVerifier.kt)
+- [Android 单张 CA 安装/卸载管理 API](https://developer.android.com/reference/android/app/admin/DevicePolicyManager#installCaCert(android.content.ComponentName,%20byte[]))

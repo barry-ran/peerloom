@@ -10,12 +10,26 @@ owned_avd || { echo 'refuse foreign emulator identity' >&2; exit 1; }
 package=io.peerloom.sdk.test
 out="$root/dist/android-tests"
 mkdir -p "$out"
+diagnostics() {
+  # Read only this job's emulator. Do not persist raw logcat, credentials or payloads.
+  owned_avd || return 0
+  timeout 10 adb -s "$serial" logcat -b main -b system -b crash -d -v brief AndroidRuntime:E DEBUG:F libc:F ActivityManager:I PeerloomTestDiag:I '*:S' |
+    python3 "$root/bindings/android/scripts/sanitize-diagnostics.py" |
+    tee "${1%.txt}-diagnostics.txt" || true
+}
+instrument_args=()
 run() {
   local name=$1
   local log="$out/${name//\#/-}.txt"
-  adb_owned shell am instrument -w -r -e class "io.peerloom.sdk.$name" "$package/androidx.test.runner.AndroidJUnitRunner" | tee "$log"
-  ! grep -Eq 'FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed|shortMsg=' "$log"
-  grep -Eq 'OK \([1-9][0-9]* tests?\)' "$log"
+  if ! timeout 180 adb -s "$serial" shell am instrument -w -r "${instrument_args[@]}" -e class "io.peerloom.sdk.$name" "$package/androidx.test.runner.AndroidJUnitRunner" | tee "$log"; then
+    diagnostics "$log"
+    return 1
+  fi
+  if grep -Eq 'FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed|shortMsg=' "$log" ||
+      ! grep -Eq 'OK \([1-9][0-9]* tests?\)' "$log"; then
+    diagnostics "$log"
+    return 1
+  fi
 }
 adb_owned shell setprop debug.checkjni 1
 test "$(adb_owned shell getprop debug.checkjni | tr -d '\r')" = 1
@@ -25,7 +39,38 @@ run StoreProcessTest
 run 'PersistenceTest#writePhase'
 adb_owned shell am force-stop "$package"
 run 'PersistenceTest#readPhase'
-run TlsTest
+run_trusted_tls() (
+  set -euo pipefail
+  local digest component owner_attempted=0
+  digest=$(python3 "$root/bindings/android/scripts/trust-fixture.py" "$root/dist/android/library-debug-androidTest.apk")
+  owned_avd || { echo 'refuse foreign emulator trust mutation' >&2; exit 1; }
+  test "$(adb_owned shell getprop ro.kernel.qemu | tr -d '\r')" = 1
+  component="$package/io.peerloom.sdk.TestCertificateAdmin"
+  instrument_args=(-e peerloom_test_ca_sha256 "$digest")
+  release_trust() {
+    local status=$?
+    trap - EXIT
+    if [[ "$owner_attempted" = 1 ]]; then
+      # CA removal and exact absence verification MUST precede admin removal.
+      if ! owned_avd || ! run 'TrustFixtureTest#remove'; then
+        echo 'fixture CA cleanup failed; refuse successful CI result' >&2
+        exit 1
+      fi
+      if ! timeout 20 adb -s "$serial" shell dpm remove-active-admin --user 0 "$component" ||
+          ! run 'TrustFixtureTest#verifyReleased'; then
+        echo 'fixture admin cleanup failed; refuse successful CI result' >&2
+        exit 1
+      fi
+    fi
+    exit "$status"
+  }
+  trap release_trust EXIT
+  owner_attempted=1
+  timeout 20 adb -s "$serial" shell dpm set-device-owner --user 0 "$component"
+  run 'TrustFixtureTest#install'
+  run TlsTest
+)
+run_trusted_tls
 project="peerloom-android-${RANDOM}-${RANDOM}"
 compose=(docker compose -p "$project" -f "$root/infra/compose.yaml" -f "$root/infra/compose.ci.yaml")
 fixture=$(mktemp -d)

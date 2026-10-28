@@ -39,6 +39,8 @@ pid=$!
 adb_owned() { command adb -s "$ANDROID_SERIAL" "$@"; }
 owned_avd() { [[ $(timeout 5 adb -s "$ANDROID_SERIAL" emu avd name 2>/dev/null | tr -d '\r' | head -n 1) == "$PEERLOOM_AVD_NAME" ]]; }
 cleanup() {
+  local status=$?
+  trap - EXIT
   # Never issue emu kill to a foreign serial, even after a launch/bind failure.
   if kill -0 "$pid" 2>/dev/null; then
     if owned_avd; then timeout 5 adb -s "$ANDROID_SERIAL" emu kill >/dev/null 2>&1 || true; fi
@@ -50,6 +52,12 @@ cleanup() {
     kill -KILL "$pid" 2>/dev/null || true
   fi
   wait "$pid" 2>/dev/null || true
+  # The AVD lives only in this job's dedicated ANDROID_AVD_HOME.
+  if ! timeout 20 avdmanager delete avd -n "$PEERLOOM_AVD_NAME"; then
+    echo 'owned AVD destruction failed' >&2
+    status=1
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
 timeout 240 adb -s "$ANDROID_SERIAL" wait-for-device
@@ -63,5 +71,5 @@ test "$booted" = 1
 owned_avd || { echo 'refuse foreign emulator identity' >&2; exit 1; }
 test "$(adb_owned shell getconf PAGE_SIZE | tr -d '\r')" = "$page"
 adb_owned shell input keyevent 82
-adb_owned install -r "$root/dist/android/library-debug-androidTest.apk"
+adb_owned install -r -t "$root/dist/android/library-debug-androidTest.apk"
 "$root/bindings/android/scripts/run-instrumentation.sh"
