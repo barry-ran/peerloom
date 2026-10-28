@@ -83,7 +83,7 @@ final class KeychainTests: XCTestCase {
     }
     func testMainThreadAndOverflowFailClosed() async throws {
         let store = store!, scope = scope!, value = identity()
-        await MainActor.run {
+        try await MainActor.run {
             XCTAssertThrowsError(try store.perform(StorageRequest(operation: .load, scope: scope)))
         }
         do { _ = try await onWorker { try store.perform(StorageRequest(operation: .save, scope: scope, expectedRevision: UInt64.max, identity: value)) }; XCTFail("overflow accepted") }
