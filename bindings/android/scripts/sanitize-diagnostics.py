@@ -28,6 +28,15 @@ def sanitize(line):
         return f'process_killed pid={kill[1]} instrumentation_reason={"instrumentation" in line.lower()}'
     if 'Force stopping io.peerloom.sdk.test' in line:
         return f'package_force_stopped instrumentation_reason={"instrumentation" in line.lower()}'
+    stage = re.search(r'\bstore-process (bound caller_pid=\d+|CAS local=\d+ remote=\d+ remote_pid=\d+|remote-lock-held|local-lock-timeout-confirmed|remote-disconnected|instrumentation_targets=(?:<default>|\*|io\.peerloom\.sdk\.test(?::storeProbe)?))', line)
+    if stage:
+        return f'store-process {stage[1]}'
+    trust = re.search(r'TLS fixture trust policy=(application-policy|android-ca-store) outcome=(trusted|[A-Za-z]+Exception)', line)
+    if trust:
+        return f'TLS fixture trust policy={trust[1]} outcome={trust[2]}'
+    tls = re.search(r'TLS test server rejected: ([A-Za-z]+Exception); cause=(null|[A-Za-z]+Exception)', line)
+    if tls:
+        return f'TLS test server rejected: {tls[1]}; cause={tls[2]}'
     phase = re.search(r'\bstore-probe-kill pid=(\d+)\b', line)
     if phase:
         return f'store-probe-kill pid={phase[1]}'

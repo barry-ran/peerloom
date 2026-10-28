@@ -26,8 +26,9 @@ class TrustFixtureTest(unittest.TestCase):
             trust.fingerprint('/not/read.apk', {'GITHUB_ACTIONS': 'true', 'RUNNER_TEMP': '/tmp/ci'})
 
     def test_cleanup_orders_exact_ca_before_admin_even_tls_failure(self):
-        for cleanup_fails in (False, True):
-            with self.subTest(cleanup_fails=cleanup_fails), tempfile.TemporaryDirectory() as temp:
+        for failure in ('tls', 'cleanup', 'store'):
+            cleanup_fails = failure == 'cleanup'
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 scripts = root / 'bindings/android/scripts'
                 scripts.mkdir(parents=True)
@@ -47,16 +48,23 @@ if args[2:]==['emu','avd','name']: print('peerloom-ci-4096\\nOK')
 elif 'getprop' in args: print('1')
 elif 'instrument' in args:
  name=args[args.index('class')+1]
- failed=name.endswith('.TlsTest') or (name.endswith('TrustFixtureTest#remove') and os.environ['CLEANUP_FAIL']=='1')
+ failed=name.endswith('.TlsTest') or (name.endswith('TrustFixtureTest#remove') and os.environ['CLEANUP_FAIL']=='1') or (name.endswith('.StoreProcessTest') and os.environ['STORE_FAIL']=='1')
  print('FAILURES!!!' if failed else 'OK (1 test)')
 ''')
                 adb.chmod(0o755)
-                env = {**os.environ, 'PATH': str(root)+os.pathsep+os.environ['PATH'], 'COMMANDS': str(commands), 'CLEANUP_FAIL': str(int(cleanup_fails)), 'GITHUB_ACTIONS': 'true', 'RUNNER_TEMP': temp, 'ANDROID_SERIAL': 'emulator-5580', 'PEERLOOM_AVD_NAME': 'peerloom-ci-4096'}
+                env = {**os.environ, 'PATH': str(root)+os.pathsep+os.environ['PATH'], 'COMMANDS': str(commands), 'CLEANUP_FAIL': str(int(cleanup_fails)), 'STORE_FAIL': str(int(failure == 'store')), 'GITHUB_ACTIONS': 'true', 'RUNNER_TEMP': temp, 'ANDROID_SERIAL': 'emulator-5580', 'PEERLOOM_AVD_NAME': 'peerloom-ci-4096'}
                 result = subprocess.run(['bash', str(scripts / 'run-instrumentation.sh')], env=env, capture_output=True, timeout=20)
                 self.assertNotEqual(result.returncode, 0)
                 log = commands.read_text()
+                if failure == 'store':
+                    self.assertEqual(log.count('-e class io.peerloom.sdk.StoreProcessTest '), 1)
+                    self.assertNotIn('dpm set-device-owner', log)
+                    self.assertNotIn('-e class io.peerloom.sdk.TlsTest ', log)
+                    self.assertIn('logcat -b main -b system -b crash', log)
+                    continue
                 self.assertIn('dpm set-device-owner --user 0 io.peerloom.sdk.test/io.peerloom.sdk.TestCertificateAdmin', log)
                 self.assertIn('TrustFixtureTest#remove', log)
+                self.assertEqual(log.count('-e class io.peerloom.sdk.StoreProcessTest '), 5)
                 if cleanup_fails:
                     self.assertNotIn('remove-active-admin', log)
                 else:

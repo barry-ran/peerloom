@@ -20,7 +20,8 @@ diagnostics() {
 instrument_args=()
 run() {
   local name=$1
-  local log="$out/${name//\#/-}.txt"
+  local label=${2:-$name}
+  local log="$out/${label//\#/-}.txt"
   if ! timeout 180 adb -s "$serial" shell am instrument -w -r "${instrument_args[@]}" -e class "io.peerloom.sdk.$name" "$package/androidx.test.runner.AndroidJUnitRunner" | tee "$log"; then
     diagnostics "$log"
     return 1
@@ -35,7 +36,10 @@ adb_owned shell setprop debug.checkjni 1
 test "$(adb_owned shell getprop debug.checkjni | tr -d '\r')" = 1
 run LifecycleTest
 run StoreTest
-run StoreProcessTest
+# A fixed all-pass stability check, not retries: the first failure stops the job.
+for attempt in 1 2 3 4 5; do
+  run StoreProcessTest "StoreProcessTest-$attempt"
+done
 run 'PersistenceTest#writePhase'
 adb_owned shell am force-stop "$package"
 run 'PersistenceTest#readPhase'

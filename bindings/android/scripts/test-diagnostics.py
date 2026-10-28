@@ -25,6 +25,12 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(module.sanitize('Crash of app io.peerloom.sdk.test running instrumentation secret'), 'instrumented_process_crashed name=io.peerloom.sdk.test')
         self.assertEqual(module.sanitize('Crash of app io.peerloom.sdk.test:storeProbe running instrumentation secret'), 'instrumented_process_crashed name=io.peerloom.sdk.test:storeProbe')
 
+    def test_fixed_diagnostic_stages_exclude_payload(self):
+        self.assertEqual(module.sanitize('store-process CAS local=0 remote=11 remote_pid=123 secret'), 'store-process CAS local=0 remote=11 remote_pid=123')
+        self.assertEqual(module.sanitize('store-process instrumentation_targets=* secret'), 'store-process instrumentation_targets=*')
+        self.assertEqual(module.sanitize('TLS fixture trust policy=android-ca-store outcome=trusted secret'), 'TLS fixture trust policy=android-ca-store outcome=trusted')
+        self.assertEqual(module.sanitize('TLS test server rejected: SSLHandshakeException; cause=null secret'), 'TLS test server rejected: SSLHandshakeException; cause=null')
+
     def test_native_and_checkjni_categories(self):
         self.assertEqual(module.sanitize('Fatal signal 6 (SIGABRT), code -1, secret'), 'native fatal signal=6 category=SIGABRT')
         self.assertEqual(module.sanitize('JNI DETECTED ERROR IN APPLICATION: secret'), 'CheckJNI detected an error')

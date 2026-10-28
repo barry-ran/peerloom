@@ -41,6 +41,37 @@ private fun next(queue: ArrayBlockingQueue<Event>, kind: Int): Event {
 private fun await(operation: Operation): Completion =
     operation.completion.get(30, TimeUnit.SECONDS).also { assertEquals(0, it.status) }
 
+/** Test-only inspection: prove the exact real payload is queued before revocation. */
+private fun awaitQueuedMessage(sdk: PeerloomSdk, connection: Connection, payload: ByteArray) {
+    val lock =
+        checkNotNull(
+            PeerloomSdk::class
+                .java
+                .getDeclaredField("eventLock")
+                .apply { isAccessible = true }
+                .get(sdk)
+        )
+    val field = PeerloomSdk::class.java.getDeclaredField("events").apply { isAccessible = true }
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+    while (System.nanoTime() < deadline) {
+        val found =
+            synchronized(lock) {
+                val queue = field.get(sdk) as java.util.ArrayDeque<*>
+                queue.any {
+                    val event = it as Event
+                    event.kind == 6 &&
+                        event.connection?.handle == connection.handle &&
+                        event.payload.contentEquals(payload)
+                }
+            }
+        if (found) {
+            return
+        }
+        Thread.sleep(10)
+    }
+    fail("exact real message was not queued before revocation")
+}
+
 private class PausingExecutor : Executor, AutoCloseable {
     private val worker = Executors.newSingleThreadExecutor()
     @Volatile private var pause: CountDownLatch? = null
@@ -186,6 +217,7 @@ class ServiceTest {
                 targetExecutor.pause()
                 await(ca.send(message))
                 assertTrue(targetExecutor.blocked.await(10, TimeUnit.SECONDS))
+                awaitQueuedMessage(b, cb, message)
                 await(ca.close())
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
                 while (cb.isValid() && System.nanoTime() < deadline) Thread.sleep(10)

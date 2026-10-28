@@ -49,7 +49,10 @@ class TlsTest {
                     } catch (error: java.security.cert.CertificateException) {
                         error.javaClass.simpleName
                     }
-                println("TLS fixture trust policy=$label outcome=$outcome")
+                android.util.Log.i(
+                    "PeerloomTestDiag",
+                    "TLS fixture trust policy=$label outcome=$outcome",
+                )
             }
         }
         val managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
@@ -93,8 +96,9 @@ class TlsTest {
                     return true
                 } catch (error: java.io.IOException) {
                     // Test fixtures only: exception classes, never request headers or payloads.
-                    println(
-                        "TLS test server rejected: ${error.javaClass.simpleName}; cause=${error.cause?.javaClass?.simpleName}"
+                    android.util.Log.i(
+                        "PeerloomTestDiag",
+                        "TLS test server rejected: ${error.javaClass.simpleName}; cause=${error.cause?.javaClass?.simpleName}",
                     )
                     return false
                 }

@@ -93,8 +93,9 @@ class StoreProcessTest {
                 ComponentName(context, "androidx.test.runner.AndroidJUnitRunner"),
                 0,
             )
-        println(
-            "store-process instrumentation_targets=${instrumentation.targetProcesses ?: "<default>"}"
+        android.util.Log.i(
+            "PeerloomTestDiag",
+            "store-process instrumentation_targets=${instrumentation.targetProcesses ?: "<default>"}",
         )
         val connected = CountDownLatch(1)
         val disconnected = CountDownLatch(1)
@@ -127,7 +128,10 @@ class StoreProcessTest {
         )
         try {
             assertTrue(connected.await(10, TimeUnit.SECONDS))
-            println("store-process bound caller_pid=${android.os.Process.myPid()}")
+            android.util.Log.i(
+                "PeerloomTestDiag",
+                "store-process bound caller_pid=${android.os.Process.myPid()}",
+            )
             val app = UUID.randomUUID().toString()
             val store = IdentityStore(context)
             val keys = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -163,8 +167,9 @@ class StoreProcessTest {
                 "probe must be a distinct process",
                 other.third != android.os.Process.myPid(),
             )
-            println(
-                "store-process CAS local=$local remote=${other.second} remote_pid=${other.third}"
+            android.util.Log.i(
+                "PeerloomTestDiag",
+                "store-process CAS local=$local remote=${other.second} remote_pid=${other.third}",
             )
             assertEquals(setOf(0, 11), setOf(local, other.second))
             assertEquals(2L, store.execute(storageRequest(app, "load")).getLong("revision"))
@@ -182,12 +187,12 @@ class StoreProcessTest {
                 }
             )
             assertEquals(Triple(2, 0, other.third), responses.poll(10, TimeUnit.SECONDS))
-            println("store-process remote-lock-held")
+            android.util.Log.i("PeerloomTestDiag", "store-process remote-lock-held")
             try {
                 store.execute(storageRequest(app, "save", 2))
                 fail("another process holds the lock")
             } catch (_: IllegalStateException) {}
-            println("store-process local-lock-timeout-confirmed")
+            android.util.Log.i("PeerloomTestDiag", "store-process local-lock-timeout-confirmed")
             remote.send(
                 Message.obtain().apply {
                     what = 3
@@ -195,7 +200,7 @@ class StoreProcessTest {
                 }
             )
             assertTrue(disconnected.await(10, TimeUnit.SECONDS))
-            println("store-process remote-disconnected")
+            android.util.Log.i("PeerloomTestDiag", "store-process remote-disconnected")
             assertEquals(3L, store.execute(storageRequest(app, "save", 2)).getLong("revision"))
         } finally {
             context.unbindService(connection)
