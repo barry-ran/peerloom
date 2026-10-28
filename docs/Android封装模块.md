@@ -89,7 +89,7 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 5. 独立 Go/PostgreSQL/Redis 环境：真实 Android 注册、同租户跨应用授权确认、WebRTC 二进制收发、凭证旋转后进程重启仍用同设备身份。
 6. 应用 executor 暂停时确认真实消息已排队；远端关闭后读取 gate 已失效，再恢复 executor，消息不得交给应用。
 
-本地仅已完成 Rust host check、官方 JNI header 下 C++17 `-Werror` 静态编译，Kotlin 2.2.20 对官方 API36/AndroidX 类型的主库、示例与全部 instrumentation 编译，以及脚本/XML/YAML检查；实际 CI 已完成两个 ABI/JNI/AAR/APK 构建和 16KB 对齐检查；4KB emulator 已通过生命周期、Keystore、跨进程 CAS/强杀锁释放及重启持久化，16KB 已通过生命周期与基础存储。TLS 测试信任注入与 16KB 跨进程崩溃正在按真实失败证据修复，整体 Android 门禁**尚未执行通过**。失败时只保留受限异常类、栈位置、进程类别和测试阶段，不上传原始 logcat 或凭证。普通 emulator 不等于真机；移动网络切换、系统休眠、OEM Keystore 与长期后台生命周期仍需专项验收。
+本地仅已完成 Rust host check、官方 JNI header 下 C++17 `-Werror` 静态编译，Kotlin 2.2.20 对官方 API36/AndroidX 类型的主库、示例与全部 instrumentation 编译，以及脚本/XML/YAML检查；实际 Android 构建、4KB 与 16KB emulator 门禁均已通过，覆盖上述生命周期、Keystore/跨进程 CAS、TLS 正负、测试 CA 与管理员清理、真实 Go 控制面双端通信及旋转后进程重启；参见[对应精确提交的完整 CI 证据](https://github.com/barry-ran/peerloom/actions/runs/40675227338)。这只证明该提交，不能自动覆盖后续组合提交。此前跨进程测试曾出现一次未定根因的 instrumentation 崩溃，后续两种页大小均未再复现，不能称根因已修复；固定五轮全通过的稳定性门禁与宿主队列精确 payload/connection 断言已准备，仍待其发布提交的实际验证。失败诊断只保留受限异常类别、栈位置、进程类别与测试阶段，不上传原始 logcat 或凭证。普通 emulator 不等于真机；移动网络切换、系统休眠、OEM Keystore 与长期后台生命周期仍需专项验收。
 
 产物必须随带项目 MIT、Rust Android target 与 Maven runtime/test 分开的依赖/许可证证据。现有 Linux SBOM 不能冒充 AAR 完整清单；Maven 证据仍需配套发布流程补齐，不能仅凭 native tests 绿就宣布许可证审计完成。
 
