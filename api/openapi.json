@@ -3,7 +3,7 @@
   "info": {
     "title": "Peerloom 服务接口",
     "version": "0.1.0-dev",
-    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap、tenant service-key管理API及托管TURN节点/会话凭证接口；不包含交互登录、direct注册或webhook管理。SDK自动ICE凭证拉取与restart尚未接入。生产入口必须TLS。"
+    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap、tenant service-key管理API及托管TURN节点/会话凭证接口；含内建浏览器管理员登录；不包含OIDC、direct注册或webhook管理。SDK自动ICE凭证拉取与restart尚未接入。生产入口必须TLS。"
   },
   "paths": {
     "/healthz": {
@@ -2244,6 +2244,1981 @@
           }
         }
       }
+    },
+    "/admin/api/auth/login": {
+      "post": {
+        "summary": "明确初始化的管理员登录，无公开注册",
+        "security": [],
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "tenant_id",
+                  "username",
+                  "password"
+                ],
+                "properties": {
+                  "tenant_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "username": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "password": {
+                    "type": "string",
+                    "writeOnly": true,
+                    "maxLength": 1024
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "当前浏览器会话视图，不含会话token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSessionView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一登录失败"
+          },
+          "403": {
+            "description": "Host/Origin拒绝"
+          },
+          "429": {
+            "description": "持久登录限流或计算并发限额"
+          }
+        }
+      }
+    },
+    "/admin/api/auth/session": {
+      "get": {
+        "summary": "读取当前会话，不延长到期",
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "当前浏览器会话视图，不含会话token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSessionView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "失效会话"
+          }
+        }
+      }
+    },
+    "/admin/api/auth/logout": {
+      "post": {
+        "summary": "事务撤销当前会话并清除cookie",
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已退出"
+          },
+          "401": {
+            "description": "失效会话"
+          },
+          "403": {
+            "description": "Origin/CSRF拒绝"
+          }
+        }
+      }
+    },
+    "/admin/api/v1/applications": {
+      "post": {
+        "summary": "创建grant-only应用",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementApplication"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementApplicationCreate"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "分页列出当前租户应用",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementApplicationPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/applications/{id}": {
+      "get": {
+        "summary": "读取当前租户应用",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementApplication"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "summary": "部分更新应用；禁用时关闭会话",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementApplicationChange"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementApplicationPatch"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/api/v1/registration-grants": {
+      "post": {
+        "summary": "签发短期一次性注册grant",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRegistrationGrant"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementRegistrationGrantCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/api/v1/devices": {
+      "get": {
+        "summary": "按应用、在线与标签过滤设备",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementDevicePage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          },
+          {
+            "name": "application_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "online",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "仅true/false，Redis不可用返回503，不伪造离线。最多扫描10*limit候选，可空页带next_cursor。"
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementProperties"
+                }
+              }
+            },
+            "description": "URL编码JSON对象，原始query值最多8192字节；按jsonb包含匹配。"
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/devices/{id}": {
+      "get": {
+        "summary": "读取设备及可用的实时在线状态",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementDevice"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "summary": "部分更新公共设备属性；不改身份或状态",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementDevice"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementDevicePatch"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/api/v1/devices/{id}/revoke": {
+      "post": {
+        "summary": "不可逆撤销设备与全部凭证并关闭会话",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRevocation"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/connection-grants": {
+      "post": {
+        "summary": "创建同租户定向连接授权",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementConnectionGrant"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementConnectionGrantCreate"
+              },
+              "example": {
+                "source_device_id": "9ab274c6-10ca-4eae-bddb-1c4ac23a1351",
+                "target_device_id": "9ab274c6-10ca-4eae-bddb-1c4ac23a1352",
+                "expires_at": "2027-01-01T00:00:00Z",
+                "expiry_action": "terminate",
+                "max_sessions": 1
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "分页读取连接授权",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementConnectionGrantPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/connection-grants/{id}": {
+      "get": {
+        "summary": "读取连接授权",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementConnectionGrant"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "summary": "撤销连接授权并关闭相关会话；保留记录",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRevocation"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/sessions": {
+      "get": {
+        "summary": "分页读取持久化会话状态",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementSessionPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/sessions/{id}": {
+      "get": {
+        "summary": "读取会话，不隐式续租或授权SDP",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/sessions/{id}/terminate": {
+      "post": {
+        "summary": "终止会话",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementClosedSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/audit-events": {
+      "get": {
+        "summary": "分页读取当前租户审计",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementAuditEventPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/relay-nodes": {
+      "get": {
+        "summary": "分页读取本租户中继节点（不含运维共享节点）",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNodePage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
+      },
+      "post": {
+        "summary": "创建运维注册表已批准的租户中继节点",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementRelayNodeCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/api/v1/relay-nodes/{id}": {
+      "get": {
+        "summary": "读取本租户中继节点",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "summary": "部分更新中继节点并递增revision",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementRelayNodePatch"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "软禁用中继节点；不撤回已经签发的TURN凭证",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -3645,6 +5620,44 @@
             }
           }
         }
+      },
+      "AdminSessionView": {
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "user_id",
+          "username",
+          "scope",
+          "csrf_token",
+          "expires_at"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "username": {
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "read",
+              "admin"
+            ]
+          },
+          "csrf_token": {
+            "type": "string",
+            "description": "仅内存，不记录日志或持久化"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -3658,6 +5671,12 @@
         "scheme": "bearer",
         "bearerFormat": "svc_ opaque token",
         "description": "仅可信租户后端使用，独立于设备credential；read只读，admin可写。不得嵌入浏览器、URL或日志。"
+      },
+      "AdminSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-peerloom_admin",
+        "description": "仅HTTPS生产HttpOnly/SameSite=Strict cookie；浏览器不能读取，不接受Bearer替代。变更另需精确Origin和会话CSRF。"
       }
     },
     "responses": {

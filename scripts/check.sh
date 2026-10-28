@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+python3 scripts/test-admin-deployment.py
 python3 scripts/test-dev-secrets.py
 python3 scripts/test-compose-script.py
 python3 scripts/test-turn-script.py

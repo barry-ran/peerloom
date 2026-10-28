@@ -1,0 +1,79 @@
+name: 管理控制台真实浏览器验收
+on:
+  pull_request:
+  push:
+    branches: [master, 'feat/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: admin-web-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  admin-browser-required:
+    name: PostgreSQL + Chromium 管理安全门禁
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        # Same authenticated, pinned PG image as infra/compose.yaml; disposable CI data only.
+        image: postgres:18.6-alpine3.24@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+        env:
+          POSTGRES_USER: peerloom_ci
+          POSTGRES_DB: peerloom_admin_ci
+          POSTGRES_PASSWORD: synthetic-ci-only-not-production
+          POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U peerloom_ci -d peerloom_admin_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          # Playwright 1.64.1 engines >=20; TS 7.0.2 >=16.20.0; verified Node LTS security release.
+          node-version: 24.22.1
+          cache: npm
+          cache-dependency-path: src/admin-web/package-lock.json
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: src/device-server/go.mod
+          cache-dependency-path: src/device-server/go.sum
+      - name: 设置本作业浏览器缓存目录
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/peerloom-playwright" >> "$GITHUB_ENV"
+      - name: 安装锁定前端依赖与官方 Chromium
+        working-directory: src/admin-web
+        run: |
+          node --version
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps chromium
+      - name: 检查前端与测试类型并验证嵌入产物没有漂移
+        run: |
+          cd src/admin-web
+          npx --no-install tsc --project tsconfig.tests.json
+          npm run build
+          cd ../..
+          git ls-files --error-unmatch src/device-server/internal/adminweb/assets/index.html src/device-server/internal/adminweb/assets/app.js src/device-server/internal/adminweb/assets/style.css >/dev/null
+          git diff --exit-code -- src/device-server/internal/adminweb/assets
+      - name: 真实 PostgreSQL 与 Chromium 登录、CSRF、只读、幂等重试验收
+        working-directory: src/device-server
+        env:
+          # Synthetic disposable service credentials; never a repository/production secret.
+          TEST_DATABASE_URL: postgresql://peerloom_ci:synthetic-ci-only-not-production@127.0.0.1:5432/peerloom_admin_ci?sslmode=disable
+          PEERLOOM_ADMIN_BROWSER_TEST: '1'
+        run: |
+          go test -race ./internal/adminweb
+          go test -tags integration -race ./internal/adminauth -count=1 -timeout=5m -v
+      - name: 保存真实浏览器截图与失败 trace
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-admin-browser-${{ github.sha }}
+          path: |
+            src/admin-web/test-results/
+            src/admin-web/playwright-report/
+          if-no-files-found: warn
+          retention-days: 7

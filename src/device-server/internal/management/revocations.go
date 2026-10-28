@@ -31,7 +31,7 @@ func bridgeError(err error) error {
 // finishMutation persists the typed response and safe audit in the caller's
 // transaction. It does not commit or dispatch events.
 func (s *Service) finishMutation(ctx context.Context, tx pgx.Tx, p Principal, operation, resource, id string, keyHash, requestHash []byte, result any) error {
-	if err := recordAudit(ctx, tx, p.tenantID, "service_credential", p.credentialID, operation, resource, id, map[string]any{}); err != nil {
+	if err := recordAudit(ctx, tx, p.tenantID, p.actorType(), p.credentialID, operation, resource, id, map[string]any{}); err != nil {
 		return err
 	}
 	return s.saveReplay(ctx, tx, p, operation, id, 200, keyHash, requestHash, result, nil)

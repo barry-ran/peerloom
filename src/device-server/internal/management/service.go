@@ -24,6 +24,7 @@ type Service struct {
 	aead        cipher.AEAD
 	settings    Settings
 	presence    Presence
+	browser     BrowserAuthority
 	relayIssuer *relay.Issuer
 }
 
@@ -101,23 +102,36 @@ func (s *Service) begin(ctx context.Context, p Principal, admin bool) (pgx.Tx, e
 		return nil, fail("DATABASE_UNAVAILABLE", 503)
 	}
 	// Serialize tenant mutations before acquiring any business row lock.
-	if admin {
+	if admin || p.browser != nil {
 		if err = authorization.LockTenant(ctx, tx, p.tenantID); err != nil {
 			rollback(tx)
 			return nil, fail("DATABASE_UNAVAILABLE", 503)
 		}
 	}
 	var scope Scope
-	err = tx.QueryRow(ctx, `SELECT c.scope FROM tenant_service_credentials c JOIN tenants t ON t.id=c.tenant_id
+	if p.browser != nil {
+		if s.browser == nil {
+			rollback(tx)
+			return nil, fail("ADMIN_AUTH_INVALID", 401)
+		}
+		scope, err = s.browser.RevalidateBrowser(ctx, tx, *p.browser)
+	} else {
+		err = tx.QueryRow(ctx, `SELECT c.scope FROM tenant_service_credentials c JOIN tenants t ON t.id=c.tenant_id
 WHERE c.id=$1 AND c.tenant_id=$2 AND c.revoked_at IS NULL AND c.expires_at>clock_timestamp()
 AND t.status='active' FOR SHARE OF c,t`, p.credentialID, p.tenantID).Scan(&scope)
+	}
 	if err != nil {
 		rollback(tx)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fail("SERVICE_AUTH_INVALID", 401)
 		}
+		var public *Error
+		if errors.As(err, &public) {
+			return nil, err
+		}
 		return nil, fail("DATABASE_UNAVAILABLE", 503)
 	}
+
 	if admin && scope != ScopeAdmin {
 		rollback(tx)
 		return nil, fail("SCOPE_REQUIRED", 403)

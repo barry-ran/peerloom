@@ -1,0 +1,322 @@
+{
+  "schema": 1,
+  "scope": "Frontend build/test toolchain only; production UI has no bundled npm runtime dependencies. Not legal clearance.",
+  "lock_sha256": "7e81d279299ac7e536cd8c72234f2a5ae17bc72eac6ebba369de5577ab45cd13",
+  "packages": [
+    {
+      "name": "@playwright/test",
+      "version": "1.64.1",
+      "integrity": "sha512-IaYGml/nSOiZWROfPtuIL7neuu9qDOZ3TNvNljUIrhDMxiGTgPjzj/g9p9RxpS2tSepPDRY+UwAaEeiKtUvIAg==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": false,
+      "evidence": [
+        {
+          "path": "@playwright__test/1.64.1/LICENSE",
+          "sha256": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb"
+        },
+        {
+          "path": "@playwright__test/1.64.1/NOTICE",
+          "sha256": "6d602191187b35b9b01d2cffa01c8469c2c8d9de8a96f1bf868e0f264f51c81d"
+        }
+      ],
+      "evidence_status": "collected"
+    },
+    {
+      "name": "@types/node",
+      "version": "26.6.5",
+      "integrity": "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==",
+      "declared_license": "MIT",
+      "scope": "build-or-test-only",
+      "optional": false,
+      "evidence": [
+        {
+          "path": "@types__node/26.6.5/LICENSE",
+          "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+        }
+      ],
+      "evidence_status": "collected"
+    },
+    {
+      "name": "@typescript/typescript-aix-ppc64",
+      "version": "7.0.2",
+      "integrity": "sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-darwin-arm64",
+      "version": "7.0.2",
+      "integrity": "sha512-gowzar9MwS/aRWp6f3a4KUqzRjAZjOsmGNCM6LcTgXum+dBfgsBVMN+AgvOCCbguXyick6LJhpBszxMebJ8syA==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-darwin-x64",
+      "version": "7.0.2",
+      "integrity": "sha512-SZ9xZInqApNlNGc9s0W1VSsktYSOe9cFqNOIqmN1Gs8SmkjKZYFt017G4VwPxASInODuAdbTW7sXiFUf893RgA==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-freebsd-arm64",
+      "version": "7.0.2",
+      "integrity": "sha512-W5NH4y/J0plIIS5b2xvTEkU7JFxyqdMAOgf+Ilhl0vHQXKO5dZoxd+C/jEtq56c4F3wk71RB4BMRQ2XdI+bwYQ==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-freebsd-x64",
+      "version": "7.0.2",
+      "integrity": "sha512-UMGDx5sTpzNw3WiPebH7l90IWfJggEd+egHt/q6p7/Cm3zqoV7VxkGXt+3DxPIw8CcmvAB0j3sVVfbhX+M4Tpw==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-linux-arm",
+      "version": "7.0.2",
+      "integrity": "sha512-gffT3xPz9sR7j/YJExkyPntrI0P2EP9XbOyWzth2/Gs0RstK+90RBcO0ncXoXy/beYll1SXw846Nf2zdnEz0QQ==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-linux-arm64",
+      "version": "7.0.2",
+      "integrity": "sha512-Qh4eU4/y3yDjnfjjyPYihMj5/ODIlmt+Bzu17OI+fiSRDW57QmU5SiN63exPRNJPKUzcc1INa1NXdrJ+MqHjUQ==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-linux-loong64",
+      "version": "7.0.2",
+      "integrity": "sha512-uEHck9i8hoAzXPiYRib1O7miOnz23SxIeVl6F4LXox+qov1K35jHcEW6VHKvZI+pyvl7fZEP4MCU5LYvIq1GuQ==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-linux-mips64el",
+      "version": "7.0.2",
+      "integrity": "sha512-R4KvAMnE43W5Qeqb0Ly56O3mWMWIAgsMyz36DCaycd5nbg/9kzm0liw3JocfRqyJY0KPmzFjbswozXyW0DnIYA==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-linux-ppc64",
+      "version": "7.0.2",
+      "integrity": "sha512-DORx5b3sd/4S7eayxm4FQv+A7CrkUIGRaHiwI8oiHTAI1fAPWhF4J0vAlkC8biAlHSVVwxMQ3tjZ2/DVbnQiiA==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-linux-riscv64",
+      "version": "7.0.2",
+      "integrity": "sha512-wf0jqEDOjrPRnKwYRyyJDRo11KMbvMFrU+q4zqKyChODBzvlkbhNQfKvLxQCcwTpdDaXSHZTVuh0JoCrKCUMHQ==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-linux-s390x",
+      "version": "7.0.2",
+      "integrity": "sha512-IkwJc3L7yhytWd/ewjyxNDfOmswCm9GWMJT/ue/dU4aZNbwZeYAetq42VyLmsmSjvoX7z74X6ZaYCtzAr0EuGw==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-linux-x64",
+      "version": "7.0.2",
+      "integrity": "sha512-EYdf2cNg7rgCWJnxCdJ+F3V39O8ihb37eHAu1LK8oAFizgTQbPOK7zHHXbPt8rX24COqODXeI3sIf0fCXG7H/A==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [
+        {
+          "path": "@typescript__typescript-linux-x64/7.0.2/LICENSE",
+          "sha256": "a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47"
+        },
+        {
+          "path": "@typescript__typescript-linux-x64/7.0.2/NOTICE.txt",
+          "sha256": "f5c708b59114507b8b27b48181b6883d106bbca0c1634bbee45b5e344237b66b"
+        }
+      ],
+      "evidence_status": "collected"
+    },
+    {
+      "name": "@typescript/typescript-netbsd-arm64",
+      "version": "7.0.2",
+      "integrity": "sha512-+polYF4MF04aPpO5FTkHran9yUQDSXqy5GiSDKpsll5jy3l3+g9QLhpf39T+ePtefhXLOGrLl0QIjkQP6VnelA==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-netbsd-x64",
+      "version": "7.0.2",
+      "integrity": "sha512-8YIT0EHM/3dq10ZOVF/A7pc/YSMtbcecct4rWtexrnSCHOPcpC2KTLXfTCR6vDpnSiY12heNb1GiN/wu+T/FyA==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-openbsd-arm64",
+      "version": "7.0.2",
+      "integrity": "sha512-APT8+ClYnuYm1u9+kgGXoMj2VzWzcymwh2gNSQVySHfkRDGOTVkoWLjCmOQSaO+PoqQ57B0flRp9SA+7GnnkzQ==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-openbsd-x64",
+      "version": "7.0.2",
+      "integrity": "sha512-yX7s+Q0Dln0Dt9tEzZsAjXXR/+ytBM7AlglaqyeMPxQszJ1JhlJdZ6jLA+IzldHtflX81em7lDao1xXu+aRRkg==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-sunos-x64",
+      "version": "7.0.2",
+      "integrity": "sha512-dLJDGaLZ1D4HPQn62u1n8mBDkJREwMsAkCdkwd4Ieqw+x3TUyTsqY0YiBCtE6H6OzzgGk3iuZ3vFWRS+E8/d1g==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-win32-arm64",
+      "version": "7.0.2",
+      "integrity": "sha512-Gyl1Vy6OsWesLzmq+EP0Fb7b4Nid5232AvcA2SFcdYreldpNtYFFofPjnt62y9hQy7VTaZp65ICJjuAQRaVcIQ==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "@typescript/typescript-win32-x64",
+      "version": "7.0.2",
+      "integrity": "sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": true,
+      "evidence": [],
+      "evidence_status": "optional-platform-not-installed"
+    },
+    {
+      "name": "playwright",
+      "version": "1.64.1",
+      "integrity": "sha512-HCrVhHr5QQuwYoswEUGTb7gGp522yflbv/ST8nF4sFWGuLjQCt17Q/EubpGGSNKYn1tsTCPZxqHhHCfVURu7UA==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": false,
+      "evidence": [
+        {
+          "path": "playwright/1.64.1/LICENSE",
+          "sha256": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb"
+        },
+        {
+          "path": "playwright/1.64.1/NOTICE",
+          "sha256": "6d602191187b35b9b01d2cffa01c8469c2c8d9de8a96f1bf868e0f264f51c81d"
+        }
+      ],
+      "evidence_status": "collected"
+    },
+    {
+      "name": "playwright-core",
+      "version": "1.64.1",
+      "integrity": "sha512-BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": false,
+      "evidence": [
+        {
+          "path": "playwright-core/1.64.1/LICENSE",
+          "sha256": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb"
+        },
+        {
+          "path": "playwright-core/1.64.1/NOTICE",
+          "sha256": "6d602191187b35b9b01d2cffa01c8469c2c8d9de8a96f1bf868e0f264f51c81d"
+        }
+      ],
+      "evidence_status": "collected"
+    },
+    {
+      "name": "typescript",
+      "version": "7.0.2",
+      "integrity": "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==",
+      "declared_license": "Apache-2.0",
+      "scope": "build-or-test-only",
+      "optional": false,
+      "evidence": [
+        {
+          "path": "typescript/7.0.2/LICENSE",
+          "sha256": "a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47"
+        },
+        {
+          "path": "typescript/7.0.2/NOTICE.txt",
+          "sha256": "f5c708b59114507b8b27b48181b6883d106bbca0c1634bbee45b5e344237b66b"
+        }
+      ],
+      "evidence_status": "collected"
+    },
+    {
+      "name": "undici-types",
+      "version": "8.9.0",
+      "integrity": "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==",
+      "declared_license": "MIT",
+      "scope": "build-or-test-only",
+      "optional": false,
+      "evidence": [
+        {
+          "path": "undici-types/8.9.0/LICENSE",
+          "sha256": "a6db8096b2707bc0102d256917d4d33f298ba36d8c3f25de067a2b5bb379db27"
+        }
+      ],
+      "evidence_status": "collected"
+    }
+  ]
+}

@@ -56,6 +56,9 @@ services:
     environment:
       DATABASE_URL_FILE: /run/secrets/database_url
       LISTEN_ADDRESS: :8080
+      # Empty by default: no browser login/API route is enabled.
+      ADMIN_ORIGIN: "${ADMIN_ORIGIN:-}"
+      ADMIN_DEVELOPMENT_LOOPBACK: "${ADMIN_DEVELOPMENT_LOOPBACK:-}"
       REPLAY_KEY_FILE: /run/secrets/replay_key
       REDIS_ADDRESS: redis:6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password

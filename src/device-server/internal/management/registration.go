@@ -57,7 +57,7 @@ VALUES($1,$2,$3,clock_timestamp()+$4::bigint*interval '1 second') RETURNING id::
 		return RegistrationGrant{}, fail("DATABASE_UNAVAILABLE", 503)
 	}
 	result.Grant = secret
-	if err = recordAudit(ctx, tx, p.tenantID, "service_credential", p.credentialID, "registration_grant.issue", "registration_grant", result.ID, map[string]any{"application_id": input.ApplicationID, "expires_at": result.ExpiresAt}); err != nil {
+	if err = recordAudit(ctx, tx, p.tenantID, p.actorType(), p.credentialID, "registration_grant.issue", "registration_grant", result.ID, map[string]any{"application_id": input.ApplicationID, "expires_at": result.ExpiresAt}); err != nil {
 		return RegistrationGrant{}, err
 	}
 	if err = s.saveReplay(ctx, tx, p, "registration_grant.issue", result.ID, 201, keyHash, requestHash, result, &result.ExpiresAt); err != nil {

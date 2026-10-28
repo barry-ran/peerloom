@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"github.com/barry-ran/peerloom/src/device-server/internal/presence"
-	"github.com/barry-ran/peerloom/src/device-server/internal/relay"
 	"github.com/barry-ran/peerloom/src/device-server/internal/signaling"
 	"github.com/redis/go-redis/v9"
 	"log/slog"
@@ -15,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/barry-ran/peerloom/src/device-server/internal/adminauth"
+	"github.com/barry-ran/peerloom/src/device-server/internal/adminweb"
 	"github.com/barry-ran/peerloom/src/device-server/internal/authorization"
 	"github.com/barry-ran/peerloom/src/device-server/internal/config"
 	"github.com/barry-ran/peerloom/src/device-server/internal/database"
@@ -23,6 +24,7 @@ import (
 	"github.com/barry-ran/peerloom/src/device-server/internal/identity"
 	"github.com/barry-ran/peerloom/src/device-server/internal/management"
 	"github.com/barry-ran/peerloom/src/device-server/internal/migrate"
+	"github.com/barry-ran/peerloom/src/device-server/internal/relay"
 )
 
 func main() {
@@ -131,6 +133,30 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return errors.New("cannot initialize management service")
 	}
+	// Browser administration is explicitly enabled only for a canonical operator
+	// origin. It never creates an account and never accepts service credentials.
+	var browserAuth *adminauth.Service
+	var browserHandler *adminauth.Handler
+	if origin := os.Getenv("ADMIN_ORIGIN"); origin != "" {
+		browserAuth, err = adminauth.New(pool)
+		if err != nil {
+			return errors.New("cannot initialize browser authentication")
+		}
+		administration, err = administration.WithBrowserAuthority(browserAuth)
+		if err != nil {
+			return errors.New("cannot bind browser authority")
+		}
+		development := os.Getenv("ADMIN_DEVELOPMENT_LOOPBACK")
+		if development != "" && development != "true" {
+			return errors.New("ADMIN_DEVELOPMENT_LOOPBACK must be empty or true")
+		}
+		browserHandler, err = adminauth.NewHandler(browserAuth, management.NewHandler(administration, signalingServer.NotifySession), adminauth.HTTPConfig{Origin: origin, DevelopmentLoopback: development == "true"})
+		if err != nil {
+			return err
+		}
+	} else if os.Getenv("ADMIN_DEVELOPMENT_LOOPBACK") != "" {
+		return errors.New("ADMIN_ORIGIN required with development mode")
+	}
 	managementCtx, managementCancel := context.WithCancel(ctx)
 	managementDone := make(chan struct{})
 	go func() {
@@ -147,6 +173,9 @@ func run(logger *slog.Logger) error {
 				if err == nil {
 					err = relayService.PurgeExpired(operationCtx)
 				}
+				if err == nil && browserAuth != nil {
+					err = browserAuth.PurgeExpired(operationCtx)
+				}
 				cancel()
 				if err != nil && managementCtx.Err() == nil {
 					logger.Warn("expired management replay cleanup unavailable")
@@ -160,6 +189,11 @@ func run(logger *slog.Logger) error {
 	for _, resource := range []string{"applications", "registration-grants", "devices", "connection-grants", "sessions", "audit-events", "relay-nodes"} {
 		api.Handle("/v1/"+resource, managementHandler)
 		api.Handle("/v1/"+resource+"/", managementHandler)
+	}
+	if browserHandler != nil {
+		api.Handle("/admin/api/", browserHandler)
+		api.Handle("/admin", adminweb.Handler())
+		api.Handle("/admin/", adminweb.Handler())
 	}
 	api.Handle("/v1/device-sessions/", relay.NewHandler(relayService, store))
 	api.Handle("/v1/device-signal", signalingServer)

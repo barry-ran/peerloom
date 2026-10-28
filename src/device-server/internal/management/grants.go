@@ -121,7 +121,7 @@ VALUES($1,$2,$3,$4,$5,$6) RETURNING `+grantColumns, p.tenantID, input.SourceDevi
 	if err != nil {
 		return ConnectionGrant{}, fail("DATABASE_UNAVAILABLE", 503)
 	}
-	if err = recordAudit(ctx, tx, p.tenantID, "service_credential", p.credentialID, "connection_grant.create", "connection_grant", result.ID, map[string]any{"source_device_id": input.SourceDeviceID, "target_device_id": input.TargetDeviceID}); err != nil {
+	if err = recordAudit(ctx, tx, p.tenantID, p.actorType(), p.credentialID, "connection_grant.create", "connection_grant", result.ID, map[string]any{"source_device_id": input.SourceDeviceID, "target_device_id": input.TargetDeviceID}); err != nil {
 		return ConnectionGrant{}, err
 	}
 	if err = s.saveReplay(ctx, tx, p, "connection_grant.create", result.ID, 201, kh, rh, result, nil); err != nil {

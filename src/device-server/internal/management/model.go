@@ -20,6 +20,7 @@ const (
 type Principal struct {
 	tenantID, credentialID string
 	scope                  Scope
+	browser                *BrowserIdentity
 }
 
 func (p Principal) TenantID() string     { return p.tenantID }

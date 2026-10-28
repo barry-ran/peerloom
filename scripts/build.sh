@@ -10,7 +10,7 @@ mkdir -p "$root/dist"
     suffix=""
     if [ "$os" = windows ]; then suffix=.exe; fi
     mkdir -p "$root/dist/$os-$arch"
-    for binary in device-server device-migrate device-bootstrap device-admin; do
+    for binary in device-server device-migrate device-bootstrap device-admin device-admin-user; do
       CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -o "$root/dist/$os-$arch/$binary$suffix" "./cmd/$binary"
     done
   done
@@ -45,3 +45,8 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 cp "$root/LICENSE" "$root/dist/LICENSE"
 python3 "$root/scripts/package-third-party.py"
+# Browser console build-tool evidence is separate from Rust/Go third-party inventory.
+# The report retains incomplete optional-platform evidence; this is not legal clearance.
+mkdir -p "$root/dist/third-party/admin-web-build"
+cp -R "$root/third_party/admin-web-build/." "$root/dist/third-party/admin-web-build/"
+cp "$root/src/admin-web/package-lock.json" "$root/dist/third-party/admin-web-build/package-lock.json"

@@ -1,0 +1,2 @@
+import { defineConfig } from '@playwright/test';
+export default defineConfig({testDir:'tests', workers:1, retries:0, timeout:30_000, use:{baseURL:process.env.PEERLOOM_ADMIN_TEST_URL, browserName:'chromium', headless:true, launchOptions: process.env.PEERLOOM_CHROMIUM_EXECUTABLE ? {executablePath:process.env.PEERLOOM_CHROMIUM_EXECUTABLE} : {}, screenshot:'only-on-failure', trace:'retain-on-failure'}, reporter:'list'});

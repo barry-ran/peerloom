@@ -30,6 +30,25 @@ func NewHandler(service *Service, notify ...func(authorization.Session)) *Handle
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.serve(w, r, func(ctx context.Context) (Principal, error) {
+		values := r.Header.Values("Authorization")
+		if len(values) != 1 {
+			return Principal{}, fail("SERVICE_AUTH_INVALID", 401)
+		}
+		parts := strings.Fields(values[0])
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			return Principal{}, fail("SERVICE_AUTH_INVALID", 401)
+		}
+		return h.service.Authenticate(ctx, parts[1])
+	})
+}
+
+// ServeBrowserHTTP is called only behind the admin session/Origin/CSRF boundary.
+// It does not accept service credentials or infer browser authority from a body.
+func (h *Handler) ServeBrowserHTTP(w http.ResponseWriter, r *http.Request, token string) {
+	h.serve(w, r, func(ctx context.Context) (Principal, error) { return h.service.authenticateBrowser(ctx, token) })
+}
+func (h *Handler) serve(w http.ResponseWriter, r *http.Request, authenticate func(context.Context) (Principal, error)) {
 	requestID := make([]byte, 16)
 	if _, err := rand.Read(requestID); err != nil {
 		http.Error(w, "request unavailable", 500)
@@ -48,21 +67,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	values := r.Header.Values("Authorization")
-	if len(values) != 1 {
-		writeError(w, id, fail("SERVICE_AUTH_INVALID", 401))
-		return
-	}
-	parts := strings.Fields(values[0])
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		writeError(w, id, fail("SERVICE_AUTH_INVALID", 401))
-		return
-	}
-	p, err := h.service.Authenticate(ctx, parts[1])
+	p, err := authenticate(ctx)
 	if err != nil {
 		writeError(w, id, err)
 		return
 	}
+
 	if h.serveRelays(ctx, w, r, id, p) || h.serveResources(ctx, w, r, id, p) {
 		return
 	}

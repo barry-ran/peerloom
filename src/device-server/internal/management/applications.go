@@ -66,7 +66,7 @@ VALUES($1,$2,$3,$4,$5) RETURNING `+applicationColumns, p.tenantID, input.Name, i
 	if err != nil {
 		return Application{}, fail("DATABASE_UNAVAILABLE", 503)
 	}
-	if err = recordAudit(ctx, tx, p.tenantID, "service_credential", p.credentialID, "application.create", "application", result.ID, map[string]any{}); err != nil {
+	if err = recordAudit(ctx, tx, p.tenantID, p.actorType(), p.credentialID, "application.create", "application", result.ID, map[string]any{}); err != nil {
 		return Application{}, err
 	}
 	if err = s.saveReplay(ctx, tx, p, "application.create", result.ID, 201, keyHash, requestHash, result, nil); err != nil {
