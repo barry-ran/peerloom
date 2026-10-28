@@ -26,8 +26,15 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/peerloom-python"
           "$RUNNER_TEMP/peerloom-python/bin/pip" install -r scripts/requirements-contracts.txt
           echo "$RUNNER_TEMP/peerloom-python/bin" >> "$GITHUB_PATH"
+      - name: 安装隔离 Secret Service 测试依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dbus-x11 gnome-keyring
       - name: 单元测试与静态检查
         run: ./scripts/check.sh
+      - name: Linux Secret Service 真实持久化与失效关闭
+        timeout-minutes: 5
+        run: ./scripts/test-secret-service.sh
       - name: 生成隔离开发秘密并验证 Compose
         run: |
           python3 scripts/generate-dev-secrets.py

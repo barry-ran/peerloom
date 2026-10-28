@@ -1,5 +1,11 @@
-//! 身份存储接口。唯一内置适配器为显式内存存储，不提供明文文件或系统安全存储后备。
+//! 身份存储接口；显式内存适配器及 Linux Secret Service 安全存储。
+//! 系统服务不可用时不回退明文文件或内存；其他平台适配器尚未实现。
 //! 自定义适配器应使用系统安全设施，并保证 CAS 更新、取消期间的原子性和不记录秘密。
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::LinuxSecretServiceStore;
+
 use async_trait::async_trait;
 use std::collections::HashMap;
 use tokio::sync::Mutex;

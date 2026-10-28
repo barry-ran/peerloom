@@ -11,8 +11,16 @@ workspace = true
 
 [dependencies]
 async-trait = "=0.1.89"
-tokio = { version = "=1.52.3", features = ["sync"] }
+tokio = { version = "=1.52.3", features = ["sync", "rt", "time"] }
 zeroize = "=1.9.1"
 
 [dev-dependencies]
 tokio = { version = "=1.52.3", features = ["macros", "rt"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "=5.2.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
+zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
+nix = { version = "=0.31.3", default-features = false, features = ["user", "fs"] }
+sha2 = "=0.11.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
