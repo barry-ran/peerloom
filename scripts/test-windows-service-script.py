@@ -147,6 +147,49 @@ class ProcessTest(unittest.TestCase):
                 service.run(['cargo', 'test'], timeout=1)
 
 
+class ImportProbeTest(unittest.TestCase):
+    def test_preparation_only_never_imports_or_builds_services(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            args = ['windows-service.py', '--directory', temp, '--distro', 'PeerloomCI-'+'a'*32, '--prepare-import-only']
+            with patch.object(service.sys, 'argv', args), patch.object(service, 'validate_scope', return_value=directory), patch.object(service, 'download') as download, patch.object(service, 'prepare_wsl_tar') as prepare, patch.object(service, 'run') as run:
+                service.main()
+                download.assert_called_once()
+                self.assertEqual(download.call_args.args[0]['version'], '24.04.3')
+                prepare.assert_called_once()
+                run.assert_not_called()
+
+    def test_diagnostic_only_is_bounded_redacted_and_does_not_execute(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            name = 'PeerloomCI-'+'a'*32
+            (directory/'import-output.txt').write_text('The handle is invalid at '+temp+' '+name)
+            args = ['windows-service.py', '--directory', temp, '--distro', name, '--diagnose-import-only', '--import-exit-code', '-1']
+            with patch.object(service.sys, 'argv', args), patch.object(service, 'validate_scope', return_value=directory), patch.object(service, 'run') as run, patch('sys.stdout', new_callable=io.StringIO) as output:
+                service.main()
+                run.assert_not_called()
+                self.assertIn('The handle is invalid', output.getvalue())
+                self.assertNotIn(temp, output.getvalue())
+                self.assertNotIn(name, output.getvalue())
+                self.assertLessEqual(len(output.getvalue().encode()), 1024)
+
+    def test_probe_is_early_single_direct_import_with_owned_cleanup(self):
+        script = (ROOT/'test-windows-service.ps1').read_text()
+        workflow = (ROOT.parent/'.github/workflows/native.yml').read_text()
+        self.assertEqual(script.count('& wsl.exe --import '), 1)
+        self.assertIn("$drive.DriveFormat -ne 'NTFS'", script)
+        self.assertIn("$drive.DriveType -ne 'Fixed'", script)
+        self.assertIn('[System.IO.File]::OpenRead($tar)', script)
+        self.assertIn('& wsl.exe --unregister $name', script)
+        self.assertNotIn("throw 'OWNED_PROBE_UNREGISTER_FAILED'", script)
+        self.assertIn("throw 'OWNED_DISTRO_CLEANUP_INCOMPLETE_PRIVATE_DIRECTORY_RETAINED'", script)
+        self.assertIn("-contains $name", script)
+        self.assertIn('& wsl.exe --distribution $name --exec /bin/true', script)
+        self.assertIn('timeout-minutes: 8', workflow)
+        self.assertLess(workflow.index('-ImportProbeOnly'), workflow.index('固定 Windows Rust 工具链'))
+        self.assertIn('./scripts/test-windows.ps1\n          ./scripts/test-windows-service.ps1', workflow)
+
+
 class PlainTarTest(unittest.TestCase):
     def fixture(self, directory):
         data = io.BytesIO()

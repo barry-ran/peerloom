@@ -27,6 +27,9 @@ jobs:
           ./scripts/test-windows-service.ps1 -PreflightOnly
           python scripts/test-windows-service-script.py
           if ($LASTEXITCODE -ne 0) { throw 'Windows fixture tests failed' }
+      - name: 任务独占 WSL1 官方导入与清理早期门禁
+        timeout-minutes: 8
+        run: ./scripts/test-windows-service.ps1 -ImportProbeOnly
       - name: 固定 Windows Rust 工具链
         run: |
           rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt

@@ -249,10 +249,26 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--directory', required=True)
     parser.add_argument('--distro', required=True)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--prepare-import-only', action='store_true')
+    modes.add_argument('--diagnose-import-only', action='store_true')
+    parser.add_argument('--import-exit-code', type=int, default=0)
     args = parser.parse_args()
     directory = validate_scope(args.directory, args.distro, os.environ, sys.platform)
     root = Path(__file__).resolve().parent.parent
     dependencies = json.loads((root / 'scripts/windows-service-dependencies.json').read_text())
+    if args.prepare_import_only:
+        STAGE = 'prepare-import-probe'
+        download(dependencies['ubuntu_base'], directory / 'ubuntu_base.archive')
+        prepare_wsl_tar(directory / 'ubuntu_base.archive', directory / 'ubuntu_base.tar', dependencies['ubuntu_base'])
+        return
+    if args.diagnose_import_only:
+        with (directory / 'import-output.txt').open('rb') as source:
+            output = source.read(8193)
+        print(wsl_import_diagnostic(args.import_exit_code, output, b'',
+                                   [str(directory), args.distro, os.environ.get('USERPROFILE', ''),
+                                    os.environ.get('HOME', ''), os.environ.get('RUNNER_TEMP', '')]))
+        return
     children, handles = [], []
     imported = False
     pg_started = False
