@@ -3,6 +3,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+apply(from = rootProject.file("scripts/maven-evidence.gradle"))
+
 val sdkRoot = rootProject.projectDir.resolve("../../src/device-sdk").canonicalFile
 val rustTarget = rootProject.layout.buildDirectory.dir("rust-target").get().asFile
 val lock = sdkRoot.resolve("Cargo.lock").readText()

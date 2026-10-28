@@ -135,9 +135,16 @@ func (s *Service) Renew(ctx context.Context, actor identity.Device, id string) (
 }
 
 func (s *Service) MarkConnected(ctx context.Context, actor identity.Device, id string) (Session, error) {
+	return s.MarkConnectedGeneration(ctx, actor, id, 1)
+}
+
+func (s *Service) MarkConnectedGeneration(ctx context.Context, actor identity.Device, id string, generation int64) (Session, error) {
 	return s.operate(ctx, actor, id, false, func(ctx context.Context, tx pgx.Tx, value Session, _ grant, _ time.Time) (Session, error) {
 		if err := accepted(value); err != nil {
 			return Session{}, err
+		}
+		if generation != value.NegotiationGeneration {
+			return Session{}, failure("NEGOTIATION_STALE", 409)
 		}
 		if !value.SourceOfferSeen || !value.TargetAnswerSeen {
 			return Session{}, failure("NEGOTIATION_INCOMPLETE", 409)
@@ -162,11 +169,18 @@ WHERE tenant_id=$4 AND id=$5 RETURNING `+sessionColumns, value.SourceConnected, 
 }
 
 // AuthorizeDescription atomically admits one complete offer and then one answer.
-// Initial negotiation generation is fixed at one; no trickle/restart is implied.
+// The legacy entry point admits generation one only.
 func (s *Service) AuthorizeDescription(ctx context.Context, actor identity.Device, id, kind string) (Session, error) {
+	return s.AuthorizeDescriptionGeneration(ctx, actor, id, kind, 1)
+}
+
+func (s *Service) AuthorizeDescriptionGeneration(ctx context.Context, actor identity.Device, id, kind string, generation int64) (Session, error) {
 	return s.operate(ctx, actor, id, false, func(ctx context.Context, tx pgx.Tx, value Session, _ grant, _ time.Time) (Session, error) {
 		if err := accepted(value); err != nil {
 			return Session{}, err
+		}
+		if generation != value.NegotiationGeneration {
+			return Session{}, failure("NEGOTIATION_STALE", 409)
 		}
 		column := ""
 		switch kind {

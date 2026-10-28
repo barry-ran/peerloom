@@ -68,9 +68,16 @@ def validate_pair(data):
             raise Failure('pair fixture expiry missing')
 
 
-def run_sdk(fixture, origin):
+def validate_lease_probe(data):
+    value = json.loads(data)
+    if not isinstance(value, dict) or not re.fullmatch(r'svc_[A-Za-z0-9_-]{43}', value.get('service_credential', '')):
+        raise Failure('lease probe requires a private same-tenant service credential')
+
+
+def run_sdk(fixture, origin, lease_probe):
     environment = {**os.environ, 'TEST_MANAGED_RELAY': '1',
-                   'TEST_SIGNAL_FIXTURE_FILE': str(fixture), 'TEST_IDENTITY_BASE_URL': origin}
+                   'TEST_SIGNAL_FIXTURE_FILE': str(fixture), 'TEST_IDENTITY_BASE_URL': origin,
+                   'TEST_LEASE_ADMIN_FIXTURE': str(lease_probe)}
     command = ['cargo', 'test', '-p', 'device-core', '--test', 'sdk_service', '--locked',
                '--', '--ignored', '--nocapture']
     process = subprocess.Popen(command, cwd=ROOT / 'src/device-sdk', env=environment,
@@ -89,6 +96,44 @@ def run_sdk(fixture, origin):
                 process.wait(timeout=5)
 
 
+def run_recovery_sdk(fixture, origin, process, command, log, name):
+    environment = {**os.environ, 'TEST_MANAGED_RELAY': '1',
+                   'TEST_SIGNAL_FIXTURE_FILE': str(fixture), 'TEST_IDENTITY_BASE_URL': origin,
+                   'TEST_RECOVERY_CONTROL_DIR': str(fixture.parent)}
+    sdk = subprocess.Popen(['cargo', 'test', '-p', 'device-core', '--test', 'sdk_recovery',
+                            '--locked', '--', '--ignored', '--nocapture'],
+                           cwd=ROOT / 'src/device-sdk', env=environment, start_new_session=True)
+    deadline = time.monotonic() + 180
+    faulted = False
+    current = process
+    try:
+        while sdk.poll() is None:
+            if time.monotonic() >= deadline:
+                raise Failure('transport recovery integration deadline')
+            if not faulted and (fixture.parent / 'ready').exists():
+                TURN.stop_server(current, name)
+                print('Injecting actual runner-owned TURN outage', flush=True)
+                time.sleep(10)
+                current = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+                faulted = True
+            time.sleep(.1)
+        if sdk.returncode or not faulted:
+            raise Failure('transport recovery integration failed')
+        return current
+    except BaseException:
+        if current is not process:
+            TURN.stop_server(current, name)
+        raise
+    finally:
+        if sdk.poll() is None:
+            os.killpg(sdk.pid, signal.SIGTERM)
+            try:
+                sdk.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(sdk.pid, signal.SIGKILL)
+                sdk.wait(timeout=5)
+
+
 def run(args):
     if not sys.platform.startswith('linux') or os.getuid() == 0:
         raise Failure('managed relay integration requires a non-root Linux caller')
@@ -98,12 +143,20 @@ def run(args):
         raise Failure('shared secret must be exact printable ASCII bytes without newline')
     pair = private_bytes(args.pair_fixture, 65536)
     validate_pair(pair)
+    lease_probe = None
+    if not args.recovery:
+        if not args.lease_admin_fixture:
+            raise Failure('managed renewal proof requires a lease admin fixture')
+        lease_probe = private_bytes(args.lease_admin_fixture, 65536)
+        validate_lease_probe(lease_probe)
     # Refuse to accidentally exercise another local TURN server.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reservation:
         reservation.bind(('127.0.0.1', 53478))
     with tempfile.TemporaryDirectory(prefix='peerloom-managed-relay-') as directory:
         path = Path(directory)
         TURN.private_file(path / 'pair.json', pair.decode('utf-8'))
+        if lease_probe is not None:
+            TURN.private_file(path / 'lease-admin.json', lease_probe.decode('utf-8'))
         config = ['listening-ip=127.0.0.1', 'relay-ip=127.0.0.1', 'listening-port=53478',
                   'min-port=55000', 'max-port=55031', 'use-auth-secret',
                   'static-auth-secret=' + shared.decode('ascii'), 'realm=peerloom.test',
@@ -141,11 +194,17 @@ def run(args):
                             time.sleep(.1)
                 if not ready:
                     raise Failure('isolated TURN readiness timeout')
-                run_sdk(path / 'pair.json', args.base_url)
+                if args.recovery:
+                    process = run_recovery_sdk(path / 'pair.json', args.base_url, process, command, log, name)
+                else:
+                    run_sdk(path / 'pair.json', args.base_url, path / 'lease-admin.json')
                 if process.poll() is not None:
                     raise Failure('isolated TURN exited during SDK integration')
             finally:
                 TURN.stop_server(process, name)
+    if args.recovery:
+        print('PASS: actual owned TURN outage, same-session new generation and obsolete handle fencing')
+        return
     print('PASS: actual SDK session-scoped managed ICE, RelayOnly selected candidate, '
           'bidirectional data, credential rotation, lease renewal and close')
 
@@ -162,6 +221,8 @@ def main():
     parser.add_argument('--shared-secret-file', required=True)
     parser.add_argument('--pair-fixture', required=True)
     parser.add_argument('--base-url', required=True)
+    parser.add_argument('--recovery', action='store_true')
+    parser.add_argument('--lease-admin-fixture')
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupted)
     try:

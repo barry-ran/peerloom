@@ -1,0 +1,77 @@
+// Applied by library/build.gradle.kts. Run after the normal build, with --offline.
+import groovy.json.JsonOutput
+import java.security.MessageDigest
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+import org.gradle.maven.MavenModule
+import org.gradle.maven.MavenPomArtifact
+
+tasks.register('collectMavenEvidence') {
+    group = 'verification'
+    description = 'Export resolved Maven inputs; offline only, no legal approval.'
+    doLast {
+        if (!gradle.startParameter.offline) {
+            throw new GradleException('Maven evidence requires --offline; build/fetch separately')
+        }
+        def output = rootProject.layout.buildDirectory.file('maven-evidence-input.json').get().asFile
+        if (output.exists()) {
+            throw new GradleException('Evidence input already exists; use a fresh build directory')
+        }
+        def coordinate = { id -> "${id.group}:${id.module}:${id.version}" }
+        def fileProof = { file ->
+            def md = MessageDigest.getInstance('SHA-256')
+            file.withInputStream { input ->
+                byte[] buffer = new byte[65536]
+                for (int count; (count = input.read(buffer)) != -1;) {
+                    md.update(buffer, 0, count)
+                }
+            }
+            [path: file.canonicalPath, sha256: md.digest().encodeHex().toString(), bytes: file.length()]
+        }
+        def scopes = []
+        ['releaseRuntimeClasspath', 'debugAndroidTestRuntimeClasspath'].each { scope ->
+            def configuration = configurations.getByName(scope)
+            def result = configuration.incoming.resolutionResult
+            def modules = result.allComponents.findAll { it.id instanceof ModuleComponentIdentifier }
+            def records = modules.collectEntries { component ->
+                def id = coordinate(component.id)
+                [(id): [coordinate: id, artifacts: [], pom: null, issues: []]]
+            }
+            // Original selected module archives, not AGP transformed class directories.
+            configuration.resolvedConfiguration.resolvedArtifacts.each { artifact ->
+                def id = artifact.moduleVersion.id
+                def key = "${id.group}:${id.name}:${id.version}"
+                if (records.containsKey(key)) {
+                    records[key].artifacts.add(fileProof(artifact.file))
+                } else if (!(artifact.id.componentIdentifier instanceof org.gradle.api.artifacts.component.ProjectComponentIdentifier)) {
+                    throw new GradleException('Unknown external artifact requires reviewed inventory')
+                }
+            }
+            def query = dependencies.createArtifactResolutionQuery()
+                .forComponents(modules.collect { it.id })
+                .withArtifacts(MavenModule, MavenPomArtifact).execute()
+            query.resolvedComponents.each { component ->
+                def poms = component.getArtifacts(MavenPomArtifact)
+                def resolved = poms.findAll { it instanceof org.gradle.api.artifacts.result.ResolvedArtifactResult }
+                if (resolved.size() == 1) {
+                    records[coordinate(component.id)].pom = fileProof(resolved.first().file)
+                }
+            }
+            records.values().each { record ->
+                if (record.pom == null) record.issues.add('POM_NOT_IN_OFFLINE_CACHE')
+                record.artifacts.sort { it.path }
+            }
+            def edges = result.allDependencies.collect { dependency ->
+                if (!(dependency instanceof ResolvedDependencyResult)) {
+                    throw new GradleException('Unresolved dependency; cannot claim complete graph')
+                }
+                def from = dependency.from.id instanceof ModuleComponentIdentifier ? coordinate(dependency.from.id) : '@root'
+                def to = dependency.selected.id instanceof ModuleComponentIdentifier ? coordinate(dependency.selected.id) : '@project'
+                [from: from, to: to, direct: from == '@root']
+            }.unique().sort { a, b -> (a.from + '\n' + a.to) <=> (b.from + '\n' + b.to) }
+            scopes.add([name: scope, packages: records.values().sort { it.coordinate }, edges: edges])
+        }
+        output.parentFile.mkdirs()
+        output.text = JsonOutput.prettyPrint(JsonOutput.toJson([format_version: 1, scopes: scopes])) + '\n'
+    }
+}

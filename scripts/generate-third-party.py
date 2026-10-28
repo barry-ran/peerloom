@@ -231,10 +231,98 @@ def attempt(record, operation):
         record["issues"].append("ARCHIVE_OR_METADATA_UNREADABLE")
 
 
+# Explicit reviewed provenance pins: changing a vendor requires a reviewed pin update.
+VENDORED = {
+    ('nix', '0.31.3'): 'd8b3339019d02a41f5adada077dbe59962fb7a4d29a64de01b0ae853b0cbff72',
+    ('rtc', '0.21.1'): '9072d1f2da22f6ea63a8fabccad61c0b18a3494d58b0d20d85533c4475d65b24',
+}
+
+
+def vendor_file(root, relative):
+    if not isinstance(relative, str) or any(p in ('', '.', '..') for p in relative.split('/')):
+        raise EvidenceError('INVALID_VENDOR_PATH')
+    safe_relative(relative)
+    path = root
+    for part in relative.split('/'):
+        path = path / part
+        if path.is_symlink():
+            raise EvidenceError('VENDOR_SYMLINK')
+    if not path.resolve().is_relative_to(root.resolve()) or not path.is_file():
+        raise EvidenceError('VENDOR_FILE_MISSING_OR_OUTSIDE')
+    if path.stat().st_size > MAX_ARCHIVE:
+        raise EvidenceError('VENDOR_FILE_TOO_LARGE')
+    return path
+
+
+def cargo_vendor(record, root, patches, blobs):
+    identity = (record['name'], record['version'])
+    expected = VENDORED.get(identity)
+    if expected is None:
+        raise EvidenceError('UNREVIEWED_VENDOR_PATCH')
+    name, version = identity
+    base = f'third_party/rust/{name}-{version}'
+    if patches.get(name) != {'path': '../../' + base + '/crate'}:
+        raise EvidenceError('VENDOR_PATCH_PATH_MISMATCH')
+    raw = vendor_file(root, base + '/来源.json').read_bytes()
+    if digest(raw) != expected:
+        raise EvidenceError('VENDOR_PROVENANCE_MISMATCH')
+    proof = json.loads(raw)
+    if (proof['package']['name'], proof['package']['version']) != identity:
+        raise EvidenceError('VENDOR_IDENTITY_MISMATCH')
+    patch = proof.get('applied_patch', proof.get('patch'))
+    if digest(vendor_file(root, base + '/' + patch['file']).read_bytes()) != patch['sha256']:
+        raise EvidenceError('VENDOR_PATCH_CHECKSUM_MISMATCH')
+    declared = {}
+    license_entries = []
+    for item in proof['files']:
+        relative = item['path']
+        if relative in declared:
+            raise EvidenceError('VENDOR_DUPLICATE_PATH')
+        content = vendor_file(root, base + '/crate/' + relative).read_bytes()
+        if digest(content) != item['sha256']:
+            raise EvidenceError('VENDOR_CONTENT_MISMATCH')
+        declared[relative] = item['sha256']
+        if LICENSE_NAME.match(Path(relative).name):
+            if item['sha256'] != item['upstream_sha256']:
+                raise EvidenceError('VENDOR_LICENSE_MODIFIED')
+            license_entries.append((relative, content))
+    crate = root / base / 'crate'
+    actual = set()
+    for path in crate.rglob('*'):
+        if path.is_symlink():
+            raise EvidenceError('VENDOR_SYMLINK')
+        if path.is_file():
+            actual.add(path.relative_to(crate).as_posix())
+        elif not path.is_dir():
+            raise EvidenceError('VENDOR_SPECIAL_FILE')
+    if actual != set(declared):
+        raise EvidenceError('VENDOR_UNTRACKED_CONTENT')
+    info = tomllib.loads((crate / 'Cargo.toml').read_text())['package']
+    if (info['name'], info['version']) != identity or info.get('license') != proof['package']['declared_license']:
+        raise EvidenceError('VENDOR_MANIFEST_MISMATCH')
+    if not any(LICENSE_TEXT_NAME.match(Path(relative).name) for relative, _ in license_entries):
+        raise EvidenceError('LICENSE_TEXT_MISSING')
+    for relative, content in license_entries:
+        evidence(record, relative, content, blobs)
+    record['declared_license'] = info['license']
+    record['vendor_provenance'] = {
+        'kind': 'modified-vendored-source', 'path': base + '/crate',
+        'manifest_sha256': expected, 'patch_sha256': patch['sha256'],
+        'upstream_archive_sha256': proof['archive']['sha256'],
+        'upstream_archive_url': proof['archive']['url'],
+        'upstream_vcs_commit': proof['archive']['vcs_commit'],
+        'excluded_upstream_files': proof.get('excluded', []),
+        'inventory_sha256': digest(json.dumps(declared, sort_keys=True, separators=(',', ':')).encode()),
+    }
+    # Never put the upstream archive hash in modified component.hashes.
+
+
 def collect(root):
     blobs, records, issues = {}, [], []
     lock = tomllib.loads((root / "src/device-sdk/Cargo.lock").read_text())
-    workspace = tomllib.loads((root / "src/device-sdk/Cargo.toml").read_text())["workspace"]
+    cargo_manifest = tomllib.loads((root / "src/device-sdk/Cargo.toml").read_text())
+    workspace = cargo_manifest["workspace"]
+    patches = cargo_manifest.get("patch", {}).get("crates-io", {})
     local = set()
     for member in workspace["members"]:
         member = safe_relative(member)
@@ -247,6 +335,9 @@ def collect(root):
             continue
         record = package("cargo", item["name"], item["version"])
         records.append(record)
+        if item.get("source") is None:
+            attempt(record, lambda: cargo_vendor(record, root, patches, blobs))
+            continue
         if item.get("source") != REGISTRY:
             record["issues"].append("UNSUPPORTED_NON_CRATES_IO_SOURCE")
             continue
@@ -360,6 +451,8 @@ def render(records, blobs, issues, locks, supplement_hash=None):
             props.append({"name": "peerloom:license-evidence", "value": proof})
         component = {"type": "library", "bom-ref": item["purl"], "purl": item["purl"],
                      "name": item["name"], "version": item["version"], "properties": props}
+        if item.get("vendor_provenance"):
+            props.append({"name": "peerloom:modified-vendor-provenance", "value": json.dumps(item["vendor_provenance"], sort_keys=True)})
         if item.get("archive_sha256"):
             component["hashes"] = [{"alg": "SHA-256", "content": item["archive_sha256"]}]
         components.append(component)
@@ -392,7 +485,7 @@ def main():
     if output.exists() or output.is_symlink() or not output.resolve().is_relative_to((root / "dist").resolve()) or (root / "dist").is_symlink():
         print("输出必须是仓库 dist 内不存在的新目录", file=sys.stderr)
         return 2
-    inputs = ["src/device-sdk/Cargo.lock", "src/device-server/go.mod", "src/device-server/go.sum"]
+    inputs = ["src/device-sdk/Cargo.toml", "src/device-sdk/Cargo.lock", "src/device-server/go.mod", "src/device-server/go.sum"]
     locks = {name: digest((root / name).read_bytes()) for name in inputs}
     try:
         records, blobs, issues = collect(root)

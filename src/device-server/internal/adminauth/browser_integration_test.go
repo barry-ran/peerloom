@@ -16,6 +16,7 @@ import (
 
 	"github.com/barry-ran/peerloom/src/device-server/internal/adminweb"
 	"github.com/barry-ran/peerloom/src/device-server/internal/management"
+	"github.com/barry-ran/peerloom/src/device-server/internal/webhook"
 )
 
 // TestBrowserConsoleChromium uses real Chromium, PostgreSQL, cookie sessions and
@@ -52,6 +53,14 @@ func TestBrowserConsoleChromium(t *testing.T) {
 	backend, err := management.New(pool, key, management.DefaultSettings())
 	if err != nil {
 		t.Fatal("create fixture management service")
+	}
+	registry, err := webhook.NewRegistry([]webhook.Binding{{TenantID: tenant, URL: "https://hooks.example.com/browser", SecretRef: "browser-fixture", Secret: "synthetic-webhook-signing-fixture-32-bytes", Addresses: []string{"8.8.8.8"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err = backend.WithWebhooks(registry)
+	if err != nil {
+		t.Fatal(err)
 	}
 	backend, err = backend.WithBrowserAuthority(auth)
 	if err != nil {
@@ -91,6 +100,10 @@ func TestBrowserConsoleChromium(t *testing.T) {
 	t.Logf("actual Chromium output:\n%s", strings.TrimSpace(string(output)))
 	if err != nil {
 		t.Fatal("actual Chromium console gate failed; inspect retained browser artifacts")
+	}
+	var endpointCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM webhook_endpoints WHERE tenant_id=$1 AND NOT enabled AND revision=2", tenant).Scan(&endpointCount); err != nil || endpointCount != 1 {
+		t.Fatalf("webhook browser evidence %d %v", endpointCount, err)
 	}
 	var applications, grants, audit, grantAudit, sessions int
 	err = pool.QueryRow(ctx, browserEvidenceQuery, tenant, owner).Scan(&applications, &grants, &audit, &grantAudit, &sessions)

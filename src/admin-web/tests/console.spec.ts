@@ -91,3 +91,23 @@ test('grant committed before logout never appears on the returned login page',as
  const gone=await page.request.get('/admin/api/auth/session'); expect(gone.status()).toBe(401);
  await page.screenshot({path:'test-results/console-expired-session.png',fullPage:true});
 });
+
+test('webhook approved binding, cancellation and disable without secret exposure',async({page})=>{
+ await login(page);
+ await page.getByRole('button',{name:'Webhook 通知',exact:true}).click();
+ await page.getByRole('button',{name:'创建 Webhook',exact:true}).click();
+ await page.getByRole('button',{name:'关闭',exact:true}).click();
+ await expect(page.getByRole('dialog')).toHaveCount(0);
+ await page.getByRole('button',{name:'创建 Webhook',exact:true}).click();
+ await page.getByLabel('已批准的 HTTPS 地址',{exact:true}).fill('https://hooks.example.com/browser');
+ await page.getByLabel('运维批准的秘密引用',{exact:true}).fill('browser-fixture');
+ await page.getByRole('button',{name:'确认',exact:true}).click();
+ await page.getByRole('button',{name:'确认',exact:true}).click();
+ await expect(page.getByRole('cell',{name:'https://hooks.example.com/browser',exact:true})).toHaveCount(1);
+ await page.getByRole('button',{name:'停用',exact:true}).click();
+ await page.getByRole('button',{name:'确认',exact:true}).click();
+ await expect(page.getByRole('button',{name:'启用',exact:true})).toBeVisible();
+ expect(await page.content()).not.toContain('synthetic-webhook-signing-fixture-32-bytes');
+ expect(await page.evaluate(()=>Object.keys(sessionStorage))).toEqual([]);
+ await page.getByRole('button',{name:'退出登录',exact:true}).click();
+});

@@ -19,7 +19,9 @@ type Registration struct {
 	Metadata              map[string]any `json:"metadata,omitempty"`
 }
 
-func (r Registration) Validate() error {
+func (r Registration) Validate() error { return r.validate(false) }
+
+func (r Registration) validate(direct bool) error {
 	if !uuidPattern.MatchString(r.ApplicationID) {
 		return Fail("INVALID_INPUT", 422)
 	}
@@ -31,7 +33,7 @@ func (r Registration) Validate() error {
 	if n := utf8.RuneCountInString(r.InstallationPublicKey); n < 1 || n > 4096 {
 		return Fail("INVALID_INPUT", 422)
 	}
-	if n := len(r.RegistrationGrant); n < 1 || n > 512 {
+	if n := len(r.RegistrationGrant); (!direct && n < 1) || n > 512 || (direct && n != 0) {
 		return Fail("GRANT_REQUIRED", 403)
 	}
 	if utf8.RuneCountInString(r.SDKVersion) > 64 || strings.ContainsRune(r.SDKVersion, 0) || len(r.Metadata) > 32 {

@@ -145,9 +145,9 @@ async fn policy_close_stops_instead_of_stealing_fence_back() {
     server.await.unwrap();
 }
 #[tokio::test]
-async fn capacity_is_explicitly_rejected_instead_of_fake_multiconnection() {
+async fn capacity_above_bounded_multiconnection_limit_is_rejected() {
     let (_listener, mut config, store) = setup().await;
-    config.max_connections = 2;
+    config.max_connections = 33;
     assert!(matches!(
         DeviceSdk::load(config, store).await,
         Err(SdkError::InvalidConfiguration)
@@ -175,7 +175,7 @@ async fn lost_request_response_does_not_leave_permanent_busy() {
     assert!(matches!(next(&mut sdk).await, SdkEvent::Offline));
     assert!(matches!(
         next(&mut sdk).await,
-        SdkEvent::ConnectionClosed {
+        SdkEvent::ConnectionRequestFailed {
             reason: SdkError::RequestOutcomeUnknown,
             ..
         }
@@ -296,6 +296,96 @@ async fn registration_persistence_failure_keeps_usable_sdk_identity() {
         SdkEvent::IdentityPersistencePending
     ));
     assert!(matches!(next(&mut sdk).await, SdkEvent::Online));
+    sdk.close().await;
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn reset_stops_actor_and_preserves_tombstone_without_automatic_registration() {
+    let (listener, config, store) = setup().await;
+    let scope = IdentityScope {
+        server_origin: config.origin.clone(),
+        application_id: APP.into(),
+    };
+    let server = tokio::spawn(async move {
+        serve_self(&listener).await;
+        let mut socket = handshake(&listener, 1).await;
+        let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
+            .await
+            .unwrap();
+        assert!(matches!(frame, Some(Ok(Message::Close(_))) | None));
+    });
+    let mut sdk = DeviceSdk::load(config, store.clone()).await.unwrap();
+    assert!(matches!(sdk.next_event().await, Some(SdkEvent::Online)));
+    assert_eq!(sdk.reset(APP).await, Err(SdkError::InvalidConfiguration));
+    assert!(!sdk.is_resetting());
+    sdk.reset(DEVICE).await.unwrap();
+    assert!(sdk.is_resetting());
+    assert_eq!(sdk.connect(APP).await, Err(SdkError::Closed));
+    assert_eq!(sdk.refresh_credentials().await, Err(SdkError::Closed));
+    assert!(sdk.next_event().await.is_none());
+    let snapshot = store.load(&scope).await.unwrap();
+    assert_eq!(snapshot.revision, 2);
+    assert!(snapshot.identity.is_none());
+    sdk.retry_reset(DEVICE).await.unwrap();
+    assert_eq!(store.load(&scope).await.unwrap().revision, 2);
+    sdk.close().await;
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn two_pending_requests_release_only_correlated_denial() {
+    let (listener, mut config, store) = setup().await;
+    config.max_connections = 2;
+    let (both_tx, both_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        serve_self(&listener).await;
+        let mut socket = handshake(&listener, 1).await;
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let frame = socket.next().await.unwrap().unwrap();
+            let request: serde_json::Value =
+                serde_json::from_str(frame.to_text().unwrap()).unwrap();
+            assert_eq!(request["type"], "session.request");
+            requests.push(request);
+        }
+        // Both requests have reached the server before either outcome is sent.
+        both_tx.send(()).unwrap();
+        let mut denied = pending(&uuid::Uuid::new_v4().to_string(), 1);
+        denied["type"] = json!("error");
+        denied.as_object_mut().unwrap().remove("session_id");
+        denied["request_id"] = requests[0]["id"].clone();
+        denied["payload"] = json!({"code":"GRANT_DENIED"});
+        socket
+            .send(Message::Text(denied.to_string().into()))
+            .await
+            .unwrap();
+        let frame = socket.next().await.unwrap().unwrap();
+        assert!(frame.to_text().unwrap().contains("session.request"));
+        let _ = socket.next().await;
+    });
+    let mut sdk = DeviceSdk::load(config, store).await.unwrap();
+    assert!(matches!(next(&mut sdk).await, SdkEvent::Online));
+    let first = "00000000-0000-4000-8000-000000000003";
+    let second = "00000000-0000-4000-8000-000000000004";
+    let request = sdk.connect_with_request(first).await.unwrap();
+    let sibling = sdk.connect_with_request(second).await.unwrap();
+    assert_ne!(request, sibling);
+    both_rx.await.unwrap();
+    match next(&mut sdk).await {
+        SdkEvent::ConnectionRequestFailed {
+            target_device_id,
+            request_id,
+            reason,
+        } => {
+            assert_eq!(target_device_id, first);
+            assert_eq!(request_id, request);
+            assert_eq!(reason, SdkError::Rejected("GRANT_DENIED".into()));
+        }
+        other => panic!("uncorrelated failure: {other:?}"),
+    }
+    sdk.connect(first).await.unwrap();
+    assert_eq!(sdk.connect(first).await, Err(SdkError::Busy));
     sdk.close().await;
     server.await.unwrap();
 }

@@ -101,6 +101,10 @@ func TestAdministrativeReadsPaginationAndDisable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	read, err := f.service.GetSession(f.ctx, f.principal, session.ID)
+	if err != nil || read.LeaseGeneration != session.LeaseGeneration {
+		t.Fatalf("persisted lease generation mismatch: %d %d %v", read.LeaseGeneration, session.LeaseGeneration, err)
+	}
 	change, err := f.service.UpdateApplication(f.ctx, f.principal, pair.actors[0].ApplicationID, ApplicationUpdate{Name: ptr("disabled"), MaxConnections: ptr(8), Enabled: ptr(false)}, "disable-application")
 	if err != nil || len(change.Sessions) != 1 || change.Sessions[0].ID != session.ID {
 		t.Fatalf("disable: %+v %v", change, err)

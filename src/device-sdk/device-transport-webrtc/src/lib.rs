@@ -238,7 +238,28 @@ struct IncomingQueue {
     pending: Option<Arc<dyn DataChannel>>,
 }
 
+#[cfg(feature = "test-diagnostics")]
+#[derive(Default)]
+struct IncomingDiagnostics {
+    observed: AtomicUsize,
+    enqueued: AtomicUsize,
+    quota_rejected: AtomicUsize,
+    queue_rejected: AtomicUsize,
+}
+#[cfg(feature = "test-diagnostics")]
+#[derive(Debug)]
+pub struct TransportDiagnostics {
+    pub state: RTCPeerConnectionState,
+    pub lifetime_channels: usize,
+    pub incoming_observed: usize,
+    pub incoming_enqueued: usize,
+    pub quota_rejected: usize,
+    pub queue_rejected: usize,
+}
+
 struct Handler {
+    #[cfg(feature = "test-diagnostics")]
+    diagnostics: Arc<IncomingDiagnostics>,
     gathered: watch::Sender<bool>,
     states: watch::Sender<RTCPeerConnectionState>,
     incoming: mpsc::Sender<Arc<dyn DataChannel>>,
@@ -268,13 +289,26 @@ impl PeerConnectionEventHandler for Handler {
     }
 
     async fn on_data_channel(&self, channel: Arc<dyn DataChannel>) {
+        #[cfg(feature = "test-diagnostics")]
+        self.diagnostics.observed.fetch_add(1, Ordering::Relaxed);
         if reserve_channel(&self.channel_count, self.max_channels).is_err() {
+            #[cfg(feature = "test-diagnostics")]
+            self.diagnostics
+                .quota_rejected
+                .fetch_add(1, Ordering::Relaxed);
             let _ = channel.close().await;
             return;
         }
         if let Err(error) = self.incoming.try_send(channel) {
+            #[cfg(feature = "test-diagnostics")]
+            self.diagnostics
+                .queue_rejected
+                .fetch_add(1, Ordering::Relaxed);
             self.channel_count.fetch_sub(1, Ordering::AcqRel);
             let _ = error.into_inner().close().await;
+        } else {
+            #[cfg(feature = "test-diagnostics")]
+            self.diagnostics.enqueued.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -282,6 +316,8 @@ impl PeerConnectionEventHandler for Handler {
 /// 调用者必须显式 close().await，随后销毁；不在 Drop 内隐藏启动后台任务。
 /// 会话生命周期内累计限制通道数量，关闭单个通道不回收名额；重新建连创建新实例。
 pub struct PeerTransport {
+    #[cfg(feature = "test-diagnostics")]
+    diagnostics: Arc<IncomingDiagnostics>,
     peer: Arc<dyn PeerConnection>,
     config: TransportConfig,
     gathered: Mutex<watch::Receiver<bool>>,
@@ -293,6 +329,19 @@ pub struct PeerTransport {
 }
 
 impl PeerTransport {
+    /// Fixed enums/counts only. Never includes labels, SDP, addresses or credentials.
+    #[cfg(feature = "test-diagnostics")]
+    pub fn diagnostics(&self) -> TransportDiagnostics {
+        TransportDiagnostics {
+            state: self.state(),
+            lifetime_channels: self.channel_count.load(Ordering::Relaxed),
+            incoming_observed: self.diagnostics.observed.load(Ordering::Relaxed),
+            incoming_enqueued: self.diagnostics.enqueued.load(Ordering::Relaxed),
+            quota_rejected: self.diagnostics.quota_rejected.load(Ordering::Relaxed),
+            queue_rejected: self.diagnostics.queue_rejected.load(Ordering::Relaxed),
+        }
+    }
+
     /// 直接读取底层 ICE transport 的真实选中对；未选中时为 None。
     /// 不依赖 0.21.1 stats 中缺失的 remote-candidate 条目或不一致的 ID 前缀。
     pub async fn selected_candidate_types(
@@ -328,7 +377,11 @@ impl PeerTransport {
         let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
         let (incoming_tx, incoming_rx) = mpsc::channel(config.max_channels);
         let count = Arc::new(AtomicUsize::new(0));
+        #[cfg(feature = "test-diagnostics")]
+        let diagnostics = Arc::new(IncomingDiagnostics::default());
         let handler = Handler {
+            #[cfg(feature = "test-diagnostics")]
+            diagnostics: diagnostics.clone(),
             gathered: gather_tx,
             states: state_tx,
             incoming: incoming_tx,
@@ -368,6 +421,8 @@ impl PeerTransport {
             .map_err(|_| TransportError::Timeout)?
             .map_err(classify_backend)?;
         Ok(Self {
+            #[cfg(feature = "test-diagnostics")]
+            diagnostics,
             peer: Arc::new(peer),
             config,
             gathered: Mutex::new(gather_rx),
@@ -384,6 +439,25 @@ impl PeerTransport {
 
     pub fn state(&self) -> RTCPeerConnectionState {
         *self.states.borrow()
+    }
+
+    /// Observe a lost established path without depending on DataChannel close events.
+    /// A transient ICE disconnect is recoverable, not an authorization extension.
+    pub async fn wait_interrupted(&self) {
+        let mut states = self.states.clone();
+        loop {
+            if matches!(
+                *states.borrow_and_update(),
+                RTCPeerConnectionState::Disconnected
+                    | RTCPeerConnectionState::Failed
+                    | RTCPeerConnectionState::Closed
+            ) {
+                return;
+            }
+            if states.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     fn ensure_open(&self) -> Result<(), TransportError> {
@@ -609,6 +683,16 @@ impl ChannelMetadata {
 }
 
 impl MessageChannel {
+    #[cfg(feature = "test-diagnostics")]
+    pub async fn diagnostic_state(&self) -> Result<(usize, String), TransportError> {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let state = self.channel.ready_state().await.map_err(classify_backend)?;
+            Ok((self.channel.id(), format!("{state:?}")))
+        })
+        .await
+        .map_err(|_| TransportError::Timeout)?
+    }
+
     pub async fn metadata(&self) -> Result<ChannelMetadata, TransportError> {
         tokio::time::timeout(self.timeout, async {
             Ok::<_, webrtc::error::Error>(ChannelMetadata {

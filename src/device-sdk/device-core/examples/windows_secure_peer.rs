@@ -109,7 +109,7 @@ mod windows {
                             return Ok::<(), Error>(());
                         }
                         SdkEvent::IdentityPersistencePending => return Err("安全存储失败；停止，不回退 / Secure persistence failed; stopping".into()),
-                        SdkEvent::Stopped(error) | SdkEvent::ConnectionClosed { reason: error, .. } => return Err(error.into()),
+                        SdkEvent::Stopped(error) | SdkEvent::ConnectionClosed { reason: error, .. } | SdkEvent::ConnectionRequestFailed { reason: error, .. } => return Err(error.into()),
                     }
                 }
             }).await;

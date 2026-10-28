@@ -53,17 +53,24 @@ class HelperTests(unittest.TestCase):
         with self.assertRaises(MODULE.Failure):
             MODULE.validate_pair(json.dumps(pair).encode())
 
+    def test_lease_probe_has_separate_service_audience(self):
+        MODULE.validate_lease_probe(json.dumps({'service_credential': 'svc_' + 'a' * 43}).encode())
+        for value in ({}, {'service_credential': 'dev_' + 'a' * 43}):
+            with self.assertRaises(MODULE.Failure):
+                MODULE.validate_lease_probe(json.dumps(value).encode())
+
     @patch.object(MODULE.subprocess, 'Popen')
     def test_sdk_has_owned_process_group_and_scoped_environment(self, popen):
         process = popen.return_value
         process.wait.return_value = 0
         process.poll.return_value = 0
-        MODULE.run_sdk(Path('/private/pair.json'), 'http://127.0.0.1:18080')
+        MODULE.run_sdk(Path('/private/pair.json'), 'http://127.0.0.1:18080', Path('/private/admin.json'))
         args, kwargs = popen.call_args
         self.assertTrue(kwargs['start_new_session'])
         self.assertEqual(kwargs['env']['TEST_MANAGED_RELAY'], '1')
         self.assertEqual(kwargs['env']['TEST_SIGNAL_FIXTURE_FILE'], '/private/pair.json')
         self.assertNotIn('/private/pair.json', args[0])
+        self.assertEqual(kwargs['env']['TEST_LEASE_ADMIN_FIXTURE'], '/private/admin.json')
         process.wait.assert_called_once_with(timeout=180)
 
     @patch.object(MODULE.os, 'killpg')
@@ -74,7 +81,7 @@ class HelperTests(unittest.TestCase):
         process.poll.return_value = None
         process.wait.side_effect = [subprocess.TimeoutExpired('cargo', 180), 0]
         with self.assertRaises(subprocess.TimeoutExpired):
-            MODULE.run_sdk(Path('/private/pair.json'), 'http://127.0.0.1:18080')
+            MODULE.run_sdk(Path('/private/pair.json'), 'http://127.0.0.1:18080', Path('/private/admin.json'))
         killpg.assert_called_once_with(12345, signal.SIGTERM)
 
 

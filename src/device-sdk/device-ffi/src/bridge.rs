@@ -52,6 +52,7 @@ struct Start {
 struct Registration {
     platform: Platform,
     installation_public_key: String,
+    #[serde(default)]
     registration_grant: String,
     sdk_version: String,
     #[serde(default)]
@@ -104,7 +105,8 @@ async fn connection_receive(
 }
 async fn sdk_event(sdk: &mut Option<DeviceSdk>) -> Option<SdkEvent> {
     match sdk {
-        Some(s) => s.next_event().await,
+        Some(s) if !s.is_resetting() => s.next_event().await,
+        Some(_) => std::future::pending().await,
         None => std::future::pending().await,
     }
 }
@@ -131,7 +133,7 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
             _ = instance.stop.notified() => break,
             command = commands.recv() => {
                 let Some(op) = command else { break };
-                let queued_phase = if op.kind == 6 { 4 } else { 0 };
+                let queued_phase = if matches!(op.kind, 6 | 7) { 4 } else { 0 };
                 if op.phase.compare_exchange(
                     queued_phase, 1, Ordering::AcqRel, Ordering::Acquire,
                 ).is_err() {
@@ -139,6 +141,14 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
                     continue;
                 }
                 let result = execute(&config, store.clone(), &mut sdk, &mut connection, &op).await;
+                if result.is_ok() && op.kind == 1
+                    && let Ok(mut current) = instance.device_id.lock() {
+                    *current = sdk.as_ref().map(|sdk| sdk.device_id().to_owned());
+                }
+                if result.is_ok() && op.kind == 7 {
+                    if let Ok(mut current) = instance.device_id.lock() { *current = None; }
+                    instance.resetting.store(false, Ordering::Release);
+                }
                 let (status, payload) = match result {
                     Ok(payload) => (OK, payload),
                     Err(status) => (status, Vec::new()),
@@ -180,6 +190,12 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
                         event.validity = Some(c.validity());
                         connection = Some((id, c));
                         instance.emit(event);
+                    },
+                    Some(SdkEvent::ConnectionRequestFailed { target_device_id, request_id, reason }) => {
+                        let payload = json!({"session_id": "", "target_device_id": target_device_id,
+                            "request_id": request_id}).to_string().into_bytes();
+                        // ABI1 retains the existing failed-pre-session event and status.
+                        instance.emit(Event::new(7, 0, 0, error(reason), payload));
                     },
                     Some(SdkEvent::ConnectionClosed { session_id, reason }) => {
                         let id = connection.as_ref()
@@ -224,6 +240,14 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
     while let Some(op) = commands.recv().await {
         if op.kind == 6 {
             close_requests.push(op);
+        } else if op.kind == 7 {
+            // Reset admission already fenced delivery and is not falsely Cancelled by shutdown.
+            let result = execute(&config, store.clone(), &mut sdk, &mut connection, &op).await;
+            let (status, payload) = match result {
+                Ok(payload) => (OK, payload),
+                Err(status) => (status, Vec::new()),
+            };
+            instance.finish(op, status, payload);
         } else {
             instance.finish(op, CANCELLED, Vec::new());
         }
@@ -247,6 +271,13 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
     instance.connection_id.store(0, Ordering::Release);
     if let Ok(mut pending) = instance.storage.lock() {
         pending.clear();
+    }
+}
+fn reset_error(reason: SdkError) -> u32 {
+    match reason {
+        SdkError::Identity(IdentityError::Storage(device_storage::StorageError::Conflict)) => BUSY,
+        SdkError::Identity(IdentityError::Storage(_) | IdentityError::PendingMutation) => UNKNOWN,
+        other => error(other),
     }
 }
 async fn execute(
@@ -290,6 +321,27 @@ async fn execute(
             .into_bytes();
         *sdk = Some(created);
         return Ok(payload);
+    }
+    if op.kind == 7 {
+        let request: ResetRequest = serde_json::from_slice(&op.input).map_err(|_| INVALID)?;
+        // Drop closes the local gate; the SDK actor joins transport cleanup below.
+        connection.take();
+        let active = sdk.as_mut().ok_or(NOT_READY)?;
+        if request.retry {
+            active
+                .retry_reset(&request.expected_device_id)
+                .await
+                .map_err(reset_error)?;
+        } else {
+            active
+                .reset(&request.expected_device_id)
+                .await
+                .map_err(reset_error)?;
+        }
+        sdk.take();
+        return Ok(json!({"identity_reset":true,"registration_required":true})
+            .to_string()
+            .into_bytes());
     }
     let sdk = sdk.as_ref().ok_or(NOT_READY)?;
     match op.kind {

@@ -552,10 +552,12 @@ name = "device-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "device-protocol",
  "device-storage",
  "device-transport-webrtc",
  "futures-util",
+ "getrandom 0.4.3",
  "jni",
  "rcgen",
  "reqwest",

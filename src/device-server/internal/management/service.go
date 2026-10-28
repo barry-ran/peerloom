@@ -15,17 +15,19 @@ import (
 
 	"github.com/barry-ran/peerloom/src/device-server/internal/authorization"
 	"github.com/barry-ran/peerloom/src/device-server/internal/relay"
+	"github.com/barry-ran/peerloom/src/device-server/internal/webhook"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Service struct {
-	pool        *pgxpool.Pool
-	aead        cipher.AEAD
-	settings    Settings
-	presence    Presence
-	browser     BrowserAuthority
-	relayIssuer *relay.Issuer
+	pool            *pgxpool.Pool
+	aead            cipher.AEAD
+	settings        Settings
+	presence        Presence
+	browser         BrowserAuthority
+	relayIssuer     *relay.Issuer
+	webhookRegistry *webhook.Registry
 }
 
 func New(pool *pgxpool.Pool, key []byte, settings Settings, presence ...Presence) (*Service, error) {

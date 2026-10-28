@@ -149,12 +149,12 @@ ORDER BY (tenant_id IS NULL),created_at,id LIMIT 4 FOR SHARE`, actor.TenantID)
 	if !authorized.LeaseExpiresAt.After(now) {
 		return Response{}, failure("LEASE_EXPIRED", 403)
 	}
-	result := Response{SessionID: sessionID, NegotiationGeneration: 1, ICEServers: make([]Credentials, 0, len(nodes))}
+	result := Response{SessionID: sessionID, NegotiationGeneration: int(authorized.NegotiationGeneration), ICEServers: make([]Credentials, 0, len(nodes))}
 	for _, node := range nodes {
 		if err = s.issuer.ValidateNode(actor.TenantID, node.Node); err != nil {
 			return Response{}, failure("RELAY_CONFIGURATION_UNAVAILABLE", 503)
 		}
-		credential, err := s.issueNode(ctx, tx, actor, sessionID, node, now)
+		credential, err := s.issueNode(ctx, tx, actor, sessionID, authorized.NegotiationGeneration, node, now)
 		if err != nil {
 			return Response{}, err
 		}
@@ -179,12 +179,12 @@ ORDER BY (tenant_id IS NULL),created_at,id LIMIT 4 FOR SHARE`, actor.TenantID)
 	return result, nil
 }
 
-func (s *Service) issueNode(ctx context.Context, tx pgx.Tx, actor identity.Device, sessionID string, node selectedNode, now time.Time) (Credentials, error) {
+func (s *Service) issueNode(ctx context.Context, tx pgx.Tx, actor identity.Device, sessionID string, generation int64, node selectedNode, now time.Time) (Credentials, error) {
 	var username, secretRef string
 	var expires time.Time
 	var revision int64
 	err := tx.QueryRow(ctx, `SELECT username,expires_at,node_revision,secret_ref FROM relay_issuances
-WHERE tenant_id=$1 AND device_id=$2 AND session_id=$3 AND node_id=$4 AND negotiation_generation=1`, actor.TenantID, actor.ID, sessionID, node.ID).Scan(&username, &expires, &revision, &secretRef)
+WHERE tenant_id=$1 AND device_id=$2 AND session_id=$3 AND node_id=$4 AND negotiation_generation=$5`, actor.TenantID, actor.ID, sessionID, node.ID, generation).Scan(&username, &expires, &revision, &secretRef)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Credentials{}, failure("DATABASE_UNAVAILABLE", 503)
 	}
@@ -203,10 +203,10 @@ WHERE tenant_id=$1 AND device_id=$2 AND session_id=$3 AND node_id=$4 AND negotia
 		return Credentials{}, failure("RELAY_UNAVAILABLE", 503)
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO relay_issuances(tenant_id,device_id,session_id,node_id,negotiation_generation,node_revision,secret_ref,username,expires_at,created_at)
-VALUES($1,$2,$3,$4,1,$5,$6,$7,$8,$9)
+VALUES($1,$2,$3,$4,$10,$5,$6,$7,$8,$9)
 ON CONFLICT(tenant_id,device_id,session_id,node_id,negotiation_generation) DO UPDATE SET
 issuance_generation=EXCLUDED.issuance_generation,node_revision=EXCLUDED.node_revision,secret_ref=EXCLUDED.secret_ref,
-username=EXCLUDED.username,expires_at=EXCLUDED.expires_at,created_at=EXCLUDED.created_at`, actor.TenantID, actor.ID, sessionID, node.ID, node.Revision, node.Node.SecretRef, credential.Username, credential.ExpiresAt, now)
+username=EXCLUDED.username,expires_at=EXCLUDED.expires_at,created_at=EXCLUDED.created_at`, actor.TenantID, actor.ID, sessionID, node.ID, node.Revision, node.Node.SecretRef, credential.Username, credential.ExpiresAt, now, generation)
 	if err != nil {
 		return Credentials{}, failure("DATABASE_UNAVAILABLE", 503)
 	}

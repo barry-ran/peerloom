@@ -247,6 +247,18 @@ impl SignalClient {
         session_id: Option<&str>,
         payload: Value,
     ) -> Result<String, SignalError> {
+        self.send_generation(kind, session_id, payload, 1).await
+    }
+    pub async fn send_generation(
+        &self,
+        kind: &str,
+        session_id: Option<&str>,
+        payload: Value,
+        generation: u64,
+    ) -> Result<String, SignalError> {
+        if !(1..=32).contains(&generation) {
+            return Err(SignalError::InvalidMessage);
+        }
         if !matches!(
             kind,
             "session.request"
@@ -255,6 +267,7 @@ impl SignalClient {
                 | "session.offer"
                 | "session.answer"
                 | "session.connected"
+                | "session.reconnecting"
                 | "session.renew"
                 | "session.terminate"
                 | "sync.request"
@@ -263,16 +276,17 @@ impl SignalClient {
         }
         let mut envelope = Envelope::new(kind, payload)?;
         envelope.session_id = session_id.map(str::to_owned);
-        if matches!(kind, "session.offer" | "session.answer") {
-            envelope.negotiation_generation = Some(1);
-            if envelope
+        if session_id.is_some() {
+            envelope.negotiation_generation = Some(generation);
+        }
+        if matches!(kind, "session.offer" | "session.answer")
+            && envelope
                 .payload
                 .get("sdp")
                 .and_then(Value::as_str)
                 .is_none_or(|s| s.is_empty() || s.len() > 65536)
-            {
-                return Err(SignalError::InvalidMessage);
-            }
+        {
+            return Err(SignalError::InvalidMessage);
         }
         envelope.validate()?;
         if serde_json::to_vec(&envelope)

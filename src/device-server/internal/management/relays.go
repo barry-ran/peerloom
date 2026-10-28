@@ -100,7 +100,7 @@ func (s *Service) CreateRelayNode(ctx context.Context, p Principal, input RelayN
 	return result, nil
 }
 func (s *Service) finishRelay(ctx context.Context, tx pgx.Tx, p Principal, operation string, result RelayNode, keyHash, requestHash []byte, status int) error {
-	if err := recordAudit(ctx, tx, p.tenantID, "service_credential", p.credentialID, operation, "relay_node", result.ID, map[string]any{"revision": result.Revision}); err != nil {
+	if err := recordAudit(ctx, tx, p.tenantID, p.actorType(), p.credentialID, operation, "relay_node", result.ID, map[string]any{"revision": result.Revision}); err != nil {
 		return err
 	}
 	if err := s.saveReplay(ctx, tx, p, operation, result.ID, status, keyHash, requestHash, result, nil); err != nil {

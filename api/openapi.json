@@ -3,7 +3,7 @@
   "info": {
     "title": "Peerloom 服务接口",
     "version": "0.1.0-dev",
-    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap、tenant service-key管理API及托管TURN节点/会话凭证接口；含内建浏览器管理员登录；不包含OIDC、direct注册或webhook管理。SDK已在接受会话后自动获取gen1初始ICE配置；ICE restart尚未接入。生产入口必须TLS。"
+    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap、tenant service-key管理API及托管TURN节点/会话凭证接口；含内建浏览器管理员登录；含应用显式direct注册与持久防滥用限额；不包含OIDC或webhook管理。SDK在已接受会话中取得本代ICE配置，恢复时按服务端CAS新代重建PC/Channel；支持显式安装身份reset，不是原地ICE restart。生产入口必须TLS。"
   },
   "paths": {
     "/healthz": {
@@ -89,7 +89,7 @@
     },
     "/v1/device-registrations": {
       "post": {
-        "summary": "使用一次性 grant 原子注册安装身份",
+        "summary": "原子注册安装身份：默认一次性grant或应用显式direct",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -100,7 +100,14 @@
               "minLength": 8,
               "maxLength": 128
             },
-            "description": "相同授权上下文与逻辑请求使用相同键；不能用新键再次消费一次性 grant。"
+            "description": "grant：8–128可打印ASCII，原授权上下文/请求重试复用。direct（body省略grant）：必须CSPRNG 32字节的canonical base64url无padding=43字符，是临时恢复秘密，不能使用公开安装公钥/UUID/追踪ID，不得日志记录。必须保留同key/body处理提交结果不确定。OpenAPI不能验证随机源或跨body/header条件，runtime严格解码。",
+            "x-direct-recovery-key-schema": {
+              "type": "string",
+              "minLength": 43,
+              "maxLength": 43,
+              "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$",
+              "description": "仅表达canonical编码，不证明随机性；条件是body省略registration_grant。"
+            }
           }
         ],
         "requestBody": {
@@ -214,7 +221,8 @@
               }
             }
           }
-        }
+        },
+        "description": "省略registration_grant仅允许应用mode=direct且租户/应用启用。Direct按TCP RemoteAddr（忽略XFF/Forwarded，IPv6归并/64）执行持久全局/IP/应用请求限额及应用日新增/总设备配额。成功重试不重复计设备配额，但仍计请求次数。key/body相同恢复同设备；过期保留哈希回执并返回REPLAY_EXPIRED。禁用/模式切换/凭证撤销后拒绝旧回执。"
       }
     },
     "/v1/device-self": {
@@ -497,7 +505,14 @@
         "description": "实际支持的协议版本、相对信令路径、注册模式、通道类型和安全要求；不是readyz，不承诺托管TURN可用。",
         "responses": {
           "200": {
-            "description": "当前实现能力"
+            "description": "当前实现能力",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapCapabilities"
+                }
+              }
+            }
           }
         }
       }
@@ -2188,7 +2203,7 @@
             "DeviceCredential": []
           }
         ],
-        "description": "重新验证设备Bearer、参与者、目标已接受、双端租约与grant。无配置返回ice_servers=[]；最多4节点，租户优先。固定协商generation=1。持久缓存与tenant/device/session分钟窗口限制；Cache-Control:no-store。不接收query或body。短期凭证到期不代表现有allocation/P2P强制断开；SDK已在接受会话后自动拉取初始配置；ICE restart与持续凭据替换尚未接入。",
+        "description": "重新验证设备Bearer、参与者、目标已接受、双端租约与grant。无配置返回ice_servers=[]；最多4节点，租户优先。返回当前协商generation（1..32）；SDK只接受与本代匹配的配置。持久缓存与tenant/device/session分钟窗口限制；Cache-Control:no-store。不接收query或body。短期凭证到期不代表现有allocation/P2P强制断开；SDK在已接受会话初次建链和服务端批准的新代重建前拉取配置；不是原地ICE restart或持续原地凭据替换。",
         "parameters": [
           {
             "name": "id",
@@ -4219,6 +4234,638 @@
         ],
         "x-required-admin-scope": "admin"
       }
+    },
+    "/v1/webhook-endpoints": {
+      "get": {
+        "summary": "读取本租户最多4个Webhook端点",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementWebhookPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        }
+      },
+      "post": {
+        "summary": "创建运维注册表已批准的Webhook端点",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementWebhookEndpoint"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementWebhookCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhook-endpoints/{id}": {
+      "patch": {
+        "summary": "更新Webhook端点并递增revision，旧待发事件取消",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementWebhookEndpoint"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementWebhookPatch"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "软禁用Webhook；不能撤回已被接收器消费的请求",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementWebhookEndpoint"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ]
+      }
+    },
+    "/admin/api/v1/webhook-endpoints": {
+      "get": {
+        "summary": "读取本租户最多4个Webhook端点",
+        "tags": [
+          "浏览器管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementWebhookPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "x-required-admin-scope": "read"
+      },
+      "post": {
+        "summary": "创建运维注册表已批准的Webhook端点",
+        "tags": [
+          "浏览器管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementWebhookEndpoint"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementWebhookCreate"
+              }
+            }
+          }
+        },
+        "x-required-admin-scope": "admin"
+      }
+    },
+    "/admin/api/v1/webhook-endpoints/{id}": {
+      "patch": {
+        "summary": "更新Webhook端点并递增revision，旧待发事件取消",
+        "tags": [
+          "浏览器管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementWebhookEndpoint"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementWebhookPatch"
+              }
+            }
+          }
+        },
+        "x-required-admin-scope": "admin"
+      },
+      "delete": {
+        "summary": "软禁用Webhook；不能撤回已被接收器消费的请求",
+        "tags": [
+          "浏览器管理"
+        ],
+        "security": [
+          {
+            "AdminSession": []
+          }
+        ],
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。 浏览器专用同源入口；同租户且事务内重校验当前角色/会话，服务Bearer不可代用。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementWebhookEndpoint"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "x-required-admin-scope": "admin"
+      }
     }
   },
   "components": {
@@ -4249,14 +4896,13 @@
       "Registration": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "设备注册输入",
-        "description": "M1 当前只实现 grant 注册；metadata 仅有限标量字段。16 KiB 原始请求体上限由 HTTP 入口实施。installation_public_key 当前仅作为不透明安装标签哈希，不验证算法，也不用于认证或恢复。",
+        "description": "支持 grant 注册与应用显式启用的 direct 注册。grant 请求提供非空 registration_grant；direct 省略该字段，HTTP Idempotency-Key 必须是 CSPRNG 32字节的canonical base64url无padding（43字符），该恢复秘密不得日志记录。非空无效grant不会降级direct。schema只验证body，不能证明随机性或跨body/header及应用当前配置；runtime另行实施。metadata仅有限标量字段，入口原始body限16 KiB；公开installation_public_key只作为非认证安装标签哈希。",
         "type": "object",
         "additionalProperties": false,
         "required": [
           "application_id",
           "platform",
-          "installation_public_key",
-          "registration_grant"
+          "installation_public_key"
         ],
         "properties": {
           "application_id": {
@@ -4281,7 +4927,8 @@
           "registration_grant": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 512
+            "maxLength": 512,
+            "description": "非空时仅走grant注册；direct应省略，不使用空字符串或null。grant真伪/过期/应用mode由runtime验证。"
           },
           "sdk_version": {
             "type": "string",
@@ -4468,9 +5115,11 @@
           "registration_mode": {
             "type": "string",
             "enum": [
-              "grant"
+              "grant",
+              "direct"
             ],
-            "default": "grant"
+            "default": "grant",
+            "description": "默认grant。direct公开登记必须通过持久配额与IP限制；application_id不是秘密。legacy both不作为新建/修改输入。"
           },
           "require_target_approval": {
             "type": "boolean",
@@ -4535,6 +5184,21 @@
                 "type": "null"
               }
             ]
+          },
+          "registration_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "grant",
+                  "direct"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "非null时明确切换；null与其他可空属性一样不修改，不能单独构成有效PATCH。切回grant会拒绝direct旧回执读取。"
           }
         },
         "required": [],
@@ -4582,6 +5246,18 @@
             ],
             "properties": {
               "enabled": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "registration_mode"
+            ],
+            "properties": {
+              "registration_mode": {
                 "not": {
                   "type": "null"
                 }
@@ -5094,6 +5770,10 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "lease_generation": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "required": [
@@ -5105,7 +5785,8 @@
           "close_reason",
           "source_lease_expires_at",
           "target_lease_expires_at",
-          "created_at"
+          "created_at",
+          "lease_generation"
         ]
       },
       "ManagementClosedSession": {
@@ -5163,6 +5844,11 @@
           },
           "target_answer_seen": {
             "type": "boolean"
+          },
+          "negotiation_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
           }
         },
         "required": [
@@ -5610,7 +6296,9 @@
             "format": "uuid"
           },
           "negotiation_generation": {
-            "const": 1
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
           },
           "ice_servers": {
             "type": "array",
@@ -5656,6 +6344,172 @@
           "expires_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "BootstrapCapabilities": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": 1
+          },
+          "signaling_path": {
+            "const": "/v1/device-signal"
+          },
+          "registration_modes": {
+            "const": [
+              "grant",
+              "direct"
+            ]
+          },
+          "channel_types": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "reliable_message",
+                "low_latency_message"
+              ]
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "managed_turn": {
+            "type": "boolean"
+          },
+          "application_e2ee": {
+            "type": "boolean"
+          },
+          "webrtc_dtls_required": {
+            "const": true
+          },
+          "max_signal_frame_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "max_message_bytes": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "api_version",
+          "signaling_path",
+          "registration_modes",
+          "channel_types",
+          "managed_turn",
+          "application_e2ee",
+          "webrtc_dtls_required",
+          "max_signal_frame_bytes",
+          "max_message_bytes"
+        ]
+      },
+      "ManagementWebhookEndpoint": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "tenant_id",
+          "url",
+          "secret_ref",
+          "enabled",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "secret_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "minLength": 1,
+            "maxLength": 2048,
+            "description": "运维注册表已批准的精确 HTTPS URL，无自定义端口、query、fragment或userinfo。"
+          }
+        }
+      },
+      "ManagementWebhookCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "secret_ref"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "minLength": 1,
+            "maxLength": 2048,
+            "description": "运维注册表已批准的精确 HTTPS URL，无自定义端口、query、fragment或userinfo。"
+          },
+          "secret_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        }
+      },
+      "ManagementWebhookPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "minLength": 1,
+            "maxLength": 2048,
+            "description": "运维注册表已批准的精确 HTTPS URL，无自定义端口、query、fragment或userinfo。"
+          },
+          "secret_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ManagementWebhookPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "$ref": "#/components/schemas/ManagementWebhookEndpoint"
+            }
           }
         }
       }

@@ -1,6 +1,6 @@
 # Android 封装模块
 
-本模块位于 `bindings/android`，复用唯一 C ABI 和 Rust `DeviceSdk`。**当前是独立验证候选：本机没有 Android SDK/NDK/emulator，尚未取得 Android 原生构建或运行结果，不能据 Linux 静态检查宣布 Android 可用。** 只有验证分支最终默认配置的精确 SHA 通过两种 emulator 的全部门禁，才可进入已验收发布。
+本模块位于 `bindings/android`，复用唯一 C ABI 和 Rust `DeviceSdk`。Android 原生构建以及 4KB、16KB emulator 门禁已取得实际通过证据；本地静态检查不替代它们。发布仍要求最终默认配置的精确 SHA 通过全部必需平台门禁，不能把单个平台成功等同整体已发布。
 
 ## 架构与边界
 
@@ -76,7 +76,7 @@ flowchart LR
 
 Gradle wrapper jar 与 distribution 均核对官方 SHA256；`gradle/wrapper/来源.json` 记录官方 commit、JAR 与嵌入 Apache-2.0 原文哈希，`许可证.txt` 保留原文，不把第三方改标为项目 MIT。NDK 不在本地脚本隐式下载；CI 明确安装固定版本。构建包括 Rust 本体、JNI、Kotlin、AAR 和示例 APK，不以单独交叉编译替代实际运行。Gradle 输入同时跟踪 SDK 目录外的已固定 nix 补丁源码，避免本地增量构建复用旧 native archive。
 
-CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单和 SHA256，再安装/运行。模拟器使用固定独占端口、明确 serial 和 AVD 名称，启动前拒绝碰撞；清理仅针对自己启动的 PID，身份不符不向其他模拟器发送清理命令。优先使用 runner 既有 KVM 权限，必要时仅临时赋予当前 runner 用户 ACL（保留共享 mask，不扩大其他用户有效权限），作业结束恢复原 ACL；工具缺失或权限不足失败关闭，不使用 world-write、持久用户组或桌面设置修改。
+CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单和 SHA256，再安装/运行。模拟器固定使用 4096MiB RAM；启动前只读检查宿主至少有 6144MiB 可用内存，并记录数值，不修改 swap、内核或安全配置。模拟器使用固定独占端口、明确 serial 和 AVD 名称，启动前拒绝碰撞；清理仅针对自己启动的 PID，身份不符不向其他模拟器发送清理命令。优先使用 runner 既有 KVM 权限，必要时仅临时赋予当前 runner 用户 ACL（保留共享 mask，不扩大其他用户有效权限），作业结束恢复原 ACL；工具缺失或权限不足失败关闭，不使用 world-write、持久用户组或桌面设置修改。
 
 ## 原生验证门禁
 
@@ -89,7 +89,9 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 5. 独立 Go/PostgreSQL/Redis 环境：真实 Android 注册、同租户跨应用授权确认、WebRTC 二进制收发、凭证旋转后进程重启仍用同设备身份。
 6. 应用 executor 暂停时确认真实消息已排队；远端关闭后读取 gate 已失效，再恢复 executor，消息不得交给应用。
 
-本地仅已完成 Rust host check、官方 JNI header 下 C++17 `-Werror` 静态编译，Kotlin 2.2.20 对官方 API36/AndroidX 类型的主库、示例与全部 instrumentation 编译，以及脚本/XML/YAML检查；实际 Android 构建、4KB 与 16KB emulator 门禁均已通过，覆盖上述生命周期、Keystore/跨进程 CAS、TLS 正负、测试 CA 与管理员清理、真实 Go 控制面双端通信及旋转后进程重启；参见[对应精确提交的完整 CI 证据](https://github.com/barry-ran/peerloom/actions/runs/40675227338)。这只证明该提交，不能自动覆盖后续组合提交。此前跨进程测试曾出现一次未定根因的 instrumentation 崩溃，后续两种页大小均未再复现，不能称根因已修复；固定五轮全通过的稳定性门禁与宿主队列精确 payload/connection 断言已准备，仍待其发布提交的实际验证。失败诊断只保留受限异常类别、栈位置、进程类别与测试阶段，不上传原始 logcat 或凭证。普通 emulator 不等于真机；移动网络切换、系统休眠、OEM Keystore 与长期后台生命周期仍需专项验收。
+本地完成了 Rust host check、JNI C++17 `-Werror` 静态编译、官方 API36/AndroidX 类型的 Kotlin 编译，以及脚本边界检查。实际 Android 构建、4KB 与 16KB emulator 已通过上述全部门禁，包括各自固定五轮跨进程 CAS/持锁强杀测试，以及宿主队列中精确 payload/connection 的撤销断言；参见[对应精确提交的完整 CI 证据](https://github.com/barry-ran/peerloom/actions/runs/40686771276)。这只证明对应提交，不自动覆盖后续组合提交。
+
+16KB 测试曾从本包 `ApplicationExitInfo` 取得 `REASON_LOW_MEMORY=3` 的明确记录，表明持锁测试进程被系统低内存清理，因而采用上述固定内存 fixture；保持原断言、五轮首败即红，不重试掩盖。该证据不追认更早所有崩溃都属于同一根因，也不证明任意低内存真机的长期行为。失败诊断仅保留白名单阶段、数值退出原因和受限异常类别，不读取进程 trace/description，不上传原始 logcat 或凭证。普通 emulator 不等于真机；移动网络切换、系统休眠、OEM Keystore 与长期后台生命周期仍需专项验收。
 
 产物必须随带项目 MIT、Rust Android target 与 Maven runtime/test 分开的依赖/许可证证据。现有 Linux SBOM 不能冒充 AAR 完整清单；Maven 证据仍需配套发布流程补齐，不能仅凭 native tests 绿就宣布许可证审计完成。
 
@@ -104,3 +106,5 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 
 - [锁定 verifier 的 AndroidCAStore 实现](https://github.com/rustls/rustls-platform-verifier/blob/252e25161a91af476cbea620e29d277592d27ec7/android/rustls-platform-verifier/src/main/java/org/rustls/platformverifier/CertificateVerifier.kt)
 - [Android 单张 CA 安装/卸载管理 API](https://developer.android.com/reference/android/app/admin/DevicePolicyManager#installCaCert(android.content.ComponentName,%20byte[]))
+
+- [Android 进程低内存退出原因](https://developer.android.com/reference/android/app/ApplicationExitInfo#REASON_LOW_MEMORY)

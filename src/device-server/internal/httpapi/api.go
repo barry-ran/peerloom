@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 
 type Service interface {
 	Register(context.Context, identity.Registration, string) (identity.Credential, error)
+	RegisterDirect(context.Context, identity.Registration, string, string) (identity.Credential, error)
 	Authenticate(context.Context, string) (identity.Device, error)
 	Refresh(context.Context, string, string) (identity.Credential, error)
 }
@@ -62,7 +64,18 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, id, err)
 			return
 		}
-		result, err := a.service.Register(ctx, input, r.Header.Get("Idempotency-Key"))
+		var result identity.Credential
+		var err error
+		if input.RegistrationGrant == "" {
+			host, _, parseErr := net.SplitHostPort(r.RemoteAddr)
+			if parseErr != nil {
+				writeError(w, id, identity.Fail("INVALID_REMOTE_ADDRESS", 422))
+				return
+			}
+			result, err = a.service.RegisterDirect(ctx, input, r.Header.Get("Idempotency-Key"), host)
+		} else {
+			result, err = a.service.Register(ctx, input, r.Header.Get("Idempotency-Key"))
+		}
 		respond(w, id, result, err, http.StatusCreated)
 	case "/v1/device-self":
 		if !method(w, r, id, http.MethodGet) {

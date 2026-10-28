@@ -259,13 +259,32 @@ class WatchdogTests(unittest.TestCase):
             app.mkdir()
             host = app / "PeerloomSimulatorHost"; host.write_bytes(b"synthetic Mach-O placeholder for mock only")
             document = products / "fixture.xctestrun"
-            document.write_bytes(plistlib.dumps({"TestHostPath": "__TESTROOT__/PeerloomSimulatorHost.app/PeerloomSimulatorHost"}))
+            bundle = app / "PlugIns/PeerloomSwiftTests.xctest"; bundle.mkdir(parents=True)
+            fields = {"TestBundlePath": "__TESTHOST__/PlugIns/PeerloomSwiftTests.xctest",
+                      "TestHostPath": "__TESTROOT__/PeerloomSimulatorHost.app"}
+            document.write_bytes(plistlib.dumps({"TestConfigurations": [{"TestTargets": [fields]}]}))
             intermediates = products.parent / "Intermediates.noindex"; intermediates.mkdir()
             entitlement = intermediates / "PeerloomSimulatorHost.app-Simulated.xcent"
             entitlement.write_bytes(plistlib.dumps({"keychain-access-groups": ["io.peerloom.validation.simulatorhost"]}))
             result = subprocess.CompletedProcess([], 0, "", "Signature=adhoc")
             with mock.patch.object(SIGNING.subprocess, "run", return_value=result), contextlib.redirect_stdout(io.StringIO()):
                 SIGNING.inspect(products, developer, require_host=True)
+                # Actual Xcode app bundle format and historical executable format
+                # both resolve only this same target's contained test bundle.
+                fields["TestHostPath"] += "/PeerloomSimulatorHost"
+                document.write_bytes(plistlib.dumps(fields))
+                SIGNING.inspect(products, developer, require_host=True)
+                fields["TestBundlePath"] = "__TESTHOST__/../outside.xctest"
+                (products / "outside.xctest").mkdir()
+                document.write_bytes(plistlib.dumps(fields))
+                with self.assertRaisesRegex(ValueError, "绑定"):
+                    SIGNING.inspect(products, developer, require_host=True)
+                fields["TestBundlePath"] = "__UNKNOWN__/PlugIns/PeerloomSwiftTests.xctest"
+                document.write_bytes(plistlib.dumps(fields))
+                with self.assertRaisesRegex(ValueError, "占位符"):
+                    SIGNING.inspect(products, developer, require_host=True)
+                fields["TestBundlePath"] = "__TESTHOST__/PlugIns/PeerloomSwiftTests.xctest"
+                document.write_bytes(plistlib.dumps(fields))
                 entitlement.write_bytes(plistlib.dumps({"keychain-access-groups": ["$(AppIdentifierPrefix)io.peerloom.validation.simulatorhost"]}))
                 with self.assertRaisesRegex(ValueError, "展开"):
                     SIGNING.inspect(products, developer, require_host=True)
@@ -294,6 +313,21 @@ class WatchdogTests(unittest.TestCase):
         native = SCRIPT.with_name("test-native.sh").read_text()
         self.assertIn("inspect-test-signing.py", native)
         self.assertIn("summary['totalTestCount'] >= 8 and summary['failedTests'] == 0", native)
+
+    def test_real_ios_runs_before_diagnostics_and_both_fail_closed(self):
+        source = SCRIPT.with_name("test-native.sh").read_text()
+        block = source[source.index("    test_status=0"):source.index("    run_capture ios-summary")]
+        self.assertLess(block.index("run ios-simulator"), block.index("run ios-test-signing"))
+        stub = 'run() { echo "$1"; if [[ $1 == ios-simulator ]]; then return "$TEST_CODE"; else return "$SIGN_CODE"; fi; }\n'
+        env = dict(os.environ, IOS_PROJECT="fixture", DEVICE="fixture", OUT="fixture", HERE="fixture",
+                   DEVELOPER_DIR="fixture", PEERLOOM_TLS_ORIGIN="https://127.0.0.1")
+        for test, signing in ((0, 0), (17, 0), (0, 23), (17, 23)):
+            result = subprocess.run(["bash", "-euc", stub + block],
+                                    env=dict(env, TEST_CODE=str(test), SIGN_CODE=str(signing)),
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, test or signing, result.stderr)
+            self.assertIn("ios-simulator\nios-test-signing\n", result.stdout)
+            self.assertIn(f"test_exit={test} signing_exit={signing}", result.stdout)
 
     def test_shell_helpers_preserve_failure_under_or_and_if(self):
         with tempfile.TemporaryDirectory() as directory:

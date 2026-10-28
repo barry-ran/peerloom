@@ -1,6 +1,6 @@
 # SDK 身份与信令模块
 
-本模块位于 `src/device-sdk/device-core` 与 `device-storage`。`DeviceSdk`/`Connection` 已把身份、原生 WSS、目标确认、授权期限与真实 WebRTC 组合为可调用的 Rust facade；也保留低层组件供专门集成。当前硬边界是**单个活动或待确认会话、单条可靠消息通道**，不是最终多连接多通道 SDK，不包含五端安全存储；Linux 的 C ABI 子集见 [C 语言接口模块](C语言接口模块.md)，不代表五端 ABI 已验收。
+本模块位于 `src/device-sdk/device-core` 与 `device-storage`。`DeviceSdk`/`Connection` 已把身份、原生 WSS、目标确认、授权期限与真实 WebRTC 组合为可调用的 Rust facade；也保留低层组件供专门集成。当前 Rust facade 支持**单身份、单 WSS 下有界多会话，每会话仍仅单条可靠消息通道**，不是最终多连接多通道 SDK，不包含五端安全存储；Linux 的 C ABI 子集见 [C 语言接口模块](C语言接口模块.md)，不代表五端 ABI 已验收。
 
 ```mermaid
 flowchart LR
@@ -26,7 +26,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     Accept[已接受的会话与双端租约] --> Fetch[可取消的会话ICE请求]
-    Fetch --> Check[session ID / gen1 / 最多4节点 / expiry校验]
+    Fetch --> Check[session ID / 当前协商代 / 最多4节点 / expiry校验]
     Check --> Gate[再次检查独立授权gate]
     Gate --> Peer[创建PeerConnection与完整ICE SDP]
     Peer --> Selected[RelayOnly核验本地实际选中Relay候选]
@@ -34,12 +34,12 @@ flowchart LR
 ```
 
 - DirectOnly 不请求托管TURN。Auto收到明确的空 `ice_servers` 可继续直连；RelayOnly空数组则明确失败 `RelayRequired`。鉴权拒绝、限额、服务不可用、传输错误或畸形响应不会被当作空数组，也不静默改为直连。
-- 托管响应只接受匹配会话、`negotiation_generation=1`、最多4个单URL TURN条目、未来整秒RFC3339 expiry、有限用户名与密码。过期/异常超长TTL拒绝；客户端允许的未来上限为11分钟（服务端最大10分钟，留有限时钟偏差），不是延长实际TURN认证期限。准备创建transport前再次检查expiry及SDK授权gate。
+- 托管响应只接受匹配会话、匹配本次协商的 `negotiation_generation`（1..32）、最多4个单URL TURN条目、未来整秒RFC3339 expiry、有限用户名与密码。过期/异常超长TTL拒绝；客户端允许的未来上限为11分钟（服务端最大10分钟，留有限时钟偏差），不是延长实际TURN认证期限。准备创建transport前再次检查expiry及SDK授权gate。
 - RelayOnly在DataChannel就绪后还读取实际选中候选，要求本地候选为Relay，才向应用发Ready。对端可以采用其他合法策略，不错误要求混合策略双方都必须配置RelayOnly。
 - 需要人工配置 `transport.ice_servers` 的集成方必须显式设置 `managed_relays=false`。托管Auto/RelayOnly与非空人工ICE配置互斥，避免隐式混合不同来源的凭据。旧的人工配置代码需要明确选择此兼容模式。
 - Close/租约到期可取消尚未完成的HTTP获取；迟到响应无法恢复已关闭gate。HTTP token只作敏感字符串快照，不写日志；身份轮换与原有存储CAS逻辑不受此路径改变。
 
-这仍然只是 **gen1初次协商**，不实现持续TURN凭据替换、ICE restart或网络切换恢复。凭据REST到期不等于既有allocation立即失效，不能将TURN expiry当成P2P撤销计时器；连接仍由独立SDK授权租约限制。新的授权连接会重新获取配置，不把上一会话的TURN凭据当作通用客户端缓存。TURN服务器范围、既有allocation Refresh的实际边界见[中继服务模块](中继服务模块.md)。
+初次协商及同会话的新代恢复均重新获取当前代配置；恢复采用重建 PeerConnection/Channel，而非原地 ICE restart，不实现持续原地 TURN 凭据替换。凭据REST到期不等于既有allocation立即失效，不能将TURN expiry当成P2P撤销计时器；连接仍由独立SDK授权租约限制。新的授权连接会重新获取配置，不把上一会话的TURN凭据当作通用客户端缓存。TURN服务器范围、既有allocation Refresh的实际边界见[中继服务模块](中继服务模块.md)。
 
 ## DeviceSdk 与 Connection
 
@@ -47,16 +47,22 @@ flowchart LR
 |---|---|
 | `DeviceSdk::load` | 从明确注入的存储读取身份，执行设备自查，然后启动后台连接 |
 | `DeviceSdk::register` | 使用注册 grant 与调用者保留的幂等键注册；若仅持久化失败，仍保留已发行的新内存凭证并发出 `IdentityPersistencePending` |
-| `connect` | 提交目标设备连接请求；成功返回不等于已获授权或数据已连通 |
+| `connect` / `connect_with_request` | 提交目标设备连接请求；后者返回稳定 request_id。成功仅表示本地准入与发送，不等于获授权或数据连通 |
 | `accept` / `reject` | 回应 `IncomingConnection`，由服务端决定权威状态 |
 | `next_event` | 接收 Online/Offline、连接请求、ConnectionReady、ConnectionClosed、Stopped 等事件 |
 | `refresh_credentials` | 串行轮换或恢复待定轮换，以新凭证重建 WSS；不因更换连接而延长旧数据授权 |
 | `Connection::send` / `receive` | 有界可靠消息收发；不暴露可绕过授权守卫的 raw transport |
 | `Connection::close` / `DeviceSdk::close` | 先禁止新收发，再有界等待资源清理；正常 SDK 退出允许正在执行的有界凭证变更结束 |
 
-`max_connections` 和 `max_channels_per_connection` 当前只接受 1，其余值明确拒绝。底层传输也硬设为单通道；Ready 前检查 label 为 `peerloom.reliable`、protocol 为空，并且有序、没有有限重传次数或期限，不能把低延迟或字节流通道伪装为可靠消息。
+`max_connections` 默认 1，可设 1..32（当前工程硬上界，不是吞吐承诺）；pending、待授权、协商、Ready 与恢复中的会话全部占位。`max_channels_per_connection` 当前仍只接受 1。C/Kotlin/Swift 本切片仍只曝光单连接，不能仅凭 Rust 配置宣称五端多连接完成。底层传输也硬设为单通道；Ready 前检查 label 为 `peerloom.reliable`、protocol 为空，并且有序、没有有限重传次数或期限，不能把低延迟或字节流通道伪装为可靠消息。
 
-SDK 命令/事件队列各 32；连接收发队列各 32，消息至多 64 KiB，待发送消息 TTL 为 30 秒。满队列明确拒绝或关闭，不能无限缓冲；这些数值不是整个进程内存上限。消息发送完成只代表本地传输受理，不代表对端业务已消费。传输协商在子任务中执行，身份变更也不阻塞授权计时。
+连接请求被拒时发出同样的 `ConnectionRequestFailed`（reason 为拒绝错误），不会释放其他目标的 pending，也不会关闭已获准的兄弟会话。未知或旧代响应不作用于当前代。服务端已分配会话后的事件继续以 session_id 关联。ABI1 保持事件布局与编号不变：请求失败映射既有 CONNECTION_CLOSED（connection_id=0、session_id 为空），JSON 追加 request_id 和 target_device_id；旧客户端可忽略新增字段。
+
+为防已关闭会话被迟到 snapshot 重新收录，SDK 保留所有曾接纳 session ID，不做 LRU 淘汰。每个 SDK 实例最多创建 1024 个不同会话（失败前 pending 也预留此预算）；达到总创建预算后仅拒绝新会话，现有会话的收发、续租、恢复和关闭继续。正常关闭释放活动额度但不释放该生命周期预算。需要更多连接生命周期时，宿主必须显式关闭旧 SDK 后重新加载同一身份（不是 ResetIdentity，不换设备 ID，不自动重启），不能同时创建同身份多个 WSS。
+
+每个会话独立持有租约、generation、恢复退避、同步状态和有界请求路由；身份轮换只重建一次 WSS，并逐会话同步，不重放业务消息。reset/撤销停止时先同步关闭全部 gate，再等待有界子任务退出。单个会话故障/主动关闭不替换其他会话。重连的 ConnectionClosed 可先于服务端最终终止到达，表示旧 handle 永久失效，不代表服务端会话已经释放。
+
+SDK 命令队列 32，事件和内部通知队列为 `4 * max_connections + 8`；连接收发队列各 32，消息至多 64 KiB，待发送消息 TTL 为 30 秒。满队列明确拒绝或关闭，不能无限缓冲；这些数值不是整个进程内存上限。消息发送完成只代表本地传输受理，不代表对端业务已消费。传输协商在子任务中执行，身份变更也不阻塞授权计时。
 
 ```mermaid
 stateDiagram-v2
@@ -74,8 +80,8 @@ stateDiagram-v2
 - WSS 自动重连默认开启；HTTP 握手 401/403、WebSocket 1008 策略关闭与非法协议停止重试。连续 8 次不足 30 秒的成功连接后异常断开也停止，避免相同身份的多个实例持续抢占；没有无限即时重试。
 - WSS 断开时，健康 P2P 可在**原授权期限**内保留。恢复后先 `sync.request`，权威快照通过前不主动续租；hello、同代次快照和重新上线都不延长旧期限。
 - 双方 actor 独立主动续租；只有关联本端续租请求且提高授权代次的权威响应可以延长 gate。终止、明确授权失败或截止到达时先关闭 gate；挂起中的 receive 被唤醒，已排队但尚未交付的数据也不能在失效后继续返回。
-- 数据传输失败后关闭旧会话，并明确报告 `ConnectionClosed`；目前需应用显式重新 `connect`。保留 desired-target 状态不等于已经实现数据连接自动重建或 ICE restart。
-- 连接请求已发送但响应前断线时，报告 `RequestOutcomeUnknown` 并解除本地 Busy，不暗自用新键重放。服务端可能已经占位，应用后续显式重试仍可能暂遇并发限额，直到原请求终结。
+- 可恢复的传输失败使旧 Connection 永久失效并报告 `ConnectionClosed`。默认按1–30秒指数退避加抖动请求同一已接受会话的下一代；双方租约/grant/设备凭据仍须有效，恢复请求本身不续租。服务端CAS每次最少间隔1秒、每会话最多32代，source固定发offer。新代成功另发 `ConnectionReady` 和新handle；不自动重放消息、不保证无损或exactly-once。主动关闭、拒绝、撤销、授权到期或永久认证错误停止恢复。
+- 连接请求已发送但响应前断线时，发出关联 `ConnectionRequestFailed { target_device_id, request_id, reason: RequestOutcomeUnknown }` 并仅释放匹配的本地 pending，不暗自用新键重放。服务端可能已经占位，应用后续显式重试仍可能暂遇并发限额，直到原请求终结。
 - 对占用容量时的新入站请求有界去重拒绝；其他会话的终止通知不会再触发拒绝回环。
 - 自动凭证刷新按已校验服务端时间提前 5 分钟安排，单次间隔最多 12 小时。未知提交结果用保留的原 key/token 在 1–2 秒抖动后重试，避免主动等满服务端旧 token 的 30 秒重叠窗口；保存失败则按 30 秒重试 CAS。永久 4xx（429 除外）和非法响应停止 SDK。
 - 创建 future 取消、进程崩溃、响应持续丢失或保存持续不可用仍不能保证恢复。调用方应保留原注册请求/幂等键；内存 pending 状态不是持久化变更日志。Drop 不能代替正常 `close().await` 的有序退出。
@@ -127,7 +133,7 @@ stateDiagram-v2
 | 心跳 | 使用 hello 下发的有界心跳与 presence TTL；收不到有效服务端帧则超时 |
 | 退出 | `close().await` 有界等待；超时或 Drop 中止后台任务；取消 close 仍保留任务所有权供 Drop 中止 |
 
-目前支持会话请求、接受/拒绝、续租、连接报告、终止、按会话查询快照及完整 offer/answer。SDP 上限 64 KiB，协商代次固定为 1；`SignalClient` 自身不包含自动重连；这一层由 `DeviceSdk` 编排。trickle、ICE restart 和 SDP 持久重放仍未实现。
+目前支持会话请求、接受/拒绝、续租、连接报告、终止、按会话查询快照及完整 offer/answer。SDP 上限 64 KiB，协商代次为1..32；旧connected帧省略代号仅按1处理，不能作用于新代；`SignalClient` 自身不包含自动重连；这一层由 `DeviceSdk` 编排。trickle、原地ICE restart 和 SDP 持久重放仍未实现。
 
 `send().await` 成功只证明帧已提交至 WebSocket 写入流程，不证明服务器授权或目标处理成功；业务结果通过事件接收。取消等待不撤销已经排队或发送的操作。关闭信令对象也不等于关闭另一个对象持有的 WebRTC 连接。
 
@@ -154,7 +160,7 @@ cargo test --locked -p device-core -p device-storage
 
 `identity_service.rs`、`authorized_pair.rs` 与 `sdk_service.rs` 是显式集成目标，需要一次性测试 fixture 和真实 Go 服务，不会因普通测试默认跳过而算作通过。已本地真实验证 HTTP 注册/同键重放/自查/轮换、授权 WSS 路由接入 WebRTC 双向消息，以及断信令后租约内继续传输、到期由编排调用方关闭和拒绝之后发送；授权双设备测试约 60 秒。独立传输集成也已验证真实 TURN 双端所选候选为 Relay/Relay，以及错误密码拒绝。
 
-`sdk_service.rs` 的应用代码只调用 facade，不复制 SDP/lease 编排：同租户跨应用请求和显式接受、真实双向消息、凭证轮换后重建 WSS、保留原 P2P，并等待 32 秒越过初始 30 秒确认租约后再次收发，最后主动关闭并验证 gate 拒绝。此场景本地真实 Go/PostgreSQL/Redis/WebRTC 通过，耗时约 32.70 秒。最后新增的未知刷新结果重试参数由对应单测覆盖；发布应继续对冻结提交运行完整 CI，而不是把较早二进制的集成结果当作所有后续改动均已验证。
+`sdk_service.rs` 的应用代码只调用 facade，不复制 SDP/lease 编排，覆盖同租户跨应用请求、显式接受、真实双向消息、凭证轮换后 WSS 重建、P2P保留与主动关闭。批准等待超时为30秒，**批准后的默认授权租约为60秒**，两者不能混用。短暂数据/轮换测试不证明越过租约；托管RelayOnly专项从同租户只读管理查询捕获数据库持久化的双端deadline与`lease_generation`，等到两个实际捕获deadline都过去后，再断言代次与双端deadline增长、仍未到期并实际双向收发。该私有service credential仅用于测试观测，不传入生产SDK；发布仍以精确提交CI和实际运行证据为准。 默认60秒租约的服务端负测不缩短TTL、不修改deadline：停止目标续租，源端在捕获的目标deadline前5秒仍正常续租，跨过该数据库实际deadline后源端续租被拒绝且会话信令关闭。它证明服务端双端失效关闭，不冒称宿主阻塞回调或SDK整机休眠验收。
 
 ```sh
 # 仅使用新建的临时开发fixture；该测试会真实轮换source凭证。

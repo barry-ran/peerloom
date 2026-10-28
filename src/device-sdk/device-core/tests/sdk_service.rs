@@ -62,6 +62,79 @@ async fn ready(sdk: &mut DeviceSdk) -> Connection {
         }
     }
 }
+#[derive(Deserialize)]
+struct LeaseSnapshot {
+    source_lease_expires_at: String,
+    target_lease_expires_at: String,
+    lease_generation: u64,
+}
+impl LeaseSnapshot {
+    fn deadlines(&self) -> (time::OffsetDateTime, time::OffsetDateTime) {
+        let parse = |value: &str| {
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                .expect("lease timestamp")
+        };
+        (
+            parse(&self.source_lease_expires_at),
+            parse(&self.target_lease_expires_at),
+        )
+    }
+}
+async fn lease_snapshot(origin: &str, session: &str, credential: &str) -> LeaseSnapshot {
+    let origin = reqwest::Url::parse(origin).unwrap();
+    assert!(
+        origin.scheme() == "http"
+            && matches!(origin.host_str(), Some("127.0.0.1" | "[::1]" | "::1"))
+    );
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {credential}")).unwrap();
+    auth.set_sensitive(true);
+    let mut response = client
+        .get(origin.join(&format!("/v1/sessions/{session}")).unwrap())
+        .header(reqwest::header::AUTHORIZATION, auth)
+        .send()
+        .await
+        .expect("loopback lease probe request");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "lease probe authorization/status"
+    );
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.expect("lease probe body") {
+        assert!(
+            bytes.len() + chunk.len() <= 16 * 1024,
+            "bounded lease snapshot"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).expect("typed lease snapshot")
+}
+fn lease_probe_credential() -> zeroize::Zeroizing<String> {
+    let path = std::env::var("TEST_LEASE_ADMIN_FIXTURE")
+        .expect("managed test requires private same-tenant lease probe fixture");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        assert!(metadata.is_file() && metadata.permissions().mode() & 0o777 == 0o600);
+        assert!(metadata.len() <= 65536);
+    }
+    let bytes = zeroize::Zeroizing::new(std::fs::read(path).unwrap());
+    #[derive(Deserialize)]
+    struct Admin {
+        service_credential: String,
+    }
+    let value: Admin = serde_json::from_slice(&bytes).expect("lease probe fixture shape");
+    assert!(value.service_credential.starts_with("svc_") && value.service_credential.len() == 47);
+    zeroize::Zeroizing::new(value.service_credential)
+}
+
 #[tokio::test]
 #[ignore = "requires fresh authorized pair fixture and real Go/PG/Redis/UDP"]
 async fn facade_connect_message_rotation_and_close() {
@@ -93,6 +166,14 @@ async fn facade_connect_message_rotation_and_close() {
     let mut ca = ready(&mut a).await;
     let mut cb = ready(&mut b).await;
     assert_eq!(ca.session_id(), cb.session_id());
+    let probe = if std::env::var("TEST_MANAGED_RELAY").as_deref() == Ok("1") {
+        let credential = lease_probe_credential();
+        let initial = lease_snapshot(&origin, ca.session_id(), &credential).await;
+        assert!(initial.lease_generation >= 1);
+        Some((credential, initial))
+    } else {
+        None
+    };
     ca.send("facade 双向消息".as_bytes()).await.unwrap();
     assert_eq!(cb.receive().await.unwrap(), "facade 双向消息".as_bytes());
     cb.send(&[0, 255, 0]).await.unwrap();
@@ -101,11 +182,42 @@ async fn facade_connect_message_rotation_and_close() {
     a.refresh_credentials().await.unwrap();
     assert!(matches!(next(&mut a).await, SdkEvent::Offline));
     assert!(matches!(next(&mut a).await, SdkEvent::Online));
-    // 超过初始目标确认租约30s（守卫还提前1s），证明两个actor主动续租，
-    // 而不是通过重连hello或仅在短暂happy-path内掩盖失效。
-    tokio::time::sleep(Duration::from_secs(32)).await;
+    if let Some((credential, initial)) = probe {
+        // ApprovalTimeout=30s is NOT LeaseTTL=60s. Observe persisted deadlines,
+        // wait past both actual captured deadlines, then prove BOTH were renewed.
+        let (source_before, target_before) = initial.deadlines();
+        let deadline = source_before.max(target_before);
+        let remaining = deadline - time::OffsetDateTime::now_utc();
+        let wait: Duration = remaining.try_into().expect("initial lease remains future");
+        assert!(
+            wait <= Duration::from_secs(90),
+            "unexpected fixture lease duration"
+        );
+        tokio::time::sleep(wait + Duration::from_secs(2)).await;
+        assert!(time::OffsetDateTime::now_utc() > deadline);
+        let renewed = lease_snapshot(&origin, ca.session_id(), &credential).await;
+        let (source_after, target_after) = renewed.deadlines();
+        assert!(
+            renewed.lease_generation > initial.lease_generation,
+            "persisted lease generation did not advance"
+        );
+        assert!(
+            source_after > source_before && target_after > target_before,
+            "both peer leases must advance"
+        );
+        assert!(
+            source_after > time::OffsetDateTime::now_utc()
+                && target_after > time::OffsetDateTime::now_utc()
+        );
+        println!(
+            "PASS: persisted dual lease deadlines crossed and advanced; lease_generation {} -> {}",
+            initial.lease_generation, renewed.lease_generation
+        );
+    }
     ca.send(b"after-rotation").await.unwrap();
     assert_eq!(cb.receive().await.unwrap(), b"after-rotation");
+    cb.send(b"renewed-reverse").await.unwrap();
+    assert_eq!(ca.receive().await.unwrap(), b"renewed-reverse");
     ca.close().await.unwrap();
     loop {
         if matches!(next(&mut b).await, SdkEvent::ConnectionClosed { .. }) {

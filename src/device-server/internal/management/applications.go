@@ -19,8 +19,8 @@ func normalizeApplication(input ApplicationInput) (ApplicationInput, error) {
 	if input.RegistrationMode == "" {
 		input.RegistrationMode = "grant"
 	}
-	// Direct registration has not acquired its required abuse controls yet.
-	if input.RegistrationMode != "grant" {
+	// Direct is an explicit opt-in; the public identity endpoint enforces durable quotas.
+	if input.RegistrationMode != "grant" && input.RegistrationMode != "direct" {
 		return input, fail("REGISTRATION_MODE_UNSUPPORTED", 422)
 	}
 	if input.MaxConnections == nil {

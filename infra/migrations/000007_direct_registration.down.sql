@@ -1,0 +1,2 @@
+DROP TABLE direct_registration_receipts;
+DROP TABLE direct_registration_windows;

@@ -1,0 +1,21 @@
+{
+  "ubuntu_base": {
+    "version": "24.04.3",
+    "url": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04.3/release/ubuntu-base-24.04.3-base-amd64.tar.gz",
+    "sha256": "6bc2cde3930ad088b3bb46fa45279e96d25bc3810f209850ecbe4722711874f9",
+    "checksum_source": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04.3/release/SHA256SUMS"
+  },
+  "redis": {
+    "version": "8.10.3",
+    "url": "https://download.redis.io/releases/redis-8.10.3.tar.gz",
+    "sha256": "edde778f6bdee7581e42fc139ca9e07e2822212092f7501f99989656e3629d02",
+    "checksum_source": "https://raw.githubusercontent.com/redis/redis-hashes/master/README"
+  },
+  "postgresql": {
+    "version": "18.6",
+    "url": "https://get.enterprisedb.com/postgresql/postgresql-18.6-5-windows-x64-binaries.zip",
+    "sha256": "e2246ba91d22345bc3d017586c09ede52d9df180b1eeb480f050445f1cad84e2",
+    "checksum_source": "https://get.enterprisedb.com/postgresql/postgresql-18.6-5-windows-x64-binaries.zip.sha256",
+    "official_listing": "https://www.enterprisedb.com/download-postgresql-binaries"
+  }
+}

@@ -1,14 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "设备注册输入",
-  "description": "M1 当前只实现 grant 注册；metadata 仅有限标量字段。16 KiB 原始请求体上限由 HTTP 入口实施。installation_public_key 当前仅作为不透明安装标签哈希，不验证算法，也不用于认证或恢复。",
+  "description": "支持 grant 注册与应用显式启用的 direct 注册。grant 请求提供非空 registration_grant；direct 省略该字段，HTTP Idempotency-Key 必须是 CSPRNG 32字节的canonical base64url无padding（43字符），该恢复秘密不得日志记录。非空无效grant不会降级direct。schema只验证body，不能证明随机性或跨body/header及应用当前配置；runtime另行实施。metadata仅有限标量字段，入口原始body限16 KiB；公开installation_public_key只作为非认证安装标签哈希。",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "application_id",
     "platform",
-    "installation_public_key",
-    "registration_grant"
+    "installation_public_key"
   ],
   "properties": {
     "application_id": {
@@ -33,7 +32,8 @@
     "registration_grant": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 512
+      "maxLength": 512,
+      "description": "非空时仅走grant注册；direct应省略，不使用空字符串或null。grant真伪/过期/应用mode由runtime验证。"
     },
     "sdk_version": {
       "type": "string",

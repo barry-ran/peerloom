@@ -73,7 +73,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, authenticate fun
 		return
 	}
 
-	if h.serveRelays(ctx, w, r, id, p) || h.serveResources(ctx, w, r, id, p) {
+	if h.serveWebhooks(ctx, w, r, id, p) || h.serveRelays(ctx, w, r, id, p) || h.serveResources(ctx, w, r, id, p) {
 		return
 	}
 	switch {

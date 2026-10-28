@@ -18,8 +18,8 @@ func TestInputAndAuthorityBounds(t *testing.T) {
 	if validateKey(ScopeAdmin, 365*24*time.Hour, "label") == nil {
 		t.Fatal("unbounded key lifetime")
 	}
-	if _, err := normalizeApplication(ApplicationInput{Name: "test", RegistrationMode: "direct"}); err == nil {
-		t.Fatal("unimplemented direct registration enabled")
+	if _, err := normalizeApplication(ApplicationInput{Name: "test", RegistrationMode: "both"}); err == nil {
+		t.Fatal("unsupported combined mode enabled")
 	}
 	if _, err := normalizeApplication(ApplicationInput{Name: "test\x00"}); err == nil {
 		t.Fatal("NUL text accepted")

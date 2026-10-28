@@ -45,12 +45,33 @@ jobs:
           ./gradlew --no-daemon :library:dependencies --configuration releaseRuntimeClasspath > ../../dist/android/maven-runtime.txt
           ./gradlew --no-daemon :library:dependencies --configuration debugAndroidTestRuntimeClasspath > ../../dist/android/maven-test.txt
           cargo +1.99.1 metadata --manifest-path ../../src/device-sdk/Cargo.toml --format-version 1 --locked > ../../dist/android/cargo-metadata.json
+      - name: 离线采集 Maven 原文证据（不代表法律清关）
+        working-directory: bindings/android
+        run: |
+          python3 scripts/test-maven-evidence.py
+          ./gradlew --no-daemon --offline :library:collectMavenEvidence
+          status=0
+          python3 scripts/collect-maven-evidence.py --input build/maven-evidence-input.json --output "$(realpath -m ../../dist/android/maven-evidence)" || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
+          test -s ../../dist/android/maven-evidence/report.json
+          test -s ../../dist/android/maven-evidence/sbom.cdx.json
+          test -s ../../dist/android/maven-evidence/SHA256SUMS
+          python3 - "$status" <<'PYVERIFY'
+          import json, sys
+          from pathlib import Path
+          report = json.loads(Path('../../dist/android/maven-evidence/report.json').read_text())
+          expected = 'incomplete' if sys.argv[1] == '2' else 'collected-not-legally-reviewed'
+          if report.get('evidence_status') != expected:
+              raise SystemExit('Maven evidence status mismatch')
+          PYVERIFY
+          (cd ../../dist/android/maven-evidence && sha256sum --check --strict SHA256SUMS)
+          if [ "$status" -eq 2 ]; then echo '::warning::Maven evidence incomplete; not eligible as complete Release evidence'; fi
       - name: 验证ELF与APK真实16KB对齐
         run: |
           python3 bindings/android/scripts/verify-artifacts.py dist/android/library-release.aar dist/android/sample-debug.apk dist/android/library-debug-androidTest.apk
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 dist/android/sample-debug.apk
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 dist/android/library-debug-androidTest.apk
-          (cd dist/android && sha256sum library-release.aar library-debug-androidTest.apk sample-debug.apk device_sdk.h LICENSE maven-runtime.txt maven-test.txt cargo-metadata.json > SHA256SUMS)
+          (cd dist/android && find . -type f ! -path './SHA256SUMS' -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: peerloom-android-${{ github.sha }}

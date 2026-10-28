@@ -1,7 +1,7 @@
 "use strict";
 const words = {
-    zh: { 'relay-nodes': '中继节点', region: '区域', endpoint: 'TURN 地址', secretRef: '运维批准的秘密引用', createRelay: '创建中继节点', relayNote: '只能引用运维预先批准的租户、地址与秘密绑定；不要输入共享秘密明文。', edit: '编辑', connectable: '允许新连接', tags: '标签（JSON 对象）', metadata: '元数据（JSON 对象）', invalidJSON: '请输入有效 JSON 对象', brand: '设备连接管理', login: '登录管理控制台', tenant: '租户 ID', user: '用户名', password: '密码', signIn: '安全登录', signOut: '退出登录', readOnly: '只读权限', admin: '管理员', applications: '应用', devices: '设备', 'connection-grants': '连接授权', sessions: '会话', 'audit-events': '审计', refresh: '刷新', next: '下一页', first: '回到第一页', loading: '正在加载…', empty: '这里还没有记录', createApp: '创建应用', grant: '签发连接授权', name: '名称', source: '源设备 ID', target: '目标设备 ID', expiry: '到期时间', save: '确认', cancel: '取消', close: '关闭', required: '请输入完整信息', error: '操作未完成', retry: '使用相同请求重试', uncertain: '结果尚未确认。请保留本页并重试相同请求，不要重复创建。', approve: '连接需要目标确认', max: '连接上限', enable: '启用', disable: '停用', revoke: '撤销', terminate: '结束会话', registration: '注册 grant', secret: '一次性注册凭证', secretNote: '仅交给可信业务后端。关闭后从本页移除，不写入浏览器存储。', copy: '复制', copied: '已复制', copyFail: '无法访问剪贴板，请手动选择复制', confirm: '确认变更', confirmNote: '这会影响目标资源。撤销不能撤回，已有连接仍受服务端通知及 SDK 授权租约约束。', appFilter: '应用 ID（可选）', online: '在线状态', all: '全部', yes: '在线', no: '离线', filter: '应用筛选', id: '标识', status: '状态', actions: '操作', readonlyNote: '当前账户只能查询，变更由服务端拒绝。', sessionNote: '浏览器只持安全会话；服务端凭证不会传入网页。', loginNote: '账户由数据库运维者显式创建。没有默认密码，也不能使用设备或服务端密钥登录。', back: '返回', approval: '需要确认', currentTenant: '当前租户', actor: '操作者', action: '事件', date: '时间', details: '详情', connected: '已连接', connecting: '连接中', authorizing: '待确认', closed: '已关闭', requested: '已请求', reconnecting: '重连中', active: '有效', revoked: '已撤销', unknown: '未知', disabled: '已停用' },
-    en: { 'relay-nodes': 'Relay nodes', region: 'Region', endpoint: 'TURN URL', secretRef: 'Operator-approved secret reference', createRelay: 'Create relay node', relayNote: 'Only operator-approved tenant, URL and secret bindings are accepted. Never enter a shared secret here.', edit: 'Edit', connectable: 'Allow new connections', tags: 'Tags (JSON object)', metadata: 'Metadata (JSON object)', invalidJSON: 'Enter a valid JSON object', brand: 'Device connection console', login: 'Sign in to the console', tenant: 'Tenant ID', user: 'Username', password: 'Password', signIn: 'Sign in securely', signOut: 'Sign out', readOnly: 'Read only', admin: 'Administrator', applications: 'Applications', devices: 'Devices', 'connection-grants': 'Connection grants', sessions: 'Sessions', 'audit-events': 'Audit', refresh: 'Refresh', next: 'Next page', first: 'First page', loading: 'Loading…', empty: 'No records yet', createApp: 'Create application', grant: 'Issue connection grant', name: 'Name', source: 'Source device ID', target: 'Target device ID', expiry: 'Expires at', save: 'Confirm', cancel: 'Cancel', close: 'Close', required: 'Complete the required fields', error: 'The operation did not complete', retry: 'Retry the same request', uncertain: 'The outcome is not confirmed. Keep this page open and retry the same request; do not create a duplicate.', approve: 'Require target approval', max: 'Connection limit', enable: 'Enable', disable: 'Disable', revoke: 'Revoke', terminate: 'Terminate session', registration: 'Registration grant', secret: 'One-time registration grant', secretNote: 'Share only through a trusted business backend. Closing removes it from this page; it is never saved to browser storage.', copy: 'Copy', copied: 'Copied', copyFail: 'Clipboard unavailable. Select and copy manually.', confirm: 'Confirm change', confirmNote: 'This affects the selected resource. Revocation cannot be undone; existing connections are bounded by notifications and SDK authorization leases.', appFilter: 'Application ID (optional)', online: 'Online status', all: 'All', yes: 'Online', no: 'Offline', filter: 'Apply filters', id: 'Identifier', status: 'Status', actions: 'Actions', readonlyNote: 'This account can query only. The server rejects mutations.', sessionNote: 'The browser holds only a secure session. Service credentials never enter this page.', loginNote: 'An operator must explicitly create your account. There is no default password; device and service keys cannot sign in.', back: 'Back', approval: 'Approval required', currentTenant: 'Current tenant', actor: 'Actor', action: 'Event', date: 'Time', details: 'Details', connected: 'Connected', connecting: 'Connecting', authorizing: 'Awaiting approval', closed: 'Closed', requested: 'Requested', reconnecting: 'Reconnecting', active: 'Active', revoked: 'Revoked', unknown: 'Unknown', disabled: 'Disabled' }
+    zh: { 'webhook-endpoints': 'Webhook 通知', webhookURL: '已批准的 HTTPS 地址', createWebhook: '创建 Webhook', webhookNote: '只能使用运维预先批准的 HTTPS 地址与秘密引用；不要输入签名秘密。禁用不会撤回已经发送的通知。', registrationMode: '注册方式', directWarning: 'direct 为公开注册，应用标识不是秘密；受持久配额限制。敏感业务请保持 grant。', 'relay-nodes': '中继节点', region: '区域', endpoint: 'TURN 地址', secretRef: '运维批准的秘密引用', createRelay: '创建中继节点', relayNote: '只能引用运维预先批准的租户、地址与秘密绑定；不要输入共享秘密明文。', edit: '编辑', connectable: '允许新连接', tags: '标签（JSON 对象）', metadata: '元数据（JSON 对象）', invalidJSON: '请输入有效 JSON 对象', brand: '设备连接管理', login: '登录管理控制台', tenant: '租户 ID', user: '用户名', password: '密码', signIn: '安全登录', signOut: '退出登录', readOnly: '只读权限', admin: '管理员', applications: '应用', devices: '设备', 'connection-grants': '连接授权', sessions: '会话', 'audit-events': '审计', refresh: '刷新', next: '下一页', first: '回到第一页', loading: '正在加载…', empty: '这里还没有记录', createApp: '创建应用', grant: '签发连接授权', name: '名称', source: '源设备 ID', target: '目标设备 ID', expiry: '到期时间', save: '确认', cancel: '取消', close: '关闭', required: '请输入完整信息', error: '操作未完成', retry: '使用相同请求重试', uncertain: '结果尚未确认。请保留本页并重试相同请求，不要重复创建。', approve: '连接需要目标确认', max: '连接上限', enable: '启用', disable: '停用', revoke: '撤销', terminate: '结束会话', registration: '注册 grant', secret: '一次性注册凭证', secretNote: '仅交给可信业务后端。关闭后从本页移除，不写入浏览器存储。', copy: '复制', copied: '已复制', copyFail: '无法访问剪贴板，请手动选择复制', confirm: '确认变更', confirmNote: '这会影响目标资源。撤销不能撤回，已有连接仍受服务端通知及 SDK 授权租约约束。', appFilter: '应用 ID（可选）', online: '在线状态', all: '全部', yes: '在线', no: '离线', filter: '应用筛选', id: '标识', status: '状态', actions: '操作', readonlyNote: '当前账户只能查询，变更由服务端拒绝。', sessionNote: '浏览器只持安全会话；服务端凭证不会传入网页。', loginNote: '账户由数据库运维者显式创建。没有默认密码，也不能使用设备或服务端密钥登录。', back: '返回', approval: '需要确认', currentTenant: '当前租户', actor: '操作者', action: '事件', date: '时间', details: '详情', connected: '已连接', connecting: '连接中', authorizing: '待确认', closed: '已关闭', requested: '已请求', reconnecting: '重连中', active: '有效', revoked: '已撤销', unknown: '未知', disabled: '已停用' },
+    en: { 'webhook-endpoints': 'Webhooks', webhookURL: 'Approved HTTPS URL', createWebhook: 'Create webhook', webhookNote: 'Use only operator-approved HTTPS URLs and secret references. Never enter the signing secret. Disabling cannot retract delivered events.', registrationMode: 'Registration mode', directWarning: 'Direct registration is public: application IDs are not secrets. Persistent quotas apply. Keep grant mode for sensitive use cases.', 'relay-nodes': 'Relay nodes', region: 'Region', endpoint: 'TURN URL', secretRef: 'Operator-approved secret reference', createRelay: 'Create relay node', relayNote: 'Only operator-approved tenant, URL and secret bindings are accepted. Never enter a shared secret here.', edit: 'Edit', connectable: 'Allow new connections', tags: 'Tags (JSON object)', metadata: 'Metadata (JSON object)', invalidJSON: 'Enter a valid JSON object', brand: 'Device connection console', login: 'Sign in to the console', tenant: 'Tenant ID', user: 'Username', password: 'Password', signIn: 'Sign in securely', signOut: 'Sign out', readOnly: 'Read only', admin: 'Administrator', applications: 'Applications', devices: 'Devices', 'connection-grants': 'Connection grants', sessions: 'Sessions', 'audit-events': 'Audit', refresh: 'Refresh', next: 'Next page', first: 'First page', loading: 'Loading…', empty: 'No records yet', createApp: 'Create application', grant: 'Issue connection grant', name: 'Name', source: 'Source device ID', target: 'Target device ID', expiry: 'Expires at', save: 'Confirm', cancel: 'Cancel', close: 'Close', required: 'Complete the required fields', error: 'The operation did not complete', retry: 'Retry the same request', uncertain: 'The outcome is not confirmed. Keep this page open and retry the same request; do not create a duplicate.', approve: 'Require target approval', max: 'Connection limit', enable: 'Enable', disable: 'Disable', revoke: 'Revoke', terminate: 'Terminate session', registration: 'Registration grant', secret: 'One-time registration grant', secretNote: 'Share only through a trusted business backend. Closing removes it from this page; it is never saved to browser storage.', copy: 'Copy', copied: 'Copied', copyFail: 'Clipboard unavailable. Select and copy manually.', confirm: 'Confirm change', confirmNote: 'This affects the selected resource. Revocation cannot be undone; existing connections are bounded by notifications and SDK authorization leases.', appFilter: 'Application ID (optional)', online: 'Online status', all: 'All', yes: 'Online', no: 'Offline', filter: 'Apply filters', id: 'Identifier', status: 'Status', actions: 'Actions', readonlyNote: 'This account can query only. The server rejects mutations.', sessionNote: 'The browser holds only a secure session. Service credentials never enter this page.', loginNote: 'An operator must explicitly create your account. There is no default password; device and service keys cannot sign in.', back: 'Back', approval: 'Approval required', currentTenant: 'Current tenant', actor: 'Actor', action: 'Event', date: 'Time', details: 'Details', connected: 'Connected', connecting: 'Connecting', authorizing: 'Awaiting approval', closed: 'Closed', requested: 'Requested', reconnecting: 'Reconnecting', active: 'Active', revoked: 'Revoked', unknown: 'Unknown', disabled: 'Disabled' }
 };
 let language = localStorage.getItem('peerloom.language') === 'en' ? 'en' : 'zh';
 const t = (key) => words[language][key];
@@ -177,7 +177,7 @@ function renderShell() {
     aside.append(el('div', 'brand', 'Peerloom'), el('p', 'sidebar-subtitle', t('brand')));
     const navigation = el('nav');
     navigation.setAttribute('aria-label', t('brand'));
-    for (const name of ['applications', 'devices', 'connection-grants', 'sessions', 'relay-nodes', 'audit-events']) {
+    for (const name of ['applications', 'devices', 'connection-grants', 'sessions', 'relay-nodes', 'webhook-endpoints', 'audit-events']) {
         const item = button(t(name), () => { if (busyMutation)
             return; resource = name; cursor = ''; renderShell(); }, `nav-item ${resource === name ? 'selected' : ''}`);
         if (resource === name)
@@ -218,6 +218,8 @@ function renderShell() {
         actions.append(button(t('createApp'), createApplication, 'button primary'));
     if (session.scope === 'admin' && resource === 'connection-grants')
         actions.append(button(t('grant'), createGrant, 'button primary'));
+    if (session.scope === 'admin' && resource === 'webhook-endpoints')
+        actions.append(button(t('createWebhook'), () => editWebhook(), 'button primary'));
     if (session.scope === 'admin' && resource === 'relay-nodes')
         actions.append(button(t('createRelay'), () => editRelay(), 'button primary'));
     heading.append(actions);
@@ -292,7 +294,7 @@ async function loadRows() {
             query.set('online', onlineFilter);
     }
     try {
-        const data = await api(`/v1/${resource}?${query}`);
+        const data = await api(resource === 'webhook-endpoints' ? '/v1/webhook-endpoints' : `/v1/${resource}?${query}`);
         if (ticket !== generation)
             return;
         if (!Array.isArray(data['items']))
@@ -307,7 +309,7 @@ async function loadRows() {
             area.append(el('p', 'empty', t('empty')));
             return;
         }
-        const columns = resource === 'applications' ? [['name', t('name')], ['id', t('id')], ['enabled', t('status')], ['require_target_approval', t('approval')]] : resource === 'devices' ? [['display_name', t('name')], ['id', t('id')], ['platform', 'Platform'], ['online', t('online')], ['status', t('status')]] : resource === 'connection-grants' ? [['source_device_id', t('source')], ['target_device_id', t('target')], ['expires_at', t('expiry')], ['revoked_at', t('revoke')]] : resource === 'sessions' ? [['id', t('id')], ['source_device_id', t('source')], ['target_device_id', t('target')], ['state', t('status')], ['close_reason', t('status')]] : resource === 'relay-nodes' ? [['name', t('name')], ['region', t('region')], ['endpoint', t('endpoint')], ['enabled', t('status')]] : [['id', t('id')], ['created_at', t('date')], ['actor_type', t('actor')], ['action', t('action')], ['resource_id', t('id')]];
+        const columns = resource === 'applications' ? [['name', t('name')], ['id', t('id')], ['enabled', t('status')], ['require_target_approval', t('approval')]] : resource === 'devices' ? [['display_name', t('name')], ['id', t('id')], ['platform', 'Platform'], ['online', t('online')], ['status', t('status')]] : resource === 'connection-grants' ? [['source_device_id', t('source')], ['target_device_id', t('target')], ['expires_at', t('expiry')], ['revoked_at', t('revoke')]] : resource === 'sessions' ? [['id', t('id')], ['source_device_id', t('source')], ['target_device_id', t('target')], ['state', t('status')], ['close_reason', t('status')]] : resource === 'webhook-endpoints' ? [['url', t('webhookURL')], ['secret_ref', t('secretRef')], ['enabled', t('status')]] : resource === 'relay-nodes' ? [['name', t('name')], ['region', t('region')], ['endpoint', t('endpoint')], ['enabled', t('status')]] : [['id', t('id')], ['created_at', t('date')], ['actor_type', t('actor')], ['action', t('action')], ['resource_id', t('id')]];
         const table = el('table');
         const head = el('thead');
         const labels = el('tr');
@@ -423,6 +425,10 @@ function addActions(container, row) {
         container.append(button(t('edit'), () => editDevice(row), 'button small'));
         container.append(button(t('revoke'), () => mutate(t('confirm'), 'POST', `/v1/devices/${id}/revoke`, {}), 'button small danger'));
     }
+    else if (resource === 'webhook-endpoints') {
+        container.append(button(t('edit'), () => editWebhook(row), 'button small'));
+        container.append(button(row['enabled'] ? t('disable') : t('enable'), () => mutate(t('confirm'), 'PATCH', `/v1/webhook-endpoints/${id}`, { enabled: !row['enabled'] }), 'button small'));
+    }
     else if (resource === 'relay-nodes') {
         container.append(button(t('edit'), () => editRelay(row), 'button small'));
         container.append(button(row['enabled'] ? t('disable') : t('enable'), () => mutate(t('confirm'), 'PATCH', `/v1/relay-nodes/${id}`, { enabled: !row['enabled'] }), 'button small'));
@@ -454,6 +460,18 @@ function showRegistration(result) {
     } }));
     view.dialog.addEventListener('close', () => { output.value = ''; });
 }
+function registrationMode(value = 'grant') {
+    const wrap = el('label', 'field');
+    const select = el('select');
+    for (const mode of ['grant', 'direct']) {
+        const option = el('option', '', mode);
+        option.value = mode;
+        option.selected = mode === value;
+        select.append(option);
+    }
+    wrap.append(el('span', '', t('registrationMode')), select, el('small', 'muted', t('directWarning')));
+    return [wrap, select];
+}
 function createApplication() {
     if (busyMutation)
         return;
@@ -472,10 +490,35 @@ function createApplication() {
     approval.append(checked, document.createTextNode(t('approve')));
     const submit = el('button', 'button primary', t('save'));
     submit.type = 'submit';
-    form.append(nameWrap, maxWrap, approval, submit);
+    const [modeWrap, mode] = registrationMode();
+    form.append(nameWrap, maxWrap, modeWrap, approval, submit);
     view.content.append(form);
     form.addEventListener('submit', event => { event.preventDefault(); if (!form.reportValidity() || busyMutation)
-        return; const data = { name: name.value.trim(), max_connections: Number(max.value), require_target_approval: checked.checked }; view.dismiss(); mutate(t('createApp'), 'POST', '/v1/applications', data); });
+        return; const data = { name: name.value.trim(), registration_mode: mode.value, max_connections: Number(max.value), require_target_approval: checked.checked }; view.dismiss(); mutate(t('createApp'), 'POST', '/v1/applications', data); });
+}
+function editWebhook(row) {
+    if (busyMutation)
+        return;
+    const view = modal(row ? t('edit') : t('createWebhook'));
+    const form = el('form');
+    view.content.append(el('p', 'muted', t('webhookNote')));
+    const [urlWrap, url] = field(t('webhookURL'), 'url', row ? text(row['url']) : '');
+    url.maxLength = 2048;
+    const [refWrap, ref] = field(t('secretRef'), 'text', row ? text(row['secret_ref']) : '');
+    ref.maxLength = 64;
+    ref.pattern = '[A-Za-z0-9_-]+';
+    const submit = el('button', 'button primary', t('save'));
+    submit.type = 'submit';
+    form.append(urlWrap, refWrap, submit);
+    view.content.append(form);
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        if (busyMutation || !form.reportValidity())
+            return;
+        const data = { url: url.value.trim(), secret_ref: ref.value.trim() };
+        view.dismiss();
+        mutate(t('confirm'), row ? 'PATCH' : 'POST', row ? `/v1/webhook-endpoints/${text(row['id'])}` : '/v1/webhook-endpoints', data);
+    });
 }
 function editRelay(row) {
     if (busyMutation)
@@ -519,10 +562,11 @@ function editApplication(row) {
     approval.append(checked, document.createTextNode(t('approve')));
     const submit = el('button', 'button primary', t('save'));
     submit.type = 'submit';
-    form.append(nameWrap, maxWrap, approval, submit);
+    const [modeWrap, mode] = registrationMode(text(row['registration_mode']));
+    form.append(nameWrap, maxWrap, modeWrap, approval, submit);
     view.content.append(form);
     form.addEventListener('submit', event => { event.preventDefault(); if (busyMutation || !form.reportValidity())
-        return; const input = { name: name.value.trim(), max_connections: Number(max.value), require_target_approval: checked.checked }; view.dismiss(); mutate(t('confirm'), 'PATCH', `/v1/applications/${text(row['id'])}`, input); });
+        return; const input = { name: name.value.trim(), registration_mode: mode.value, max_connections: Number(max.value), require_target_approval: checked.checked }; view.dismiss(); mutate(t('confirm'), 'PATCH', `/v1/applications/${text(row['id'])}`, input); });
 }
 function editDevice(row) {
     if (busyMutation)

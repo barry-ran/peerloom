@@ -105,7 +105,29 @@ async fn successful_pair(phase: &'static str) -> (PairKinds, PairKinds) {
                 .create_channel("relay.low-latency", ChannelMode::LowLatencyMessage)
                 .await?;
             eprintln!("TURN {phase} stage=accept-low-latency");
-            let mut incoming = b.accept_channel().await?;
+            let mut incoming = match b.accept_channel().await {
+                Ok(channel) => channel,
+                Err(error) => {
+                    #[cfg(feature = "test-diagnostics")]
+                    {
+                        // Observe only AFTER the unchanged failed 10s accept. No retry,
+                        // polling of channel events, SDP, packet capture or arbitrary logs.
+                        eprintln!(
+                            "TURN {phase} diagnostic=hot-open-source {:?}",
+                            a.diagnostics()
+                        );
+                        eprintln!(
+                            "TURN {phase} diagnostic=hot-open-target {:?}",
+                            b.diagnostics()
+                        );
+                        eprintln!(
+                            "TURN {phase} diagnostic=source-channel-state {:?}",
+                            fast.diagnostic_state().await
+                        );
+                    }
+                    return Err(error);
+                }
+            };
             eprintln!("TURN {phase} stage=open-low-latency");
             fast.wait_open().await?;
             eprintln!("TURN {phase} stage=open-remote-low-latency");

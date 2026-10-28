@@ -22,6 +22,11 @@ jobs:
         with:
           go-version: '1.27.3'
           cache-dependency-path: src/device-server/go.sum
+      - name: Windows 临时依赖只读预检与监督脚本测试
+        run: |
+          ./scripts/test-windows-service.ps1 -PreflightOnly
+          python scripts/test-windows-service-script.py
+          if ($LASTEXITCODE -ne 0) { throw 'Windows fixture tests failed' }
       - name: 固定 Windows Rust 工具链
         run: |
           rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
@@ -42,7 +47,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Go build failed' }
           } finally { Pop-Location }
       - name: 真实 DPAPI、ACL、Rust 双端与 MSVC C/C++ ABI
-        run: ./scripts/test-windows.ps1
+        run: |
+          ./scripts/test-windows.ps1
+          ./scripts/test-windows-service.ps1
       - name: 保存 Windows 原生检查证据与 ABI（非正式发布）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

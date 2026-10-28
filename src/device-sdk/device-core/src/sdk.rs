@@ -1,5 +1,11 @@
-//! 最小原生编排 facade：容量1、单条可靠消息通道。没有字节流/FFI/ICE restart。
-//! WSS 自动恢复；数据连接失败后需显式 connect 创建新授权会话。
+//! 单身份/单WSS的有界多会话编排；每个会话仍只有可靠消息通道。
+//! WSS 自动恢复；已接受会话可按授权的新代重建连接，不是原地 ICE restart。
+#[cfg(test)]
+mod multiconnection_tests;
+mod reset;
+mod session_map;
+use session_map::SessionMap;
+const MAX_CONNECTIONS: usize = 32;
 use crate::{
     identity::{
         IdempotencyKey, IdentityClient, IdentityError, IdentitySession, RegistrationRequest,
@@ -83,6 +89,12 @@ pub enum SdkEvent {
         source_device_id: String,
     },
     ConnectionReady(Connection),
+    /// An admitted outgoing request failed before a session was established.
+    ConnectionRequestFailed {
+        target_device_id: String,
+        request_id: String,
+        reason: SdkError,
+    },
     ConnectionClosed {
         session_id: String,
         reason: SdkError,
@@ -93,13 +105,14 @@ pub enum SdkEvent {
 
 #[derive(Default)]
 struct Gate {
+    installation_closed: Arc<AtomicBool>,
     closed: AtomicBool,
     deadline: Mutex<Option<Instant>>,
     changed: tokio::sync::Notify,
 }
 impl Gate {
     fn check(&self) -> Result<(), SdkError> {
-        if self.closed.load(Ordering::Acquire) {
+        if self.closed.load(Ordering::Acquire) || self.installation_closed.load(Ordering::Acquire) {
             return Err(SdkError::Closed);
         }
         let deadline = *self.deadline.lock().map_err(|_| SdkError::Closed)?;
@@ -127,6 +140,7 @@ struct SendRequest {
 /// 不暴露 raw transport；截止后旧接收队列也不能继续向应用交付。
 pub struct Connection {
     session_id: String,
+    generation: u64,
     commands: mpsc::Sender<SendRequest>,
     messages: mpsc::Receiver<Vec<u8>>,
     gate: Arc<Gate>,
@@ -150,6 +164,9 @@ impl ConnectionValidity {
 impl Connection {
     pub fn validity(&self) -> ConnectionValidity {
         ConnectionValidity(self.gate.clone())
+    }
+    pub fn negotiation_generation(&self) -> u64 {
+        self.generation
     }
     pub fn session_id(&self) -> &str {
         &self.session_id
@@ -199,6 +216,7 @@ impl Connection {
             Duration::from_secs(5),
             self.sdk.send(Command::CloseConnection(
                 self.session_id.clone(),
+                self.generation,
                 Some(done),
             )),
         )
@@ -217,13 +235,20 @@ impl Connection {
 impl Drop for Connection {
     fn drop(&mut self) {
         self.gate.close();
-        let _ = self
-            .sdk
-            .try_send(Command::CloseConnection(self.session_id.clone(), None));
+        let _ = self.sdk.try_send(Command::CloseConnection(
+            self.session_id.clone(),
+            self.generation,
+            None,
+        ));
     }
 }
 
 pub struct DeviceSdk {
+    identity_state: Arc<tokio::sync::Mutex<IdentitySession>>,
+    installation_closed: Arc<AtomicBool>,
+    reset_started: bool,
+    reset_complete: bool,
+    reset_shutdown_unknown: bool,
     device_id: String,
     commands: mpsc::Sender<Command>,
     events: mpsc::Receiver<SdkEvent>,
@@ -257,7 +282,9 @@ impl DeviceSdk {
         config: &SdkConfig,
         store: Arc<dyn IdentityStore>,
     ) -> Result<IdentitySession, SdkError> {
-        if config.max_connections != 1 || config.max_channels_per_connection != 1 {
+        if !(1..=MAX_CONNECTIONS).contains(&config.max_connections)
+            || config.max_channels_per_connection != 1
+        {
             return Err(SdkError::InvalidConfiguration);
         }
         validate_transport_configuration(config)?;
@@ -285,15 +312,21 @@ impl DeviceSdk {
         }
         let device_id = stored.device_id.clone();
         let (commands, command_rx) = mpsc::channel(32);
-        let (events_tx, events) = mpsc::channel(32);
+        let (events_tx, events) = mpsc::channel(config.max_connections * 4 + 8);
         let (stop, stop_rx) = oneshot::channel();
         let sdk_commands = commands.clone();
+        let actor = Actor::new(config, identity, stored, sdk_commands, events_tx);
+        let identity_state = actor.identity.clone();
+        let installation_closed = actor.installation_closed.clone();
         let task = tokio::spawn(async move {
-            Actor::new(config, identity, stored, sdk_commands, events_tx)
-                .run(command_rx, stop_rx)
-                .await;
+            actor.run(command_rx, stop_rx).await;
         });
         Ok(Self {
+            identity_state,
+            installation_closed,
+            reset_started: false,
+            reset_complete: false,
+            reset_shutdown_unknown: false,
             device_id,
             commands,
             events,
@@ -305,6 +338,16 @@ impl DeviceSdk {
         &self.device_id
     }
     pub async fn connect(&self, target_device_id: &str) -> Result<(), SdkError> {
+        self.connect_with_request(target_device_id)
+            .await
+            .map(|_| ())
+    }
+    /// Returns the stable signaling request ID after bounded local admission.
+    /// Later failure is correlated through `ConnectionRequestFailed`; admission is not readiness.
+    pub async fn connect_with_request(&self, target_device_id: &str) -> Result<String, SdkError> {
+        if self.reset_started {
+            return Err(SdkError::Closed);
+        }
         let target = uuid::Uuid::parse_str(target_device_id)
             .map_err(|_| SdkError::InvalidConfiguration)?
             .to_string();
@@ -321,6 +364,9 @@ impl DeviceSdk {
         self.respond(session_id, false).await
     }
     async fn respond(&self, session_id: &str, accept: bool) -> Result<(), SdkError> {
+        if self.reset_started {
+            return Err(SdkError::Closed);
+        }
         let (tx, rx) = oneshot::channel();
         self.commands
             .try_send(Command::Respond(session_id.into(), accept, tx))
@@ -329,6 +375,9 @@ impl DeviceSdk {
     }
     /// 主动轮换后用新凭证重建 WSS；旧数据授权期限在 sync/renew 前不延长。
     pub async fn refresh_credentials(&self) -> Result<(), SdkError> {
+        if self.reset_started {
+            return Err(SdkError::Closed);
+        }
         let (tx, rx) = oneshot::channel();
         self.commands
             .try_send(Command::Refresh(tx))
@@ -336,6 +385,9 @@ impl DeviceSdk {
         rx.await.map_err(|_| SdkError::Closed)?
     }
     pub async fn next_event(&mut self) -> Option<SdkEvent> {
+        if self.reset_started {
+            return None;
+        }
         self.events.recv().await
     }
     pub async fn close(mut self) {
@@ -364,15 +416,15 @@ impl Drop for DeviceSdk {
     }
 }
 enum Command {
-    Connect(String, oneshot::Sender<Result<(), SdkError>>),
+    Connect(String, oneshot::Sender<Result<String, SdkError>>),
     Respond(String, bool, oneshot::Sender<Result<(), SdkError>>),
-    CloseConnection(String, Option<oneshot::Sender<()>>),
+    CloseConnection(String, u64, Option<oneshot::Sender<()>>),
     Refresh(oneshot::Sender<Result<(), SdkError>>),
 }
 enum Internal {
-    Description(String, &'static str, String),
-    Ready(String, Connection),
-    Closed(String, SdkError),
+    Description(String, u64, &'static str, String),
+    Ready(String, u64, Connection),
+    Closed(String, u64, SdkError),
 }
 struct Worker {
     control: mpsc::Sender<SessionDescription>,
@@ -395,10 +447,16 @@ struct Session {
     worker: Option<Worker>,
     renew_at: Instant,
     ready: bool,
+    generation: u64,
+    recovery_at: Option<Instant>,
+    recovery_attempt: u32,
+    sync_pending: bool,
+    requests: std::collections::VecDeque<(String, u64)>,
 }
 type RefreshOutcome = (Result<(), IdentityError>, Option<StoredIdentity>);
 
 struct Actor {
+    installation_closed: Arc<AtomicBool>,
     config: SdkConfig,
     identity: Arc<tokio::sync::Mutex<IdentitySession>>,
     identity_client: IdentityClient,
@@ -412,14 +470,11 @@ struct Actor {
     commands: mpsc::Sender<Command>,
     events: mpsc::Sender<SdkEvent>,
     signal: Option<SignalClient>,
-    sync_pending: bool,
     rejected_sessions: std::collections::VecDeque<String>,
     dial: Option<JoinHandle<Result<SignalClient, SignalError>>>,
     retry_at: Instant,
     attempt: u32,
-    session: Option<Session>,
-    pending: Option<String>,
-    desired_target: Option<String>,
+    sessions: SessionMap<Session>,
     internal_tx: mpsc::Sender<Internal>,
     internal_rx: mpsc::Receiver<Internal>,
 }
@@ -431,13 +486,16 @@ impl Actor {
         commands: mpsc::Sender<Command>,
         events: mpsc::Sender<SdkEvent>,
     ) -> Self {
-        let (internal_tx, internal_rx) = mpsc::channel(16);
+        let (internal_tx, internal_rx) = mpsc::channel(config.max_connections * 4 + 8);
         let dirty = identity.needs_persistence();
         if dirty {
             let _ = events.try_send(SdkEvent::IdentityPersistencePending);
         }
         Self {
+            sessions: SessionMap::new(config.max_connections)
+                .expect("validated connection capacity"),
             config,
+            installation_closed: Arc::new(AtomicBool::new(false)),
             identity_client: identity.client.clone(),
             identity: Arc::new(tokio::sync::Mutex::new(identity)),
             refresh: None,
@@ -455,14 +513,10 @@ impl Actor {
             commands,
             events,
             signal: None,
-            sync_pending: false,
             rejected_sessions: std::collections::VecDeque::new(),
             dial: None,
             retry_at: Instant::now(),
             attempt: 0,
-            session: None,
-            pending: None,
-            desired_target: None,
             internal_tx,
             internal_rx,
         }
@@ -521,7 +575,8 @@ impl Actor {
             }
         }
         .await;
-        if let Some(session) = self.session.as_ref() {
+        self.sessions.close_admission();
+        for (_, session) in self.sessions.iter() {
             session.gate.close();
         }
         // Graceful close lets a bounded in-flight credential mutation finish, instead of
@@ -538,7 +593,7 @@ impl Actor {
             task.abort();
             let _ = task.await;
         }
-        self.close_session(SdkError::Closed, false).await;
+        self.close_all().await;
         if let Some(signal) = self.signal.take() {
             signal.close().await;
         }
@@ -559,19 +614,27 @@ impl Actor {
         self.online_since = Some(Instant::now());
         self.signal = Some(signal);
         self.emit(SdkEvent::Online)?;
-        self.sync_pending = self.session.is_some();
-        if let Some(session) = &self.session {
-            match self
-                .send("sync.request", Some(&session.id.clone()), json!({}))
-                .await
-            {
+        let ids: Vec<String> = self
+            .sessions
+            .iter_mut()
+            .map(|(id, session)| {
+                session.sync_pending = true;
+                id.to_owned()
+            })
+            .collect();
+        for id in ids {
+            match self.send("sync.request", Some(&id), json!({})).await {
                 Ok(_) => {}
-                Err(SdkError::Signal(error)) => self.disconnected(error).await?,
+                Err(SdkError::Signal(error)) => {
+                    self.disconnected(error).await?;
+                    break;
+                }
                 Err(error) => return Err(error),
             }
         }
         Ok(())
     }
+
     fn start_refresh(&mut self) {
         let identity = self.identity.clone();
         self.refresh = Some(tokio::spawn(async move {
@@ -634,10 +697,13 @@ impl Actor {
             signal.close().await;
         }
         self.emit(SdkEvent::Offline)?;
-        if self.pending.take().is_some() && self.session.is_none() {
-            // The old server-side request may have committed. Do not invent a new key.
-            self.emit(SdkEvent::ConnectionClosed {
-                session_id: String::new(),
+        for (target_device_id, request_id) in self.sessions.drain_pending() {
+            let Some(request_id) = request_id else {
+                continue;
+            };
+            self.emit(SdkEvent::ConnectionRequestFailed {
+                target_device_id,
+                request_id,
                 reason: SdkError::RequestOutcomeUnknown,
             })?;
         }
@@ -667,18 +733,42 @@ impl Actor {
         Ok(())
     }
     async fn send(
-        &self,
+        &mut self,
         kind: &str,
         session: Option<&str>,
         payload: serde_json::Value,
     ) -> Result<String, SdkError> {
-        self.signal
+        let generation = session
+            .and_then(|id| self.sessions.get(id))
+            .map_or(1, |value| value.generation);
+        self.send_generation(kind, session, payload, generation)
+            .await
+    }
+    async fn send_generation(
+        &mut self,
+        kind: &str,
+        session: Option<&str>,
+        payload: serde_json::Value,
+        generation: u64,
+    ) -> Result<String, SdkError> {
+        let request = self
+            .signal
             .as_ref()
             .ok_or(SdkError::Offline)?
-            .send(kind, session, payload)
+            .send_generation(kind, session, payload, generation)
             .await
-            .map_err(SdkError::Signal)
+            .map_err(SdkError::Signal)?;
+        if let Some(value) = session.and_then(|id| self.sessions.get_mut(id)) {
+            // Errors carry request_id but not necessarily session_id. Route only
+            // a bounded recent request from this exact transport generation.
+            if value.requests.len() == 16 {
+                value.requests.pop_front();
+            }
+            value.requests.push_back((request.clone(), generation));
+        }
+        Ok(request)
     }
+
     async fn tick(&mut self) -> Result<(), SdkError> {
         let now = Instant::now();
         if self
@@ -702,47 +792,69 @@ impl Actor {
                 SignalClient::connect(&client, &token).await
             }));
         }
-        if self.session.as_ref().is_some_and(|session| {
-            session.gate.closed.load(Ordering::Acquire)
-                || session
-                    .guard
-                    .deadline()
-                    .is_some_and(|deadline| now >= deadline)
-        }) {
-            let reason = if self
-                .session
-                .as_ref()
-                .is_some_and(|session| session.gate.closed.load(Ordering::Acquire))
-            {
-                SdkError::Closed
-            } else {
-                SdkError::AuthorizationExpired
+        let ids: Vec<String> = self.sessions.iter().map(|(id, _)| id.to_owned()).collect();
+        for id in ids {
+            let Some(session) = self.sessions.get(&id) else {
+                continue;
             };
-            self.close_session(reason, true).await;
-        }
-        if self.signal.is_some()
-            && !self.sync_pending
-            && self
-                .session
-                .as_ref()
-                .is_some_and(|session| now >= session.renew_at && session.guard.is_authorized(now))
-        {
-            let id = self.session.as_ref().unwrap().id.clone();
-            match self.send("session.renew", Some(&id), json!({})).await {
-                Ok(request) => {
-                    let session = self.session.as_mut().unwrap();
-                    session
-                        .guard
-                        .renewal_requested(request)
-                        .map_err(|_| SdkError::AuthorizationExpired)?;
-                    session.renew_at = now + Duration::from_secs(15);
+            let expired = session
+                .guard
+                .deadline()
+                .is_some_and(|deadline| now >= deadline);
+            let closed = session.gate.closed.load(Ordering::Acquire) && session.worker.is_none();
+            if expired || closed {
+                self.close_session(
+                    &id,
+                    if closed {
+                        SdkError::Closed
+                    } else {
+                        SdkError::AuthorizationExpired
+                    },
+                    true,
+                )
+                .await;
+                continue;
+            }
+            let recovering =
+                !session.sync_pending && session.recovery_at.is_some_and(|at| now >= at);
+            if self.signal.is_some() && recovering {
+                match self
+                    .send("session.reconnecting", Some(&id), json!({}))
+                    .await
+                {
+                    Ok(_) => {
+                        let session = self.sessions.get_mut(&id).expect("actor-owned session");
+                        session.recovery_attempt = session.recovery_attempt.saturating_add(1);
+                        session.recovery_at = Some(now + backoff(session.recovery_attempt));
+                    }
+                    Err(SdkError::Signal(error)) => {
+                        self.disconnected(error).await?;
+                    }
+                    Err(_) => {}
                 }
-                Err(SdkError::Signal(error)) => self.disconnected(error).await?,
-                Err(error) => return Err(error),
+            }
+            let renew = self.sessions.get(&id).is_some_and(|session| {
+                !session.sync_pending && now >= session.renew_at && session.guard.is_authorized(now)
+            });
+            if self.signal.is_some() && renew {
+                match self.send("session.renew", Some(&id), json!({})).await {
+                    Ok(request) => {
+                        let session = self.sessions.get_mut(&id).expect("actor-owned session");
+                        if session.guard.renewal_requested(request).is_err() {
+                            self.close_session(&id, SdkError::AuthorizationExpired, true)
+                                .await;
+                        } else {
+                            session.renew_at = now + Duration::from_secs(15);
+                        }
+                    }
+                    Err(SdkError::Signal(error)) => self.disconnected(error).await?,
+                    Err(_) => {}
+                }
             }
         }
         Ok(())
     }
+
     async fn command(&mut self, command: Command) -> Result<(), SdkError> {
         match command {
             Command::Refresh(result) => {
@@ -756,49 +868,85 @@ impl Actor {
                 }
             }
             Command::Connect(target, result) => {
-                let outcome = if self.session.is_some() || self.pending.is_some() {
-                    Err(SdkError::Busy)
-                } else if target == self.stored.device_id {
+                let outcome = if target == self.stored.device_id {
                     Err(SdkError::InvalidConfiguration)
+                } else if self.signal.is_none() {
+                    Err(SdkError::Offline)
                 } else {
-                    match self
-                        .send("session.request", None, json!({"target_device_id":target}))
-                        .await
-                    {
-                        Ok(id) => {
-                            self.pending = Some(id);
-                            self.desired_target = Some(target);
-                            Ok(())
+                    match self.sessions.reserve_outgoing(target.clone()) {
+                        Err(_) => Err(SdkError::Busy),
+                        Ok(reservation) => {
+                            match self
+                                .send("session.request", None, json!({"target_device_id":target}))
+                                .await
+                            {
+                                Ok(request) => {
+                                    if self
+                                        .sessions
+                                        .bind_request(reservation, request.clone())
+                                        .is_ok()
+                                    {
+                                        Ok(request)
+                                    } else {
+                                        self.sessions.release_reservation(reservation);
+                                        Err(SdkError::Closed)
+                                    }
+                                }
+                                Err(error) => {
+                                    self.sessions.release_reservation(reservation);
+                                    Err(error)
+                                }
+                            }
                         }
-                        Err(error) => Err(error),
                     }
                 };
                 let _ = result.send(outcome);
             }
             Command::Respond(id, accept, result) => {
-                let outcome = if self.session.as_ref().is_none_or(|session| {
-                    session.id != id || session.target != self.stored.device_id
-                }) {
+                let outcome = if self
+                    .sessions
+                    .get(&id)
+                    .is_none_or(|session| session.target != self.stored.device_id)
+                {
                     Err(SdkError::Closed)
                 } else {
-                    self.send(
-                        if accept {
-                            "session.accept"
-                        } else {
-                            "session.reject"
-                        },
-                        Some(&id),
-                        json!({}),
-                    )
-                    .await
-                    .map(|_| ())
+                    if !accept {
+                        self.sessions
+                            .get(&id)
+                            .expect("known target session")
+                            .gate
+                            .close();
+                    }
+                    let outcome = self
+                        .send(
+                            if accept {
+                                "session.accept"
+                            } else {
+                                "session.reject"
+                            },
+                            Some(&id),
+                            json!({}),
+                        )
+                        .await
+                        .map(|_| ());
+                    if !accept {
+                        // Local refusal is irreversible even if its WSS result is uncertain.
+                        self.close_session(
+                            &id,
+                            SdkError::Rejected("CLIENT_REJECTED".into()),
+                            false,
+                        )
+                        .await;
+                    }
+                    outcome
                 };
                 let _ = result.send(outcome);
             }
-            Command::CloseConnection(id, done) => {
-                if self.session.as_ref().is_some_and(|s| s.id == id) {
-                    self.desired_target = None;
-                    self.close_session(SdkError::Closed, true).await;
+            Command::CloseConnection(id, generation, done) => {
+                if self.sessions.get(&id).is_some_and(|session| {
+                    session.generation == generation && (session.ready || done.is_some())
+                }) {
+                    self.close_session(&id, SdkError::Closed, true).await;
                 }
                 if let Some(done) = done {
                     let _ = done.send(());
@@ -807,21 +955,59 @@ impl Actor {
         }
         Ok(())
     }
+
     async fn message(&mut self, message: Envelope) -> Result<(), SdkError> {
         if message.kind == "error" {
+            let Some(request) = message.request_id.as_deref() else {
+                return Ok(());
+            };
             let code = message.payload["code"]
                 .as_str()
                 .unwrap_or("REQUEST_DENIED")
                 .to_owned();
-            self.pending = None;
-            let had_session = self.session.is_some();
-            self.close_session(SdkError::Rejected(code.clone()), false)
-                .await;
-            if !had_session {
-                self.emit(SdkEvent::ConnectionClosed {
-                    session_id: message.session_id.unwrap_or_default(),
+            if let Some(target_device_id) = self.sessions.pending_target(request).map(str::to_owned)
+            {
+                self.sessions.reject_request(request);
+                self.emit(SdkEvent::ConnectionRequestFailed {
+                    target_device_id,
+                    request_id: request.to_owned(),
                     reason: SdkError::Rejected(code),
                 })?;
+                return Ok(());
+            }
+            let routed = self.sessions.iter().find_map(|(id, session)| {
+                session
+                    .requests
+                    .iter()
+                    .find(|(value, _)| value == request)
+                    .map(|(_, generation)| {
+                        (
+                            id.to_owned(),
+                            *generation,
+                            session.generation,
+                            session.recovery_at.is_some(),
+                        )
+                    })
+            });
+            let Some((id, sent_generation, current_generation, recovering)) = routed else {
+                return Ok(());
+            };
+            if sent_generation != current_generation {
+                return Ok(());
+            }
+            if recovering
+                && matches!(
+                    code.as_str(),
+                    "NEGOTIATION_RATE_LIMIT" | "NEGOTIATION_STALE"
+                )
+            {
+                self.send("sync.request", Some(&id), json!({})).await?;
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    session.sync_pending = true;
+                }
+            } else {
+                self.close_session(&id, SdkError::Rejected(code), false)
+                    .await;
             }
             return Ok(());
         }
@@ -844,75 +1030,108 @@ impl Actor {
             if source != self.stored.device_id && target != self.stored.device_id {
                 return Err(SdkError::Signal(SignalError::InvalidMessage));
             }
-            if self.session.is_none() {
-                if message.kind == "session.terminated" {
-                    return Ok(());
-                }
-                if source == self.stored.device_id
-                    && (self.pending.is_none()
-                        || self.pending.as_ref() != message.request_id.as_ref())
+            let generation = message.payload["negotiation_generation"]
+                .as_u64()
+                .unwrap_or(1);
+            if !(1..=32).contains(&generation) {
+                return Err(SdkError::Signal(SignalError::InvalidMessage));
+            }
+            let mut incoming = false;
+            if self.sessions.get(&id).is_none() {
+                if message.kind == "session.terminated"
+                    || message.payload["state"] == "closed"
+                    || self.rejected_sessions.contains(&id)
+                    || self.sessions.has_seen(&id)
                 {
                     return Ok(());
                 }
-                if source == self.stored.device_id && self.desired_target.as_ref() != Some(&target)
-                {
-                    return Err(SdkError::Signal(SignalError::InvalidMessage));
+                let request = message.request_id.as_deref();
+                if source == self.stored.device_id {
+                    let Some(expected) =
+                        request.and_then(|request| self.sessions.pending_target(request))
+                    else {
+                        return Ok(());
+                    };
+                    if expected != target {
+                        return Err(SdkError::Signal(SignalError::InvalidMessage));
+                    }
                 }
-                self.pending = None;
                 let guard = LeaseGuard::new(id.clone(), source.clone(), target.clone())
                     .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?;
-                self.session = Some(Session {
+                let session = Session {
                     id: id.clone(),
                     source: source.clone(),
                     target: target.clone(),
                     guard,
-                    gate: Arc::new(Gate::default()),
+                    gate: Arc::new(Gate {
+                        installation_closed: self.installation_closed.clone(),
+                        ..Gate::default()
+                    }),
                     worker: None,
                     renew_at: Instant::now() + Duration::from_secs(10),
                     ready: false,
-                });
-                if target == self.stored.device_id && message.payload["state"] == "authorizing" {
-                    self.emit(SdkEvent::IncomingConnection {
-                        session_id: id.clone(),
-                        source_device_id: source,
-                    })?;
+                    generation,
+                    recovery_at: None,
+                    recovery_attempt: 0,
+                    sync_pending: false,
+                    requests: std::collections::VecDeque::new(),
+                };
+                let inserted = if source == self.stored.device_id {
+                    self.sessions.promote(
+                        request.expect("correlated outgoing request"),
+                        &target,
+                        id.clone(),
+                        session,
+                    )
+                } else {
+                    incoming = true;
+                    self.sessions.insert_incoming(id.clone(), session)
+                };
+                if inserted.is_err() {
+                    // Decline only this incoming session; never replace a live sibling.
+                    if incoming {
+                        if self.rejected_sessions.len() == 32 {
+                            self.rejected_sessions.pop_front();
+                        }
+                        self.rejected_sessions.push_back(id.clone());
+                        let kind = if message.payload["state"] == "authorizing" {
+                            "session.reject"
+                        } else {
+                            "session.terminate"
+                        };
+                        let _ = self
+                            .send_generation(kind, Some(&id), json!({}), generation)
+                            .await;
+                        return Ok(());
+                    }
+                    return Err(SdkError::Signal(SignalError::InvalidMessage));
                 }
             }
-            if self
-                .session
-                .as_ref()
-                .is_some_and(|session| session.id != id)
-            {
-                if target == self.stored.device_id
-                    && message.kind == "session.pending"
-                    && message.payload["state"] == "authorizing"
-                    && !self.rejected_sessions.contains(&id)
-                {
-                    if self.rejected_sessions.len() == 32 {
-                        self.rejected_sessions.pop_front();
-                    }
-                    self.rejected_sessions.push_back(id.clone());
-                    let _ = self.send("session.reject", Some(&id), json!({})).await;
-                }
+            let previous = self.sessions.get(&id).expect("admitted session").generation;
+            if generation < previous {
                 return Ok(());
+            }
+            if generation > previous {
+                self.replace_generation(&id, generation).await?;
             }
             let clock = self
                 .signal
                 .as_ref()
                 .ok_or(SdkError::Offline)?
                 .server_clock();
-            let session = self.session.as_mut().unwrap();
+            let session = self.sessions.get_mut(&id).expect("admitted session");
             if session
                 .guard
                 .apply(&message, &clock, Instant::now())
                 .is_err()
             {
-                self.close_session(SdkError::AuthorizationExpired, true)
+                self.close_session(&id, SdkError::AuthorizationExpired, true)
                     .await;
                 return Ok(());
             }
             if message.payload["state"] == "closed" {
                 self.close_session(
+                    &id,
                     SdkError::Rejected(
                         message.payload["close_reason"]
                             .as_str()
@@ -926,53 +1145,88 @@ impl Actor {
             }
             session.gate.update(session.guard.deadline());
             if message.kind == "sync.snapshot" {
-                self.sync_pending = false;
+                session.sync_pending = false;
             }
-            if session.guard.is_authorized(Instant::now())
+            let spawn = session.guard.is_authorized(Instant::now())
                 && session.source == self.stored.device_id
                 && session.worker.is_none()
-            {
-                self.spawn_worker(None)?;
+                && session.recovery_at.is_none();
+            if incoming && message.payload["state"] == "authorizing" {
+                self.emit(SdkEvent::IncomingConnection {
+                    session_id: id.clone(),
+                    source_device_id: source,
+                })?;
+            }
+            if spawn {
+                self.spawn_worker(&id, None)?;
             }
         } else if message.kind == "session.offer" || message.kind == "session.answer" {
-            let session = self.session.as_ref().ok_or(SdkError::Closed)?;
-            if message.session_id.as_deref() != Some(&session.id)
-                || message.negotiation_generation != Some(1)
+            let Some(id) = message.session_id.as_deref() else {
+                return Err(SdkError::Signal(SignalError::InvalidMessage));
+            };
+            let Some(session) = self.sessions.get(id) else {
+                return Ok(());
+            };
+            if message
+                .negotiation_generation
+                .is_some_and(|generation| generation < session.generation)
+            {
+                return Ok(());
+            }
+            if message.negotiation_generation != Some(session.generation)
                 || !session.guard.is_authorized(Instant::now())
             {
-                return Err(SdkError::Signal(SignalError::InvalidMessage));
+                self.close_session(id, SdkError::Signal(SignalError::InvalidMessage), true)
+                    .await;
+                return Ok(());
             }
-            let sdp = message.payload["sdp"]
-                .as_str()
-                .ok_or(SdkError::Signal(SignalError::InvalidMessage))?
-                .to_owned();
-            if message.kind == "session.offer" {
+            let Some(sdp) = message.payload["sdp"].as_str() else {
+                self.close_session(id, SdkError::Signal(SignalError::InvalidMessage), true)
+                    .await;
+                return Ok(());
+            };
+            let result = if message.kind == "session.offer" {
                 if session.target != self.stored.device_id || session.worker.is_some() {
-                    return Err(SdkError::Signal(SignalError::InvalidMessage));
+                    Err(SdkError::Signal(SignalError::InvalidMessage))
+                } else {
+                    match SessionDescription::offer(sdp.to_owned()) {
+                        Ok(offer) => self.spawn_worker(id, Some(offer)),
+                        Err(_) => Err(SdkError::Transport(TransportError::Negotiation)),
+                    }
                 }
-                self.spawn_worker(Some(
-                    SessionDescription::offer(sdp)
-                        .map_err(|_| SdkError::Transport(TransportError::Negotiation))?,
-                ))?;
             } else {
-                let answer = SessionDescription::answer(sdp)
-                    .map_err(|_| SdkError::Transport(TransportError::Negotiation))?;
-                session
-                    .worker
-                    .as_ref()
-                    .ok_or(SdkError::Closed)?
-                    .control
-                    .try_send(answer)
-                    .map_err(|_| SdkError::QueueFull)?;
+                match SessionDescription::answer(sdp.to_owned()) {
+                    Ok(answer) => {
+                        session
+                            .worker
+                            .as_ref()
+                            .ok_or(SdkError::Closed)
+                            .and_then(|worker| {
+                                worker
+                                    .control
+                                    .try_send(answer)
+                                    .map_err(|_| SdkError::QueueFull)
+                            })
+                    }
+                    Err(_) => Err(SdkError::Transport(TransportError::Negotiation)),
+                }
+            };
+            if let Err(error) = result {
+                self.close_session(id, error, true).await;
             }
         }
         Ok(())
     }
-    fn spawn_worker(&mut self, offer: Option<SessionDescription>) -> Result<(), SdkError> {
-        let session = self.session.as_mut().ok_or(SdkError::Closed)?;
+    fn spawn_worker(
+        &mut self,
+        id: &str,
+        offer: Option<SessionDescription>,
+    ) -> Result<(), SdkError> {
+        let session = self.sessions.get_mut(id).ok_or(SdkError::Closed)?;
         let (control, answers) = mpsc::channel(1);
         let (stop, stopped) = oneshot::channel();
         let id = session.id.clone();
+        let generation = session.generation;
         let gate = session.gate.clone();
         let mut config = self.config.transport.clone();
         config.max_channels = 1;
@@ -990,6 +1244,7 @@ impl Actor {
         let task = tokio::spawn(async move {
             transport_worker(
                 id,
+                generation,
                 gate,
                 config,
                 managed_relay,
@@ -1010,51 +1265,51 @@ impl Actor {
     }
     async fn internal(&mut self, event: Internal) -> Result<(), SdkError> {
         match event {
-            Internal::Description(id, kind, sdp) => {
+            Internal::Description(id, generation, kind, sdp) => {
                 if self
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| session.id == id)
+                    .sessions
+                    .get(&id)
+                    .is_some_and(|session| session.generation == generation)
                     && self
                         .send(kind, Some(&id), json!({"sdp":sdp}))
                         .await
                         .is_err()
                 {
-                    self.close_session(SdkError::Offline, false).await;
+                    self.close_session(&id, SdkError::Offline, false).await;
                 }
             }
-            Internal::Ready(id, connection) => {
-                if self.session.as_ref().is_some_and(|session| {
-                    session.id == id && session.guard.is_authorized(Instant::now())
+            Internal::Ready(id, generation, connection) => {
+                if self.sessions.get(&id).is_some_and(|session| {
+                    session.generation == generation && session.guard.is_authorized(Instant::now())
                 }) {
-                    self.session.as_mut().unwrap().ready = true;
+                    self.sessions.get_mut(&id).expect("current session").ready = true;
                     let _ = self.send("session.connected", Some(&id), json!({})).await;
                     self.emit(SdkEvent::ConnectionReady(connection))?;
                 }
             }
-            Internal::Closed(id, error) => {
-                if self
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| session.id == id)
+            Internal::Closed(id, generation, error) => {
+                if let Some(session) = self.sessions.get(&id)
+                    && session.generation == generation
                 {
-                    self.close_session(error, true).await;
+                    if self.config.auto_reconnect
+                        && recoverable_transport_error(&error)
+                        && session.guard.is_authorized(Instant::now())
+                        && session.generation < 32
+                    {
+                        self.prepare_recovery(&id, error).await?;
+                    } else {
+                        self.close_session(&id, error, true).await;
+                    }
                 }
             }
         }
         Ok(())
     }
-    async fn close_session(&mut self, reason: SdkError, notify: bool) {
-        let Some(mut session) = self.session.take() else {
+    async fn stop_generation(&mut self, id: &str) {
+        let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
         session.gate.close();
-        session.guard.invalidate();
-        if notify {
-            let _ = self
-                .send("session.terminate", Some(&session.id), json!({}))
-                .await;
-        }
         if let Some(mut worker) = session.worker.take() {
             if let Some(stop) = worker.stop.take() {
                 let _ = stop.send(());
@@ -1067,15 +1322,103 @@ impl Actor {
                 let _ = (&mut worker.task).await;
             }
         }
+    }
+    async fn prepare_recovery(&mut self, id: &str, reason: SdkError) -> Result<(), SdkError> {
+        self.stop_generation(id).await;
+        let session = self.sessions.get_mut(id).ok_or(SdkError::Closed)?;
+        session.gate = Arc::new(Gate {
+            installation_closed: self.installation_closed.clone(),
+            ..Gate::default()
+        });
+        session.gate.update(session.guard.deadline());
+        session.ready = false;
+        session.recovery_at = Some(Instant::now() + backoff(session.recovery_attempt));
+        self.emit(SdkEvent::ConnectionClosed {
+            session_id: id.to_owned(),
+            reason,
+        })
+    }
+    async fn replace_generation(&mut self, id: &str, generation: u64) -> Result<(), SdkError> {
+        let was_ready = self.sessions.get(id).is_some_and(|session| session.ready);
+        self.stop_generation(id).await;
+        let session = self.sessions.get_mut(id).ok_or(SdkError::Closed)?;
+        session.generation = generation;
+        session.gate = Arc::new(Gate {
+            installation_closed: self.installation_closed.clone(),
+            ..Gate::default()
+        });
+        session.gate.update(session.guard.deadline());
+        session.ready = false;
+        session.recovery_at = None;
+        // Old-generation error replies cannot terminate the newly authorized handle.
+        session.requests.clear();
+        if was_ready {
+            self.emit(SdkEvent::ConnectionClosed {
+                session_id: id.to_owned(),
+                reason: SdkError::Transport(TransportError::Closed),
+            })?;
+        }
+        Ok(())
+    }
+    async fn close_session(&mut self, id: &str, reason: SdkError, notify: bool) {
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        session.gate.close();
+        session.guard.invalidate();
+        let generation = session.generation;
+        if notify {
+            let _ = self
+                .send_generation("session.terminate", Some(id), json!({}), generation)
+                .await;
+        }
+        // Keep the slot charged until its bounded worker teardown finishes.
+        self.stop_generation(id).await;
+        self.sessions.remove(id);
         let _ = self.emit(SdkEvent::ConnectionClosed {
-            session_id: session.id,
+            session_id: id.to_owned(),
             reason,
         });
+    }
+    async fn close_all(&mut self) {
+        self.sessions.close_admission();
+        self.sessions.drain_pending();
+        // Fence every connection before the first await, then stop all workers.
+        for (_, session) in self.sessions.iter_mut() {
+            session.gate.close();
+            session.guard.invalidate();
+        }
+        let mut workers: Vec<Worker> = self
+            .sessions
+            .drain_sessions()
+            .filter_map(|mut session| session.worker.take())
+            .collect();
+        for worker in &mut workers {
+            if let Some(stop) = worker.stop.take() {
+                let _ = stop.send(());
+            }
+        }
+        // All joins share one bound; never N * five seconds on SDK/reset shutdown.
+        if tokio::time::timeout(
+            Duration::from_secs(5),
+            futures_util::future::join_all(workers.iter_mut().map(|worker| &mut worker.task)),
+        )
+        .await
+        .is_err()
+        {
+            for worker in &workers {
+                worker.task.abort();
+            }
+            let _ =
+                futures_util::future::join_all(workers.iter_mut().map(|worker| &mut worker.task))
+                    .await;
+        }
     }
 }
 impl Drop for Actor {
     fn drop(&mut self) {
-        if let Some(session) = self.session.as_ref() {
+        self.sessions.close_admission();
+        for (_, session) in self.sessions.iter() {
             session.gate.close();
         }
         if let Some(task) = self.refresh.as_ref() {
@@ -1152,6 +1495,7 @@ struct ManagedRelayRequest {
 #[allow(clippy::too_many_arguments)]
 async fn transport_worker(
     id: String,
+    generation: u64,
     gate: Arc<Gate>,
     mut config: TransportConfig,
     managed_relay: Option<ManagedRelayRequest>,
@@ -1166,7 +1510,7 @@ async fn transport_worker(
             gate.check()?;
             let configuration = relay
                 .client
-                .session_ice_servers(&id, &relay.credential)
+                .session_ice_servers_generation(&id, &relay.credential, generation)
                 .await
                 .map_err(SdkError::Identity)?;
             gate.check()?;
@@ -1180,7 +1524,7 @@ async fn transport_worker(
                 gate.close();
                 // The actor may already be awaiting this worker during close.
                 // Do not wait for space in its own full internal event queue.
-                let _ = events.try_send(Internal::Closed(id.clone(), SdkError::Closed));
+                let _ = events.try_send(Internal::Closed(id.clone(), generation, SdkError::Closed));
                 return;
             },
             result = fetch => result,
@@ -1189,7 +1533,7 @@ async fn transport_worker(
             Ok(servers) => config.ice_servers = servers,
             Err(error) => {
                 gate.close();
-                let _ = events.send(Internal::Closed(id, error)).await;
+                report_worker_closed(&events, id, generation, error, &mut stop).await;
                 return;
             }
         }
@@ -1198,9 +1542,15 @@ async fn transport_worker(
     let peer = match PeerTransport::new(config).await {
         Ok(peer) => peer,
         Err(error) => {
-            let _ = events
-                .send(Internal::Closed(id, SdkError::Transport(error)))
-                .await;
+            gate.close();
+            report_worker_closed(
+                &events,
+                id,
+                generation,
+                SdkError::Transport(error),
+                &mut stop,
+            )
+            .await;
             return;
         }
     };
@@ -1214,6 +1564,7 @@ async fn transport_worker(
             events
                 .send(Internal::Description(
                     id.clone(),
+                    generation,
                     "session.answer",
                     answer.sdp,
                 ))
@@ -1229,6 +1580,7 @@ async fn transport_worker(
             events
                 .send(Internal::Description(
                     id.clone(),
+                    generation,
                     "session.offer",
                     offer.sdp,
                 ))
@@ -1264,8 +1616,10 @@ async fn transport_worker(
         events
             .send(Internal::Ready(
                 id.clone(),
+                generation,
                 Connection {
                     session_id: id.clone(),
+                    generation,
                     commands: send,
                     messages,
                     gate: gate.clone(),
@@ -1297,6 +1651,7 @@ async fn transport_worker(
                     };
                     let _ = request.result.send(result);
                 },
+                _ = peer.wait_interrupted() => return Err(SdkError::Transport(TransportError::Ice)),
                 data = channel.receive() => match data {
                     Ok(data) => { gate.check()?; receive.try_send(data).map_err(|_|SdkError::QueueFull)?; },
                     Err(TransportError::Timeout) => {},
@@ -1305,19 +1660,122 @@ async fn transport_worker(
             }
         }
     };
-    let result =
-        tokio::select! {biased;_=&mut stop=>Err(SdkError::Closed),result=operation=>result};
+    let result = tokio::select! {
+        biased;
+        _ = &mut stop => None,
+        result = operation => Some(result),
+    };
     gate.close();
     let _ = peer.close().await;
-    let _ = events.try_send(Internal::Closed(
-        id,
-        result.err().unwrap_or(SdkError::Closed),
-    ));
+    if let Some(result) = result {
+        report_worker_closed(
+            &events,
+            id,
+            generation,
+            result.err().unwrap_or(SdkError::Closed),
+            &mut stop,
+        )
+        .await;
+    }
+}
+
+async fn report_worker_closed(
+    events: &mpsc::Sender<Internal>,
+    id: String,
+    generation: u64,
+    error: SdkError,
+    stop: &mut oneshot::Receiver<()>,
+) {
+    tokio::select! {
+        biased;
+        _ = stop => {},
+        _ = events.send(Internal::Closed(id, generation, error)) => {},
+    }
+}
+
+fn recoverable_transport_error(error: &SdkError) -> bool {
+    matches!(
+        error,
+        SdkError::Transport(
+            TransportError::Timeout
+                | TransportError::Closed
+                | TransportError::Io(_)
+                | TransportError::Ice
+                | TransportError::Relay
+                | TransportError::Dtls
+                | TransportError::Sctp
+                | TransportError::WebRtc
+        )
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn terminal_worker_notification_cancels_with_full_actor_queue() {
+        let (events, mut received) = mpsc::channel(1);
+        events
+            .send(Internal::Closed("queued".into(), 1, SdkError::Closed))
+            .await
+            .unwrap();
+        let (stop, mut stopped) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            report_worker_closed(
+                &events,
+                "session".into(),
+                2,
+                SdkError::Transport(TransportError::Ice),
+                &mut stopped,
+            )
+            .await;
+        });
+        tokio::task::yield_now().await;
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_millis(100), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            received.recv().await,
+            Some(Internal::Closed(_, 1, _))
+        ));
+        assert!(received.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn terminal_worker_notification_preserves_generation() {
+        let (events, mut received) = mpsc::channel(1);
+        let (_stop, mut stopped) = oneshot::channel();
+        report_worker_closed(
+            &events,
+            "session".into(),
+            7,
+            SdkError::Transport(TransportError::Ice),
+            &mut stopped,
+        )
+        .await;
+        assert!(matches!(received.recv().await,
+            Some(Internal::Closed(id, 7, SdkError::Transport(TransportError::Ice))) if id == "session"));
+    }
+
+    #[test]
+    fn recovery_does_not_retry_denial_or_expired_authority() {
+        for error in [
+            SdkError::Closed,
+            SdkError::AuthorizationExpired,
+            SdkError::Rejected("TARGET_REJECTED".into()),
+            SdkError::Identity(IdentityError::InvalidResponse),
+            SdkError::Transport(TransportError::RelayRequired),
+            SdkError::Transport(TransportError::InvalidConfiguration),
+        ] {
+            assert!(!recoverable_transport_error(&error));
+        }
+        assert!(recoverable_transport_error(&SdkError::Transport(
+            TransportError::Ice
+        )));
+    }
+
     #[test]
     fn managed_relay_policy_defers_only_missing_nodes_and_rejects_mixed_configuration() {
         let mut config = SdkConfig::new(
@@ -1363,6 +1821,7 @@ mod tests {
             )
             .unwrap();
             let gate = Arc::new(Gate {
+                installation_closed: Arc::new(AtomicBool::new(false)),
                 closed: AtomicBool::new(false),
                 deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
                 changed: tokio::sync::Notify::new(),
@@ -1373,13 +1832,14 @@ mod tests {
             if prefill {
                 assert!(
                     events
-                        .try_send(Internal::Closed("queued".into(), SdkError::Closed))
+                        .try_send(Internal::Closed("queued".into(), 1, SdkError::Closed))
                         .is_ok()
                 );
             }
             let (sdk, _commands) = mpsc::channel(1);
             let task = tokio::spawn(transport_worker(
                 uuid::Uuid::nil().to_string(),
+                1,
                 gate.clone(),
                 TransportConfig::default(),
                 Some(ManagedRelayRequest {
@@ -1404,7 +1864,7 @@ mod tests {
             assert!(gate.check().is_err());
             assert!(matches!(
                 received.recv().await,
-                Some(Internal::Closed(_, SdkError::Closed))
+                Some(Internal::Closed(_, _, SdkError::Closed))
             ));
         }
     }
@@ -1422,6 +1882,7 @@ mod tests {
         let id = uuid::Uuid::nil().to_string();
         let body = json!({"session_id":id,"negotiation_generation":1,"ice_servers":[]}).to_string();
         let gate = Arc::new(Gate {
+            installation_closed: Arc::new(AtomicBool::new(false)),
             closed: AtomicBool::new(false),
             deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
             changed: tokio::sync::Notify::new(),
@@ -1440,6 +1901,7 @@ mod tests {
         let (sdk, _commands) = mpsc::channel(1);
         transport_worker(
             id,
+            1,
             gate.clone(),
             TransportConfig::default(),
             Some(ManagedRelayRequest {
@@ -1456,7 +1918,7 @@ mod tests {
         server.await.unwrap();
         assert!(matches!(
             received.recv().await,
-            Some(Internal::Closed(_, SdkError::AuthorizationExpired))
+            Some(Internal::Closed(_, _, SdkError::AuthorizationExpired))
         ));
         assert!(gate.check().is_err());
     }
@@ -1513,6 +1975,7 @@ mod tests {
         gate.update(Some(Instant::now() + Duration::from_secs(60)));
         (
             Connection {
+                generation: 1,
                 session_id: uuid::Uuid::new_v4().to_string(),
                 commands,
                 messages,

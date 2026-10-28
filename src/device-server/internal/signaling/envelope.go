@@ -50,6 +50,14 @@ func Decode(data []byte) (Envelope, error) {
 	if e.RequestID != "" && !uuidPattern.MatchString(e.RequestID) {
 		return e, errors.New("invalid request")
 	}
+	// Only omission is legacy-compatible. Explicit zero or null must not be
+	// silently interpreted as a missing generation by encoding/json.
+	var presence struct {
+		Negotiation json.RawMessage `json:"negotiation_generation"`
+	}
+	if err := json.Unmarshal(data, &presence); err != nil || (len(presence.Negotiation) != 0 && e.Negotiation == 0) {
+		return e, errors.New("invalid negotiation generation")
+	}
 	if e.Generation < 0 || e.Generation > 9007199254740991 || e.Negotiation < 0 || e.Negotiation > 9007199254740991 || len(e.Fence) > 256 {
 		return e, errors.New("invalid generation")
 	}

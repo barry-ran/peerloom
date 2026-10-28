@@ -71,13 +71,13 @@ func now(ctx context.Context, tx pgx.Tx) (time.Time, error) {
 const sessionColumns = `id::text,tenant_id::text,source_device_id::text,target_device_id::text,
 COALESCE(grant_id::text,''),state,COALESCE(close_reason,''),
 COALESCE(source_lease_expires_at,'epoch'::timestamptz),COALESCE(target_lease_expires_at,'epoch'::timestamptz),
-lease_generation,source_connected,target_connected,source_offer_seen,target_answer_seen`
+lease_generation,source_connected,target_connected,source_offer_seen,target_answer_seen,negotiation_generation,negotiation_started_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scanSession(row scanner) (Session, error) {
 	var result Session
-	err := row.Scan(&result.ID, &result.TenantID, &result.SourceDeviceID, &result.TargetDeviceID, &result.GrantID, &result.State, &result.CloseReason, &result.SourceLeaseExpiresAt, &result.TargetLeaseExpiresAt, &result.LeaseGeneration, &result.SourceConnected, &result.TargetConnected, &result.SourceOfferSeen, &result.TargetAnswerSeen)
+	err := row.Scan(&result.ID, &result.TenantID, &result.SourceDeviceID, &result.TargetDeviceID, &result.GrantID, &result.State, &result.CloseReason, &result.SourceLeaseExpiresAt, &result.TargetLeaseExpiresAt, &result.LeaseGeneration, &result.SourceConnected, &result.TargetConnected, &result.SourceOfferSeen, &result.TargetAnswerSeen, &result.NegotiationGeneration, &result.NegotiationStartedAt)
 	if err != nil {
 		return result, err
 	}

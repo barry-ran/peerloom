@@ -12,6 +12,7 @@ typedef struct host {
     uint64_t sdk, connection, revision;
     char config[16384], snapshot[16384], incoming[64];
     unsigned online, messages, saves, shutdown, flood_completions;
+    unsigned deletions, delete_started, allow_delete_reply;
     uint64_t accepted_business, accepted_flood, rejected_full;
     uint64_t completions[128]; uint32_t statuses[128]; unsigned count;
 } host;
@@ -45,6 +46,18 @@ static void callback(uint64_t context, const dp_event *event) {
             char reply[80]; snprintf(reply,sizeof(reply),"{\"revision\":%llu}",(unsigned long long)h->revision);
             assert(dp_storage_complete(h->sdk,event->request_id,DP_OK,(const uint8_t *)reply,strlen(reply)) == DP_OK);
             ++h->saves;
+        } else if (strstr(json,"\"operation\":\"delete\"")) {
+            uint64_t expected = strtoull(value(json,"\"expected_revision\":"),NULL,10);
+            assert(expected == h->revision);
+            ++h->revision;
+            ++h->deletions;
+            assert(snprintf(h->snapshot,sizeof(h->snapshot),"{\"revision\":%llu,\"identity\":null}",(unsigned long long)h->revision)>0);
+            ++h->delete_started;
+            pthread_cond_broadcast(&changed);
+            struct timespec deadline; clock_gettime(CLOCK_REALTIME,&deadline); deadline.tv_sec+=45;
+            while (!h->allow_delete_reply) { assert(!pthread_cond_timedwait(&changed,&mutex,&deadline)); }
+            /* Simulate commit succeeded but reply lost: no second delete is permitted. */
+            assert(dp_storage_complete(h->sdk,event->request_id,DP_INTERNAL,NULL,0)==DP_OK);
         } else assert(!"unexpected store operation");
         break;
     }
@@ -79,14 +92,15 @@ static void wait_count(unsigned *value,unsigned minimum) {
     while (*value<minimum) assert(!pthread_cond_timedwait(&changed,&mutex,&until));
     pthread_mutex_unlock(&mutex);
 }
-static void complete(host *h,uint64_t id) {
+static void complete_status(host *h,uint64_t id,uint32_t expected_status) {
     struct timespec until; clock_gettime(CLOCK_REALTIME,&until); until.tv_sec+=45;
     pthread_mutex_lock(&mutex);
     for (;;) {
-        for (unsigned i=0;i<h->count;++i) if(h->completions[i]==id) { assert(h->statuses[i]==DP_OK); pthread_mutex_unlock(&mutex); return; }
+        for (unsigned i=0;i<h->count;++i) if(h->completions[i]==id) { assert(h->statuses[i]==expected_status); pthread_mutex_unlock(&mutex); return; }
         assert(!pthread_cond_timedwait(&changed,&mutex,&until));
     }
 }
+static void complete(host *h,uint64_t id) { complete_status(h,id,DP_OK); }
 static uint64_t submit(host *h,uint32_t kind,uint64_t connection,const void *data,size_t len) {
     struct timespec started;
     assert(!clock_gettime(CLOCK_MONOTONIC, &started));
@@ -140,7 +154,12 @@ int main(void) {
     struct stat st;assert(!stat(path,&st) && (st.st_mode&0777)==0600);
     FILE *f=fopen(path,"r");assert(f);
     for(unsigned i=0;i<2;++i){line(f,hosts[i].config,sizeof(hosts[i].config));line(f,hosts[i].snapshot,sizeof(hosts[i].snapshot));hosts[i].revision=1;}
-    char target[64];line(f,target,sizeof(target));fclose(f);
+    char target[64];line(f,target,sizeof(target));
+    const int reset_mode = getenv("TEST_C_RESET") != NULL;
+    char fresh_start[8192];
+    if (reset_mode) { line(f,fresh_start,sizeof(fresh_start)); }
+    fclose(f);
+    char old_device[37]; memcpy(old_device,value(hosts[0].snapshot,"\"device_id\":\""),36); old_device[36]=0;
     for(unsigned i=0;i<2;++i){host *h=&hosts[i];assert(dp_sdk_create((const uint8_t *)h->config,strlen(h->config),callback,i,&h->sdk)==DP_OK);uint64_t id=submit(h,DP_OP_START,0,"{}",2);complete(h,id);wait_count(&h->online,1);}
     char request[128];snprintf(request,sizeof(request),"{\"target_device_id\":\"%s\"}",target);
     complete(&hosts[0],submit(&hosts[0],DP_OP_CONNECT,0,request,strlen(request)));
@@ -158,9 +177,32 @@ int main(void) {
     pthread_mutex_lock(&mutex);assert(hosts[0].flood_completions);pthread_mutex_unlock(&mutex);
     complete(&hosts[0],submit(&hosts[0],DP_OP_REFRESH,0,NULL,0));wait_count(&hosts[0].saves,1);wait_count(&hosts[0].online,2);
     complete(&hosts[0],submit(&hosts[0],DP_OP_SEND,hosts[0].connection,message,sizeof(message)));wait_count(&hosts[1].messages,2);
-    uint64_t close=submit(&hosts[0],DP_OP_CLOSE_CONNECTION,hosts[0].connection,NULL,0);
-    assert(dp_sdk_submit(hosts[0].sdk,DP_OP_SEND,hosts[0].connection,message,sizeof(message),&ignored)==DP_CLOSED && !ignored);
-    complete(&hosts[0],close);
+    if (reset_mode) {
+        char reset[160];
+        snprintf(reset,sizeof(reset),"{\"expected_device_id\":\"%s\",\"retry\":false}",target);
+        assert(dp_sdk_submit(hosts[0].sdk,DP_OP_RESET_IDENTITY,0,(const uint8_t *)reset,strlen(reset),&ignored)==DP_INVALID_ARGUMENT && !ignored);
+        assert(dp_connection_is_valid(hosts[0].sdk,hosts[0].connection)==DP_OK);
+        snprintf(reset,sizeof(reset),"{\"expected_device_id\":\"%s\",\"retry\":false}",old_device);
+        uint64_t operation=submit(&hosts[0],DP_OP_RESET_IDENTITY,0,reset,strlen(reset));
+        assert(dp_connection_is_valid(hosts[0].sdk,hosts[0].connection)==DP_CLOSED);
+        assert(dp_sdk_submit(hosts[0].sdk,DP_OP_SEND,hosts[0].connection,message,sizeof(message),&ignored)==DP_CLOSED && !ignored);
+        wait_count(&hosts[0].delete_started,1);
+        assert(dp_sdk_cancel(hosts[0].sdk,operation)==DP_BUSY);
+        pthread_mutex_lock(&mutex); hosts[0].allow_delete_reply=1; pthread_cond_broadcast(&changed); pthread_mutex_unlock(&mutex);
+        complete_status(&hosts[0],operation,DP_OUTCOME_UNKNOWN);
+        assert(dp_sdk_submit(hosts[0].sdk,DP_OP_START,0,(const uint8_t *)fresh_start,strlen(fresh_start),&ignored)==DP_CLOSED && !ignored);
+        snprintf(reset,sizeof(reset),"{\"expected_device_id\":\"%s\",\"retry\":true}",old_device);
+        complete(&hosts[0],submit(&hosts[0],DP_OP_RESET_IDENTITY,0,reset,strlen(reset)));
+        pthread_mutex_lock(&mutex); assert(hosts[0].deletions==1 && strstr(hosts[0].snapshot,"\"identity\":null")); pthread_mutex_unlock(&mutex);
+        complete(&hosts[0],submit(&hosts[0],DP_OP_START,0,fresh_start,strlen(fresh_start)));
+        wait_count(&hosts[0].online,3);
+        pthread_mutex_lock(&mutex); assert(hosts[0].deletions==1 && !strstr(hosts[0].snapshot,old_device)); pthread_mutex_unlock(&mutex);
+        puts("C ABI reset: explicit confirmation, live gate, non-cancellable mutation, committed-delete reply loss/readback, new direct DeviceID PASS");
+    } else {
+        uint64_t close=submit(&hosts[0],DP_OP_CLOSE_CONNECTION,hosts[0].connection,NULL,0);
+        assert(dp_sdk_submit(hosts[0].sdk,DP_OP_SEND,hosts[0].connection,message,sizeof(message),&ignored)==DP_CLOSED && !ignored);
+        complete(&hosts[0],close);
+    }
     for(unsigned i=0;i<2;++i){uint64_t id;assert(dp_sdk_shutdown(hosts[i].sdk,&id)==DP_OK);wait_count(&hosts[i].shutdown,1);uint32_t status=DP_BUSY;for(unsigned n=0;n<10000&&status==DP_BUSY;++n){status=dp_sdk_release(hosts[i].sdk);if(status==DP_BUSY){struct timespec delay={0,1000000};nanosleep(&delay,NULL);}}assert(status==DP_OK);}
     pthread_mutex_lock(&mutex);
     for(unsigned i=0;i<2;++i){

@@ -25,6 +25,7 @@ import (
 	"github.com/barry-ran/peerloom/src/device-server/internal/management"
 	"github.com/barry-ran/peerloom/src/device-server/internal/migrate"
 	"github.com/barry-ran/peerloom/src/device-server/internal/relay"
+	"github.com/barry-ran/peerloom/src/device-server/internal/webhook"
 )
 
 func main() {
@@ -133,6 +134,22 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return errors.New("cannot initialize management service")
 	}
+	webhookRegistry, err := webhook.Load(os.Getenv("WEBHOOK_REGISTRY_FILE"))
+	if err != nil {
+		return errors.New("cannot initialize webhook registry")
+	}
+	administration, err = administration.WithWebhooks(webhookRegistry)
+	if err != nil {
+		return errors.New("cannot bind webhook registry")
+	}
+	webhookWorker, err := webhook.NewWorker(pool, webhook.NewSender(webhookRegistry))
+	if err != nil {
+		return errors.New("cannot initialize webhook worker")
+	}
+	webhookCtx, webhookCancel := context.WithCancel(ctx)
+	webhookDone := make(chan struct{})
+	go func() { defer close(webhookDone); webhookWorker.Run(webhookCtx) }()
+	defer func() { webhookCancel(); <-webhookDone }()
 	// Browser administration is explicitly enabled only for a canonical operator
 	// origin. It never creates an account and never accepts service credentials.
 	var browserAuth *adminauth.Service
@@ -173,6 +190,9 @@ func run(logger *slog.Logger) error {
 				if err == nil {
 					err = relayService.PurgeExpired(operationCtx)
 				}
+				if err == nil {
+					err = webhookWorker.Purge(operationCtx)
+				}
 				if err == nil && browserAuth != nil {
 					err = browserAuth.PurgeExpired(operationCtx)
 				}
@@ -186,7 +206,7 @@ func run(logger *slog.Logger) error {
 	defer func() { managementCancel(); <-managementDone }()
 	api := http.NewServeMux()
 	managementHandler := management.NewHandler(administration, signalingServer.NotifySession)
-	for _, resource := range []string{"applications", "registration-grants", "devices", "connection-grants", "sessions", "audit-events", "relay-nodes"} {
+	for _, resource := range []string{"applications", "registration-grants", "devices", "connection-grants", "sessions", "audit-events", "relay-nodes", "webhook-endpoints"} {
 		api.Handle("/v1/"+resource, managementHandler)
 		api.Handle("/v1/"+resource+"/", managementHandler)
 	}

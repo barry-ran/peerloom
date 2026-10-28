@@ -252,7 +252,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		actionCtx, actionCancel := context.WithTimeout(ctx, 5*time.Second)
-		deliveries, actionErr := s.dispatch(actionCtx, current, e)
+		deliveries, actionErr := s.dispatch(context.WithValue(actionCtx, bearerContextKey{}, token), current, e)
 		actionCancel()
 
 		for _, delivery := range deliveries {

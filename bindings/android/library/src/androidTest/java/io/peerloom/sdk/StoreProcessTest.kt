@@ -29,6 +29,10 @@ class StoreProbeService : Service() {
                     android.os.Process.killProcess(android.os.Process.myPid())
                 } else {
                     val kind = message.what
+                    android.util.Log.i(
+                        "PeerloomTestDiag",
+                        "store-probe-request kind=$kind pid=${android.os.Process.myPid()}",
+                    )
                     val reply = message.replyTo
                     val data = Bundle(message.data)
                     work.execute {
@@ -58,14 +62,30 @@ class StoreProbeService : Service() {
                                 while (SystemClock.elapsedRealtime() < start) {
                                     Thread.sleep(1)
                                 }
+                                android.util.Log.i(
+                                    "PeerloomTestDiag",
+                                    "store-probe-cas-start pid=${android.os.Process.myPid()}",
+                                )
                                 IdentityStore(this).execute(JSONObject(data.getString("request")!!))
+                                android.util.Log.i(
+                                    "PeerloomTestDiag",
+                                    "store-probe-cas-success pid=${android.os.Process.myPid()}",
+                                )
                                 result.arg1 = 0
                                 reply.send(result)
                             }
                         } catch (_: IdentityStore.Conflict) {
+                            android.util.Log.i(
+                                "PeerloomTestDiag",
+                                "store-probe-cas-conflict pid=${android.os.Process.myPid()}",
+                            )
                             result.arg1 = 11
                             reply.send(result)
-                        } catch (_: Exception) {
+                        } catch (error: Exception) {
+                            android.util.Log.i(
+                                "PeerloomTestDiag",
+                                "store-probe-error category=${error.javaClass.simpleName} pid=${android.os.Process.myPid()}",
+                            )
                             result.arg1 = 255
                             reply.send(result)
                         }
@@ -75,7 +95,13 @@ class StoreProbeService : Service() {
             }
         )
 
-    override fun onBind(intent: Intent): IBinder = handler.binder
+    override fun onBind(intent: Intent): IBinder {
+        android.util.Log.i(
+            "PeerloomTestDiag",
+            "store-probe-bound pid=${android.os.Process.myPid()}",
+        )
+        return handler.binder
+    }
 
     override fun onDestroy() {
         work.shutdownNow()
@@ -87,6 +113,7 @@ class StoreProbeService : Service() {
 class StoreProcessTest {
     @Test
     fun crossProcessCasAndKilledLockOwner() {
+        val started = System.currentTimeMillis()
         val context = ApplicationProvider.getApplicationContext<Context>()
         val instrumentation =
             context.packageManager.getInstrumentationInfo(
@@ -126,6 +153,7 @@ class StoreProcessTest {
                 Context.BIND_AUTO_CREATE,
             )
         )
+        var completed = false
         try {
             assertTrue(connected.await(10, TimeUnit.SECONDS))
             android.util.Log.i(
@@ -161,7 +189,11 @@ class StoreProcessTest {
                 } catch (_: IdentityStore.Conflict) {
                     11
                 }
-            val other = responses.poll(10, TimeUnit.SECONDS)!!
+            val other = responses.poll(10, TimeUnit.SECONDS)
+            if (other == null) {
+                fail("probe CAS response deadline; disconnected=${disconnected.count == 0L}")
+                return
+            }
             assertEquals(1, other.first)
             assertTrue(
                 "probe must be a distinct process",
@@ -202,7 +234,39 @@ class StoreProcessTest {
             assertTrue(disconnected.await(10, TimeUnit.SECONDS))
             android.util.Log.i("PeerloomTestDiag", "store-process remote-disconnected")
             assertEquals(3L, store.execute(storageRequest(app, "save", 2)).getLong("revision"))
+            completed = true
         } finally {
+            if (!completed) {
+                // Capture before unbind/runner cleanup can obscure the original failure.
+                // Own UID/package only: no description, trace, arbitrary text or credentials.
+                try {
+                    val activity = context.getSystemService(android.app.ActivityManager::class.java)
+                    val deadline = SystemClock.elapsedRealtime() + 2000
+                    do {
+                        val exits =
+                            activity
+                                .getHistoricalProcessExitReasons(context.packageName, 0, 8)
+                                .filter {
+                                    it.processName == context.packageName + ":storeProbe" &&
+                                        it.timestamp >= started
+                                }
+                        for (exit in exits) {
+                            android.util.Log.i(
+                                "PeerloomTestDiag",
+                                "store-probe-exit pid=${exit.pid} reason=${exit.reason} status=${exit.status} importance=${exit.importance}",
+                            )
+                        }
+                        if (exits.isNotEmpty()) break
+                        Thread.sleep(100)
+                    } while (SystemClock.elapsedRealtime() < deadline)
+                } catch (error: Exception) {
+                    // Diagnostics must not replace the original assertion or trigger a retry.
+                    android.util.Log.i(
+                        "PeerloomTestDiag",
+                        "store-probe-error category=${error.javaClass.simpleName} pid=${android.os.Process.myPid()}",
+                    )
+                }
+            }
             context.unbindService(connection)
         }
     }

@@ -10,6 +10,7 @@ import (
 )
 
 type ApplicationUpdate struct {
+	RegistrationMode      *string `json:"registration_mode"`
 	Name                  *string `json:"name"`
 	RequireTargetApproval *bool   `json:"require_target_approval"`
 	MaxConnections        *int    `json:"max_connections"`
@@ -22,10 +23,13 @@ type ApplicationChange struct {
 }
 
 func (s *Service) UpdateApplication(ctx context.Context, p Principal, id string, input ApplicationUpdate, key string) (ApplicationChange, error) {
+	if input.RegistrationMode != nil && *input.RegistrationMode != "grant" && *input.RegistrationMode != "direct" {
+		return ApplicationChange{}, fail("REGISTRATION_MODE_UNSUPPORTED", 422)
+	}
 	if !uuidPattern.MatchString(id) || (input.Name != nil && !validText(*input.Name, 128)) || (input.MaxConnections != nil && (*input.MaxConnections < 0 || *input.MaxConnections > 1024)) {
 		return ApplicationChange{}, fail("INVALID_APPLICATION_PROPERTIES", 422)
 	}
-	if input.Name == nil && input.RequireTargetApproval == nil && input.MaxConnections == nil && input.Enabled == nil {
+	if input.Name == nil && input.RequireTargetApproval == nil && input.MaxConnections == nil && input.Enabled == nil && input.RegistrationMode == nil {
 		return ApplicationChange{}, fail("EMPTY_PATCH", 422)
 	}
 	id = strings.ToLower(id)
@@ -43,8 +47,8 @@ func (s *Service) UpdateApplication(ctx context.Context, p Principal, id string,
 	if err != nil || found {
 		return result, err
 	}
-	result.Application, err = scanApplication(tx.QueryRow(ctx, `UPDATE applications SET name=COALESCE($3,name),require_target_approval=COALESCE($4,require_target_approval),max_connections=COALESCE($5,max_connections),enabled=COALESCE($6,enabled)
-WHERE tenant_id=$1 AND id=$2 RETURNING `+applicationColumns, p.tenantID, id, input.Name, input.RequireTargetApproval, input.MaxConnections, input.Enabled))
+	result.Application, err = scanApplication(tx.QueryRow(ctx, `UPDATE applications SET name=COALESCE($3,name),require_target_approval=COALESCE($4,require_target_approval),max_connections=COALESCE($5,max_connections),enabled=COALESCE($6,enabled),registration_mode=COALESCE($7,registration_mode)
+WHERE tenant_id=$1 AND id=$2 RETURNING `+applicationColumns, p.tenantID, id, input.Name, input.RequireTargetApproval, input.MaxConnections, input.Enabled, input.RegistrationMode))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApplicationChange{}, fail("APPLICATION_NOT_FOUND", 404)
 	}

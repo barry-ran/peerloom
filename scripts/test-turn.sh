@@ -127,7 +127,7 @@ READY
   cd src/device-sdk
   TEST_TURN_URL='turn:127.0.0.1:53478?transport=udp' \
   TEST_TURN_USERNAME="$(cat "$fixture/username")" TEST_TURN_CREDENTIAL_FILE="$fixture/password" \
-    cargo test -p device-transport-webrtc --test turn_pair --locked -- --ignored --nocapture
+    cargo test -p device-transport-webrtc --test turn_pair --features test-diagnostics --locked -- --ignored --nocapture
 )
 # 释放同一loopback端口后，在独立REST秘密fixture中验证真实到期/Refresh边界。
 # Python负责其随机容器与0600秘密的finally清理；本trap保留本次派生镜像的所有权。

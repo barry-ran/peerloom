@@ -14,17 +14,18 @@ type Session struct {
 	TargetDeviceID       string     `json:"target_device_id"`
 	GrantID              *string    `json:"grant_id"`
 	State                string     `json:"state"`
+	LeaseGeneration      int64      `json:"lease_generation"`
 	CloseReason          *string    `json:"close_reason"`
 	SourceLeaseExpiresAt *time.Time `json:"source_lease_expires_at"`
 	TargetLeaseExpiresAt *time.Time `json:"target_lease_expires_at"`
 	CreatedAt            time.Time  `json:"created_at"`
 }
 
-const sessionReadColumns = "id::text,source_device_id::text,target_device_id::text,grant_id::text,state,close_reason,source_lease_expires_at,target_lease_expires_at,created_at"
+const sessionReadColumns = "id::text,source_device_id::text,target_device_id::text,grant_id::text,state,lease_generation,close_reason,source_lease_expires_at,target_lease_expires_at,created_at"
 
 func scanSession(row scanner) (Session, error) {
 	var value Session
-	err := row.Scan(&value.ID, &value.SourceDeviceID, &value.TargetDeviceID, &value.GrantID, &value.State, &value.CloseReason, &value.SourceLeaseExpiresAt, &value.TargetLeaseExpiresAt, &value.CreatedAt)
+	err := row.Scan(&value.ID, &value.SourceDeviceID, &value.TargetDeviceID, &value.GrantID, &value.State, &value.LeaseGeneration, &value.CloseReason, &value.SourceLeaseExpiresAt, &value.TargetLeaseExpiresAt, &value.CreatedAt)
 	return value, err
 }
 

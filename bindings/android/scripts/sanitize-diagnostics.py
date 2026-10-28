@@ -28,6 +28,9 @@ def sanitize(line):
         return f'process_killed pid={kill[1]} instrumentation_reason={"instrumentation" in line.lower()}'
     if 'Force stopping io.peerloom.sdk.test' in line:
         return f'package_force_stopped instrumentation_reason={"instrumentation" in line.lower()}'
+    probe = re.search(r'\bstore-probe-(bound pid=\d+|request kind=\d+ pid=\d+|cas-(?:start|success|conflict) pid=\d+|error category=[A-Za-z]+(?:Exception|Error) pid=\d+|exit pid=\d+ reason=\d+ status=\d+ importance=\d+)', line)
+    if probe:
+        return f'store-probe-{probe[1]}'
     stage = re.search(r'\bstore-process (bound caller_pid=\d+|CAS local=\d+ remote=\d+ remote_pid=\d+|remote-lock-held|local-lock-timeout-confirmed|remote-disconnected|instrumentation_targets=(?:<default>|\*|io\.peerloom\.sdk\.test(?::storeProbe)?))', line)
     if stage:
         return f'store-process {stage[1]}'

@@ -38,17 +38,44 @@ class ContractTests(unittest.TestCase):
     def test_registration_negative(self):
         check = validator('device-registration.schema.json')
         valid = {'application_id': UUID, 'platform': 'linux', 'installation_public_key': 'key', 'registration_grant': 'reg_test'}
-        bad = [dict(valid, platform='other'), dict(valid, application_id='not-uuid'),
+        bad = [dict(valid, registration_grant=''), dict(valid, registration_grant=None), dict(valid, platform='other'), dict(valid, application_id='not-uuid'),
                dict(valid, tenant_id=UUID), dict(valid, metadata={'deep': {'nested': True}}),
                dict(valid, metadata={'text': 'x' * 1025}),
                dict(valid, metadata={str(i): i for i in range(33)})]
-        for field in valid:
+        for field in ('application_id', 'platform', 'installation_public_key'):
             case = dict(valid)
             del case[field]
             bad.append(case)
         for case in bad:
             with self.subTest(case=list(case)):
                 self.assertFalse(check.is_valid(case))
+
+    def test_direct_registration_body_and_conditional_secret_contract(self):
+        body = {'application_id': UUID, 'platform': 'linux', 'installation_public_key': 'public-label'}
+        standalone = validator('device-registration.schema.json')
+        embedded = self.management_validator('Registration')
+        for check in (standalone, embedded):
+            check.validate(body)
+            check.validate(dict(body, registration_grant='reg_test'))
+            self.assertFalse(check.is_valid(dict(body, registration_grant='')))
+            self.assertFalse(check.is_valid(dict(body, tenant_id=UUID)))
+        api = json.loads((ROOT / 'api/openapi.json').read_text())
+        self.assertEqual(api['components']['schemas']['Registration'], standalone.schema)
+        header = api['paths']['/v1/device-registrations']['post']['parameters'][0]
+        self.assertEqual(header['schema']['minLength'], 8)  # grant compatibility
+        secret = Draft202012Validator(header['x-direct-recovery-key-schema'])
+        secret.validate('A' * 43)  # encoding only, never a claim of entropy
+        for value in ('A' * 42, 'A' * 44, 'A' * 42 + 'B', 'A' * 43 + '=', UUID):
+            self.assertFalse(secret.is_valid(value))
+        create = self.management_validator('ManagementApplicationCreate')
+        for mode in ('grant', 'direct'):
+            create.validate({'name': 'test', 'registration_mode': mode})
+        self.assertFalse(create.is_valid({'name': 'test', 'registration_mode': 'both'}))
+        self.assertEqual(api['components']['schemas']['ManagementApplicationCreate']['properties']['registration_mode']['default'], 'grant')
+        bootstrap = self.management_validator('BootstrapCapabilities')
+        value = {'api_version': 1, 'signaling_path': '/v1/device-signal', 'registration_modes': ['grant', 'direct'], 'channel_types': ['reliable_message', 'low_latency_message'], 'managed_turn': False, 'application_e2ee': False, 'webrtc_dtls_required': True, 'max_signal_frame_bytes': 131072, 'max_message_bytes': 65536}
+        bootstrap.validate(value)
+        self.assertFalse(bootstrap.is_valid(dict(value, registration_modes=['grant', 'direct', 'both'])))
 
     def test_signal_fencing_and_negotiation(self):
         check = validator('signal-envelope.schema.json')
@@ -59,6 +86,13 @@ class ContractTests(unittest.TestCase):
                      connection_generation=1, fencing_token='f' * 16,
                      negotiation_generation=1, payload={'sdp': 'v=0'})
         check.validate(offer)
+        check.validate(dict(offer, negotiation_generation=2))
+        check.validate(dict(offer, type='session.reconnecting', payload={}))
+        connected = dict(offer, type='session.connected', payload={})
+        del connected['negotiation_generation']
+        check.validate(connected)  # Legacy omission means generation one, not current.
+        self.assertFalse(check.is_valid(dict(offer, negotiation_generation=33)))
+        self.assertFalse(check.is_valid(dict(connected, type='session.reconnecting')))
         cases = [dict(hello, fencing_token='f' * 16), dict(offer, seq=-1),
                  dict(offer, v=2), dict(offer, type='unknown'),
                  dict(offer, sent_at='not-time'), dict(offer, id='bad'),
@@ -86,8 +120,10 @@ class ContractTests(unittest.TestCase):
             '/v1/sessions/{id}/terminate': {'post'}, '/v1/audit-events': {'get'},
             '/v1/relay-nodes': {'get', 'post'}, '/v1/relay-nodes/{id}': {'get', 'patch', 'delete'},
             '/v1/device-sessions/{id}/ice-servers': {'get'},
+            '/v1/webhook-endpoints': {'get', 'post'},
+            '/v1/webhook-endpoints/{id}': {'patch', 'delete'},
         }
-        browser_resources = {'applications', 'registration-grants', 'devices', 'connection-grants', 'sessions', 'audit-events', 'relay-nodes'}
+        browser_resources = {'applications', 'registration-grants', 'devices', 'connection-grants', 'sessions', 'audit-events', 'relay-nodes', 'webhook-endpoints'}
         for path, methods in list(expected.items()):
             if path.startswith('/v1/') and path.split('/')[2] in browser_resources:
                 expected['/admin/api' + path] = methods
@@ -149,7 +185,7 @@ class ContractTests(unittest.TestCase):
                     parameter = next(p for p in operation['parameters'] if p['in'] == 'path')
                     self.assertTrue(parameter['required'])
                     self.assertEqual(parameter['schema']['format'], 'uuid')
-        self.assertEqual(operations, 22)
+        self.assertEqual(operations, 26)
 
     def test_browser_cookie_csrf_and_role_contracts(self):
         api = json.loads((ROOT / 'api/openapi.json').read_text())
@@ -170,7 +206,7 @@ class ContractTests(unittest.TestCase):
                         self.assertTrue(next(p for p in operation['parameters'] if p['name'] == 'Idempotency-Key')['required'])
                 if method != 'get':
                     self.assertTrue(next(p for p in operation['parameters'] if p['name'] == 'X-CSRF-Token')['required'])
-        self.assertEqual(operations, 22)
+        self.assertEqual(operations, 26)
         view = api['components']['schemas']['AdminSessionView']['properties']
         self.assertNotIn('token', view)
         self.assertNotIn('service_credential', view)
@@ -185,9 +221,9 @@ class ContractTests(unittest.TestCase):
                       {'connectable': None}, {'metadata': {'nested': {}}},
                       {'max_connections': -1}, {'max_connections': 1025}):
             self.assertFalse(device.is_valid(value))
-        for value in ({'enabled': False}, {'max_connections': 0}, {'name': '新名称'}):
+        for value in ({'enabled': False}, {'max_connections': 0}, {'name': '新名称'}, {'registration_mode': 'direct'}, {'registration_mode': 'grant'}, {'registration_mode': None, 'enabled': True}):
             app.validate(value)
-        for value in ({}, {'enabled': None}, {'registration_mode': 'direct'},
+        for value in ({}, {'enabled': None}, {'registration_mode': 'both'}, {'registration_mode': None},
                       {'name': ''}, {'max_connections': 1025}):
             self.assertFalse(app.is_valid(value))
 
@@ -224,15 +260,32 @@ class ContractTests(unittest.TestCase):
             check.validate({'items': [], 'next_cursor': 'opaque'})
             self.assertEqual(api['components']['schemas']['Management' + name + 'Page']
                              ['properties']['items']['maxItems'], 100)
+        session_schema = api['components']['schemas']['ManagementSession']
+        self.assertIn('lease_generation', session_schema['required'])
+        self.assertEqual(session_schema['properties']['lease_generation'], {'type': 'integer', 'minimum': 0})
         device_schema = api['components']['schemas']['ManagementDevice']
         self.assertEqual(device_schema['properties']['online']['anyOf'][1], {'type': 'null'})
         list_device = api['paths']['/v1/devices']['get']
         self.assertEqual({p['name'] for p in list_device['parameters']},
                          {'limit', 'cursor', 'application_id', 'online', 'tags'})
         self.assertIn('/v1/relay-nodes', api['paths'])
-        self.assertNotIn('/v1/webhook-endpoints', api['paths'])
+        self.assertIn('/v1/webhook-endpoints', api['paths'])
 
 
+
+    def test_webhook_contract_has_bounded_list_and_no_inline_secret(self):
+        create = self.management_validator('ManagementWebhookCreate')
+        value = {'url': 'https://hooks.example.com/events', 'secret_ref': 'tenant-v1'}
+        create.validate(value)
+        for extra in ({'secret': 'not-accepted'}, {'tenant_id': UUID}, {'addresses': ['127.0.0.1']}):
+            self.assertFalse(create.is_valid(dict(value, **extra)))
+        patch = self.management_validator('ManagementWebhookPatch')
+        patch.validate({'enabled': False})
+        self.assertFalse(patch.is_valid({}))
+        self.assertFalse(patch.is_valid({'enabled': None}))
+        api = json.loads((ROOT / 'api/openapi.json').read_text())
+        self.assertEqual(api['components']['schemas']['ManagementWebhookPage']['properties']['items']['maxItems'], 4)
+        self.assertNotIn('secret', api['components']['schemas']['ManagementWebhookEndpoint']['properties'])
 
     def test_relay_typed_node_and_credentials(self):
         create = self.management_validator('ManagementRelayNodeCreate')
@@ -246,7 +299,9 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(patch.is_valid({'enabled': None}))
         response = self.management_validator('SessionICEServers')
         response.validate({'session_id': UUID, 'negotiation_generation': 1, 'ice_servers': []})
-        self.assertFalse(response.is_valid({'session_id': UUID, 'negotiation_generation': 2, 'ice_servers': []}))
+        response.validate({'session_id': UUID, 'negotiation_generation': 2, 'ice_servers': []})
+        for generation in (0, 33):
+            self.assertFalse(response.is_valid({'session_id': UUID, 'negotiation_generation': generation, 'ice_servers': []}))
 
 
 if __name__ == '__main__':

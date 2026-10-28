@@ -185,13 +185,27 @@ fixture=""
 "${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
   relay-set-shared --offline --node-id 88888888-8888-4888-8888-888888888888 \
   --name ci-managed-relay --endpoint 'turn:127.0.0.1:53478?transport=udp' --secret-ref ci-managed-relay > /dev/null
-fixture="$(mktemp "$PWD/.secrets/identity-fixture.XXXXXX")"
-chmod 600 "$fixture"
-"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-bootstrap device-server --development --pair > "$fixture"
+management_fixture="$(mktemp -d "$PWD/.secrets/management-fixture.XXXXXX")"
+"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
+  bootstrap --offline --tenant-name ci-managed-lease --scope admin > "$management_fixture/admin.json"
+python3 scripts/test-management.py --base-url http://127.0.0.1:18080 \
+  --admin-fixture "$management_fixture/admin.json" --pair-output "$management_fixture/pair.json"
+fixture="$management_fixture/pair.json"
 ./scripts/test-managed-relay.sh --shared-secret-file "$relay_fixture/shared-secret" \
-  --pair-fixture "$fixture" --base-url http://127.0.0.1:18080
+  --pair-fixture "$fixture" --base-url http://127.0.0.1:18080 \
+  --lease-admin-fixture "$management_fixture/admin.json"
 rm -f -- "$fixture"
 fixture=""
+rm -rf -- "$management_fixture"
+management_fixture=""
+# 独立管理员只作用于此随机 Compose 项目；HTTP 创建 fresh reset/recovery pairs。
+management_fixture="$(mktemp -d "$PWD/.secrets/management-fixture.XXXXXX")"
+"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
+  bootstrap --offline --tenant-name ci-lifecycle --scope admin > "$management_fixture/admin.json"
+./scripts/test-lifecycle.sh --base-url http://127.0.0.1:18080 \
+  --admin-fixture "$management_fixture/admin.json" --shared-secret-file "$relay_fixture/shared-secret"
+rm -rf -- "$management_fixture"
+management_fixture=""
 "${compose[@]}" restart device-server
 "${compose[@]}" up -d --wait device-server gateway
 curl --fail --silent --show-error http://127.0.0.1:18080/readyz > /dev/null

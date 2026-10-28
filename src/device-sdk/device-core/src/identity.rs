@@ -1,5 +1,6 @@
 //! Native HTTP identity client. No disk persistence or platform keystore is implied.
 //! Mutations are never retried automatically: retain the same key after uncertain outcomes.
+mod reset;
 use device_storage::{IdentityScope, IdentityStore, SecretString, StorageError, StoredIdentity};
 use reqwest::{Client, Method, Url, header};
 use serde::{Deserialize, Serialize};
@@ -25,17 +26,47 @@ impl std::fmt::Display for IdentityError {
     }
 }
 impl std::error::Error for IdentityError {}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdempotencyKey(String);
+#[derive(Clone, PartialEq, Eq)]
+pub struct IdempotencyKey(Zeroizing<String>);
+impl std::fmt::Debug for IdempotencyKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IdempotencyKey([REDACTED])")
+    }
+}
 impl IdempotencyKey {
     pub fn new(value: String) -> Result<Self, IdentityError> {
         if !(8..=128).contains(&value.len()) || !value.bytes().all(|b| (33..=126).contains(&b)) {
             return Err(IdentityError::InvalidRequest);
         }
-        Ok(Self(value))
+        Ok(Self(Zeroizing::new(value)))
     }
     pub fn random() -> Self {
-        Self(uuid::Uuid::new_v4().to_string())
+        Self(Zeroizing::new(uuid::Uuid::new_v4().to_string()))
+    }
+    /// Direct enrollment recovery secret: 32 CSPRNG bytes, canonical base64url.
+    /// Persist this exact key securely with the request until the replay outcome is known.
+    pub fn recovery() -> Result<Self, IdentityError> {
+        use base64::Engine;
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        getrandom::fill(bytes.as_mut()).map_err(|_| IdentityError::InvalidConfiguration)?;
+        Ok(Self(Zeroizing::new(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_ref()),
+        )))
+    }
+    /// Explicit exposure only for encrypted request journaling or authenticated HTTP headers.
+    pub fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+    fn validate_direct(&self) -> Result<(), IdentityError> {
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(self.expose())
+            .map_err(|_| IdentityError::InvalidRequest)?;
+        let decoded = Zeroizing::new(decoded);
+        if self.0.len() != 43 || decoded.len() != 32 {
+            return Err(IdentityError::InvalidRequest);
+        }
+        Ok(())
     }
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,6 +84,7 @@ pub struct RegistrationRequest {
     pub application_id: String,
     pub platform: Platform,
     pub installation_public_key: String,
+    /// Empty only for explicitly requested direct enrollment; server policy still controls access.
     pub registration_grant: SecretString,
     pub sdk_version: String,
     pub metadata: serde_json::Map<String, serde_json::Value>,
@@ -61,7 +93,8 @@ impl RegistrationRequest {
     fn body(&self) -> Result<Zeroizing<Vec<u8>>, IdentityError> {
         if uuid::Uuid::parse_str(&self.application_id).is_err()
             || !(1..=4096).contains(&self.installation_public_key.chars().count())
-            || !self.registration_grant.expose().starts_with("reg_")
+            || (!self.registration_grant.expose().is_empty()
+                && !self.registration_grant.expose().starts_with("reg_"))
             || self.registration_grant.expose().len() > 512
             || self.sdk_version.chars().count() > 64
             || self.sdk_version.contains('\0')
@@ -88,7 +121,8 @@ impl RegistrationRequest {
             application_id: &'a str,
             platform: Platform,
             installation_public_key: &'a str,
-            registration_grant: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            registration_grant: Option<&'a str>,
             sdk_version: &'a str,
             metadata: &'a serde_json::Map<String, serde_json::Value>,
         }
@@ -97,7 +131,8 @@ impl RegistrationRequest {
                 application_id: &self.application_id,
                 platform: self.platform,
                 installation_public_key: &self.installation_public_key,
-                registration_grant: self.registration_grant.expose(),
+                registration_grant: (!self.registration_grant.expose().is_empty())
+                    .then(|| self.registration_grant.expose()),
                 sdk_version: &self.sdk_version,
                 metadata: &self.metadata,
             })
@@ -190,7 +225,10 @@ impl IdentityClient {
             request = request.header(header::AUTHORIZATION, value);
         }
         if let Some(key) = key {
-            request = request.header("Idempotency-Key", &key.0);
+            let mut value = header::HeaderValue::from_str(key.expose())
+                .map_err(|_| IdentityError::InvalidRequest)?;
+            value.set_sensitive(true);
+            request = request.header("Idempotency-Key", value);
         }
         if let Some(body) = body {
             request = request
@@ -250,6 +288,9 @@ impl IdentityClient {
         request: &RegistrationRequest,
         key: &IdempotencyKey,
     ) -> Result<StoredIdentity, IdentityError> {
+        if request.registration_grant.expose().is_empty() {
+            key.validate_direct()?;
+        }
         let body = request.body()?;
         credential(
             &self
@@ -363,6 +404,7 @@ pub struct IdentitySession {
     identity: Option<StoredIdentity>,
     pending: Option<Pending>,
     dirty: bool,
+    reset_pending: Option<reset::ResetPending>,
 }
 impl IdentitySession {
     pub async fn load(
@@ -392,6 +434,7 @@ impl IdentitySession {
             identity: snapshot.identity,
             pending: None,
             dirty: false,
+            reset_pending: None,
         })
     }
     pub fn identity(&self) -> Option<&StoredIdentity> {
@@ -417,7 +460,11 @@ impl IdentitySession {
         mut request: RegistrationRequest,
         key: IdempotencyKey,
     ) -> Result<(), IdentityError> {
-        if self.pending.is_some() || self.dirty || self.identity.is_some() {
+        if self.reset_pending.is_some()
+            || self.pending.is_some()
+            || self.dirty
+            || self.identity.is_some()
+        {
             return Err(IdentityError::PendingMutation);
         }
         request.application_id = uuid::Uuid::parse_str(&request.application_id)
@@ -427,11 +474,14 @@ impl IdentitySession {
             return Err(IdentityError::InvalidRequest);
         }
         request.body()?;
+        if request.registration_grant.expose().is_empty() {
+            key.validate_direct()?;
+        }
         self.pending = Some(Pending::Register(request, key));
         self.retry_pending().await
     }
     pub async fn refresh(&mut self, key: IdempotencyKey) -> Result<(), IdentityError> {
-        if self.pending.is_some() || self.dirty {
+        if self.reset_pending.is_some() || self.pending.is_some() || self.dirty {
             return Err(IdentityError::PendingMutation);
         }
         let identity = self.identity.clone().ok_or(IdentityError::NoIdentity)?;

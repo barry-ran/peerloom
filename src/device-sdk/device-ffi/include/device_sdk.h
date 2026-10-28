@@ -28,6 +28,7 @@ extern "C" {
 #define DP_OP_SEND UINT32_C(4)
 #define DP_OP_REFRESH UINT32_C(5)
 #define DP_OP_CLOSE_CONNECTION UINT32_C(6)
+#define DP_OP_RESET_IDENTITY UINT32_C(7)
 #define DP_EVENT_COMPLETE UINT32_C(1)
 #define DP_EVENT_ONLINE UINT32_C(2)
 #define DP_EVENT_OFFLINE UINT32_C(3)
@@ -42,6 +43,7 @@ extern "C" {
 #define DP_CAP_RELIABLE_MESSAGE UINT64_C(1)
 #define DP_CAP_ASYNC_CAS_STORE UINT64_C(2)
 #define DP_CAP_EXPLICIT_MEMORY_STORE UINT64_C(4)
+#define DP_CAP_RESET_IDENTITY UINT64_C(8)
 
 typedef struct dp_event {
     uint32_t abi_version;
@@ -87,6 +89,9 @@ uint32_t dp_sdk_create(const uint8_t *json, size_t len, dp_callback callback,
  * {"registration":{"platform":"linux","installation_public_key":"...",
  * "registration_grant":"reg_...","sdk_version":"...","metadata":{}},
  * "idempotency_key":"host-retained-key"}. Keep exact request/key for uncertain replay.
+ * Direct enrollment omits registration_grant; server must explicitly enable direct.
+ * Its idempotency_key is a secret: fresh CSPRNG32 bytes as canonical base64url43 chars.
+ * Keep it securely with the exact body; UUID/public installation keys are not sufficient.
  * Connect: {"target_device_id":"UUID"}; respond: {"session_id":"UUID","accept":true}.
  * Send: raw binary <=65536 bytes, connection handle required. Empty messages allowed.
  * Refresh/close: empty input; close requires connection handle. Others connection=0.
@@ -94,12 +99,20 @@ uint32_t dp_sdk_create(const uint8_t *json, size_t len, dp_callback callback,
  * running callback/send cannot be recalled. Existing queued sends may settle first.
  * Connect completion means request submitted, not connected; await CONNECTION_READY.
  * Send completion means locally queued, NOT remote application receipt/exactly-once.
- * Unknown operation (streams/reset/multichannel included) returns UNSUPPORTED.
+ * Reset: {"expected_device_id":"current UUID","retry":false}, connection=0.
+ * Admission immediately fences old delivery and cancels queued cancellable operations.
+ * Running work may settle; reset is itself irreversible/non-cancellable (cancel => BUSY).
+ * Success writes a CAS tombstone and leaves SDK ready for an explicit new START/register.
+ * It does not revoke the old server device or auto-register/reuse a registration key.
+ * Failure leaves admission stopped; retry=true recovers only that same confirmed reset.
+ * OUTCOME_UNKNOWN must not be treated as success; retain the instance to retry/read back.
+ * A new registration must use fresh request/grant/recovery key, never the old identity.
+ * Unknown operation (streams/multichannel included) returns UNSUPPORTED.
  */
 uint32_t dp_sdk_submit(uint64_t sdk, uint32_t operation, uint64_t connection,
                        const uint8_t *input, size_t len, uint64_t *out_request);
 /* Only queued work can be cancelled (one CANCELLED completion). Close admission is
- * irreversible locally and cannot be cancelled. Running work/close => BUSY,
+ * irreversible locally and cannot be cancelled. Running work/close/reset => BUSY,
  * not aborted: remote registration/rotation cannot safely be rolled back. Cancellation
  * never retracts a completed remote mutation. Process crash recovery journal not provided.
  */

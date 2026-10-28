@@ -320,9 +320,12 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, tenant, operation, scope, keyHash, requestHash
 	return nil
 }
 
-// PurgeExpired removes replay ciphertext after its recovery window.
+// PurgeExpired removes bounded batches of expired ciphertext and admission windows.
 func (s *Store) PurgeExpired(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, "DELETE FROM identity_replays WHERE expires_at<=clock_timestamp()")
+	if _, err := s.pool.Exec(ctx, "DELETE FROM direct_registration_windows WHERE ctid IN (SELECT ctid FROM direct_registration_windows WHERE window_start<clock_timestamp()-interval '10 minutes' LIMIT 1000)"); err != nil {
+		return Fail("DATABASE_UNAVAILABLE", 503)
+	}
+	_, err := s.pool.Exec(ctx, "DELETE FROM identity_replays WHERE ctid IN (SELECT ctid FROM identity_replays WHERE expires_at<=clock_timestamp() LIMIT 1000)")
 	if err != nil {
 		return Fail("DATABASE_UNAVAILABLE", 503)
 	}

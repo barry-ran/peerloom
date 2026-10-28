@@ -29,22 +29,26 @@ func (o Options) validate() error {
 	return nil
 }
 
+const MaxNegotiationGeneration int64 = 32
+
 type Session struct {
-	ID                   string    `json:"session_id"`
-	TenantID             string    `json:"tenant_id"`
-	SourceDeviceID       string    `json:"source_device_id"`
-	TargetDeviceID       string    `json:"target_device_id"`
-	GrantID              string    `json:"grant_id"`
-	State                string    `json:"state"`
-	CloseReason          string    `json:"close_reason,omitempty"`
-	LeaseExpiresAt       time.Time `json:"lease_expires_at"`
-	SourceLeaseExpiresAt time.Time `json:"source_lease_expires_at"`
-	TargetLeaseExpiresAt time.Time `json:"target_lease_expires_at"`
-	LeaseGeneration      int64     `json:"lease_generation"`
-	SourceConnected      bool      `json:"source_connected"`
-	TargetConnected      bool      `json:"target_connected"`
-	SourceOfferSeen      bool      `json:"source_offer_seen"`
-	TargetAnswerSeen     bool      `json:"target_answer_seen"`
+	NegotiationGeneration int64     `json:"negotiation_generation"`
+	NegotiationStartedAt  time.Time `json:"-"`
+	ID                    string    `json:"session_id"`
+	TenantID              string    `json:"tenant_id"`
+	SourceDeviceID        string    `json:"source_device_id"`
+	TargetDeviceID        string    `json:"target_device_id"`
+	GrantID               string    `json:"grant_id"`
+	State                 string    `json:"state"`
+	CloseReason           string    `json:"close_reason,omitempty"`
+	LeaseExpiresAt        time.Time `json:"lease_expires_at"`
+	SourceLeaseExpiresAt  time.Time `json:"source_lease_expires_at"`
+	TargetLeaseExpiresAt  time.Time `json:"target_lease_expires_at"`
+	LeaseGeneration       int64     `json:"lease_generation"`
+	SourceConnected       bool      `json:"source_connected"`
+	TargetConnected       bool      `json:"target_connected"`
+	SourceOfferSeen       bool      `json:"source_offer_seen"`
+	TargetAnswerSeen      bool      `json:"target_answer_seen"`
 }
 
 type Error struct {

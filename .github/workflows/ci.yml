@@ -12,7 +12,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
@@ -41,11 +41,14 @@ jobs:
         run: |
           python3 scripts/generate-dev-secrets.py
           ./scripts/check-compose.sh --integration
-      - name: 真实 TURN 中继与错误凭证拒绝
-        timeout-minutes: 2
-        run: ./scripts/test-turn.sh
-      - name: PostgreSQL 迁移与 Compose 启停集成
+      - name: PostgreSQL 迁移、C 身份重置与托管中继故障恢复
         run: ./scripts/test-compose.sh
+      - name: 当前全部迁移的隔离 PostgreSQL 逻辑备份恢复
+        timeout-minutes: 10
+        run: ./scripts/test-backup-container.sh
+      - name: 临时证书的 HTTPS/WSS 与管理后台 Secure Cookie
+        timeout-minutes: 10
+        run: python3 scripts/test-tls-compose.py --integration
       - name: 原生 WebRTC 双端直连与消息互通
         timeout-minutes: 5
         working-directory: src/device-sdk
@@ -60,6 +63,9 @@ jobs:
         run: |
           cargo test -p device-transport-webrtc --test mixed_channels --locked -- --ignored --nocapture
           cargo test -p device-transport-webrtc --lib actual_dcep_metadata_preserves_all_six_wire_types --locked -- --ignored --nocapture
+      - name: 真实 TURN 中继与错误凭证拒绝
+        timeout-minutes: 2
+        run: ./scripts/test-turn.sh
       - name: 构建可下载检查产物
         run: ./scripts/build.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

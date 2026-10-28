@@ -9,6 +9,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# CI-only bounded counters/state, no packet/payload/address logging.
+test-diagnostics = []
+
 [dependencies]
 # webrtc 尚未重新导出 mDNS 与 SCTP 限额类型；保持同版本，仅配置协议基建。
 rtc = { version = "=0.21.1", default-features = false }

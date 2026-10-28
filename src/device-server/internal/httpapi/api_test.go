@@ -14,8 +14,9 @@ import (
 
 // Unit-only stub: persistence is exercised separately by tagged PostgreSQL tests.
 type stubService struct {
-	err   error
-	calls int
+	err      error
+	calls    int
+	directIP string
 }
 
 func (s *stubService) Register(ctx context.Context, r identity.Registration, key string) (identity.Credential, error) {
@@ -24,6 +25,10 @@ func (s *stubService) Register(ctx context.Context, r identity.Registration, key
 		return identity.Credential{}, err
 	}
 	return identity.Credential{}, s.err
+}
+func (s *stubService) RegisterDirect(ctx context.Context, r identity.Registration, key, ip string) (identity.Credential, error) {
+	s.directIP = ip
+	return s.Register(ctx, r, key)
 }
 func (s *stubService) Authenticate(ctx context.Context, token string) (identity.Device, error) {
 	s.calls++
@@ -90,5 +95,18 @@ func TestErrorSanitizationAndCapacity(t *testing.T) {
 	api.ServeHTTP(w, req)
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatal("capacity limit ignored")
+	}
+}
+
+func TestDirectUsesTransportPeerNotForwardedHeaders(t *testing.T) {
+	service := &stubService{}
+	request := httptest.NewRequest("POST", "/v1/device-registrations", strings.NewReader(`{}`))
+	request.RemoteAddr = "[2001:db8::42]:1234"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Forwarded-For", "192.0.2.99")
+	request.Header.Set("Forwarded", "for=192.0.2.98")
+	New(service).ServeHTTP(httptest.NewRecorder(), request)
+	if service.directIP != "2001:db8::42" {
+		t.Fatal("untrusted forwarding headers affected direct rate-limit identity")
 	}
 }

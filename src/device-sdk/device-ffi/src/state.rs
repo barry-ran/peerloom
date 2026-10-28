@@ -77,7 +77,17 @@ pub struct StorageReply {
     pub status: u32,
     pub payload: Vec<u8>,
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetRequest {
+    pub expected_device_id: String,
+    #[serde(default)]
+    pub retry: bool,
+}
 pub struct Instance {
+    pub device_id: Mutex<Option<String>>,
+    pub resetting: AtomicBool,
+    pub reset_active: AtomicBool,
     pub commands: mpsc::Sender<Operation>,
     pub events: std::sync::mpsc::SyncSender<Event>,
     pub operations: Mutex<HashMap<u64, Arc<AtomicUsize>>>,
@@ -152,6 +162,9 @@ impl Instance {
         }
     }
     pub fn finish(&self, op: Operation, status: u32, payload: Vec<u8>) {
+        if op.kind == 7 {
+            self.reset_active.store(false, Ordering::Release);
+        }
         op.phase.store(3, Ordering::Release);
         self.emit(Event::new(COMPLETE, op.id, op.connection, status, payload));
     }
@@ -159,7 +172,7 @@ impl Instance {
         if self.shutting.load(Ordering::Acquire) {
             return Err(CLOSED);
         }
-        if !(1..=6).contains(&kind) {
+        if !(1..=7).contains(&kind) {
             return Err(UNSUPPORTED);
         }
         let mut ops = self.operations.lock().map_err(|_| INTERNAL)?;
@@ -168,6 +181,26 @@ impl Instance {
         }
         if ops.len() >= 32 {
             return Err(FULL);
+        }
+        if self.resetting.load(Ordering::Acquire) && kind != 7 {
+            return Err(CLOSED);
+        }
+        if kind == 7 {
+            if connection != 0 {
+                return Err(HANDLE);
+            }
+            let request: ResetRequest = serde_json::from_slice(&input).map_err(|_| INVALID)?;
+            if self.device_id.lock().map_err(|_| INTERNAL)?.as_deref()
+                != Some(&request.expected_device_id)
+            {
+                return Err(INVALID);
+            }
+            if self.reset_active.load(Ordering::Acquire) {
+                return Err(BUSY);
+            }
+            if self.resetting.load(Ordering::Acquire) != request.retry {
+                return Err(INVALID);
+            }
         }
         if matches!(kind, 4 | 6) {
             if connection == 0 || self.connection_id.load(Ordering::Acquire) != connection {
@@ -181,26 +214,100 @@ impl Instance {
             return Err(INVALID);
         }
         let id = next_id()?;
+        // Reserve queue space before irreversible reset/close admission or cancellation.
+        let permit = self.commands.try_reserve().map_err(|_| FULL)?;
+        if kind == 7 {
+            self.resetting.store(true, Ordering::Release);
+            self.reset_active.store(true, Ordering::Release);
+            for phase in ops.values() {
+                let _ = phase.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
+            }
+        }
         if kind == 6 {
             self.closing_connection.store(connection, Ordering::Release);
         }
-        // Close admission is irreversible locally: stop new sends/delivery before awaiting cleanup.
-        let phase = Arc::new(AtomicUsize::new(if kind == 6 { 4 } else { 0 }));
-        self.commands
-            .try_send(Operation {
-                id,
-                kind,
-                connection,
-                input,
-                phase: phase.clone(),
-            })
-            .map_err(|_| {
-                if kind == 6 {
-                    self.closing_connection.store(0, Ordering::Release);
-                }
-                FULL
-            })?;
+        // Close/reset admission cannot be cancelled after its local fence takes effect.
+        let phase = Arc::new(AtomicUsize::new(if matches!(kind, 6 | 7) { 4 } else { 0 }));
+        permit.send(Operation {
+            id,
+            kind,
+            connection,
+            input,
+            phase: phase.clone(),
+        });
         ops.insert(id, phase);
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+    const DEVICE: &str = "00000000-0000-4000-8000-000000000001";
+    fn setup() -> (
+        Instance,
+        mpsc::Receiver<Operation>,
+        std::sync::mpsc::Receiver<Event>,
+    ) {
+        let (commands, receiver) = mpsc::channel(32);
+        let (events, callbacks) = std::sync::mpsc::sync_channel(97);
+        (
+            Instance {
+                commands,
+                events,
+                operations: Mutex::new(Default::default()),
+                storage: Mutex::new(Default::default()),
+                shutting: AtomicBool::new(false),
+                stop: Notify::new(),
+                runtime_done: AtomicBool::new(false),
+                callback_done: AtomicBool::new(false),
+                shutdown_id: AtomicU64::new(0),
+                connection_id: AtomicU64::new(0),
+                connection_validity: Mutex::new(None),
+                device_id: Mutex::new(Some(DEVICE.into())),
+                resetting: AtomicBool::new(false),
+                reset_active: AtomicBool::new(false),
+                closing_connection: AtomicU64::new(0),
+                data_count: AtomicUsize::new(0),
+                control_count: AtomicUsize::new(0),
+                threads: Mutex::new(Vec::new()),
+            },
+            receiver,
+            callbacks,
+        )
+    }
+    fn reset(retry: bool) -> Vec<u8> {
+        serde_json::json!({"expected_device_id":DEVICE,"retry":retry})
+            .to_string()
+            .into_bytes()
+    }
+    #[test]
+    fn reset_admission_fences_and_cancels_queued_but_not_running_operations() {
+        let (instance, mut commands, _callbacks) = setup();
+        let queued = instance.submit(2, 0, vec![]).unwrap();
+        let running = instance.submit(5, 0, vec![]).unwrap();
+        instance.operations.lock().unwrap()[&running].store(1, Ordering::Release);
+        assert_eq!(
+            instance.submit(7, 0, b"{\"expected_device_id\":\"wrong\"}".to_vec()),
+            Err(INVALID)
+        );
+        assert!(!instance.resetting.load(Ordering::Acquire));
+        let reset_id = instance.submit(7, 0, reset(false)).unwrap();
+        assert!(instance.resetting.load(Ordering::Acquire));
+        assert_eq!(instance.submit(2, 0, vec![]), Err(CLOSED));
+        assert_eq!(instance.submit(7, 0, reset(true)), Err(BUSY));
+        {
+            let operations = instance.operations.lock().unwrap();
+            assert_eq!(operations[&queued].load(Ordering::Acquire), 2);
+            assert_eq!(operations[&running].load(Ordering::Acquire), 1);
+            assert_eq!(operations[&reset_id].load(Ordering::Acquire), 4);
+        }
+        commands.try_recv().unwrap();
+        commands.try_recv().unwrap();
+        let op = commands.try_recv().unwrap();
+        instance.finish(op, UNKNOWN, vec![]);
+        assert!(instance.resetting.load(Ordering::Acquire));
+        assert_eq!(instance.submit(7, 0, reset(false)), Err(INVALID));
+        assert!(instance.submit(7, 0, reset(true)).is_ok());
     }
 }

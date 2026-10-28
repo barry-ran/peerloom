@@ -53,7 +53,7 @@ pub extern "C" fn dp_abi_version() -> u32 {
 /// Capability bits: reliable messages, external async CAS, explicit memory store.
 #[unsafe(no_mangle)]
 pub extern "C" fn dp_capabilities() -> u64 {
-    1 | 2 | 4
+    1 | 2 | 4 | 8
 }
 
 /// # Safety
@@ -108,6 +108,9 @@ pub unsafe extern "C" fn dp_sdk_create(
             shutdown_id: AtomicU64::new(0),
             connection_id: AtomicU64::new(0),
             connection_validity: Mutex::new(None),
+            device_id: Mutex::new(None),
+            resetting: AtomicBool::new(false),
+            reset_active: AtomicBool::new(false),
             closing_connection: AtomicU64::new(0),
             data_count: AtomicUsize::new(0),
             control_count: AtomicUsize::new(0),
@@ -131,6 +134,7 @@ pub unsafe extern "C" fn dp_sdk_create(
                 while let Ok(event) = event_rx.recv() {
                     let deliver = event.validity.as_ref().is_none_or(|v| {
                         v.is_valid()
+                            && !callback_instance.resetting.load(Ordering::Acquire)
                             && !callback_instance.shutting.load(Ordering::Acquire)
                             && callback_instance.closing_connection.load(Ordering::Acquire)
                                 != event.connection
@@ -314,6 +318,7 @@ pub extern "C" fn dp_connection_is_valid(sdk: u64, connection: u64) -> u32 {
     guarded(|| {
         let instance = lookup(sdk)?;
         if instance.shutting.load(Ordering::Acquire)
+            || instance.resetting.load(Ordering::Acquire)
             || instance.closing_connection.load(Ordering::Acquire) == connection
         {
             return Err(CLOSED);

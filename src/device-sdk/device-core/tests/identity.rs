@@ -397,3 +397,35 @@ async fn uppercase_application_uses_canonical_scope() {
     assert!(restored.identity().is_some());
     assert!(handle.await.unwrap()[0].contains(lower));
 }
+
+#[tokio::test]
+async fn direct_registration_uses_secret_recovery_key_and_omits_grant() {
+    let (client, server) = server(vec![(201, body('a')), (201, body('a'))]).await;
+    let mut request = request();
+    request.registration_grant = SecretString::new(String::new());
+    let key = IdempotencyKey::recovery().unwrap();
+    assert_eq!(key.expose().len(), 43);
+    assert!(!format!("{key:?}").contains(key.expose()));
+    assert!(key.expose() != IdempotencyKey::recovery().unwrap().expose());
+    let first = client.register(&request, &key).await.unwrap();
+    let retry = client.register(&request, &key).await.unwrap();
+    assert_eq!(first.device_id, retry.device_id);
+    let requests = server.await.unwrap();
+    for raw in &requests {
+        assert!(!raw.contains("registration_grant"));
+        assert!(raw.contains(key.expose()));
+    }
+    assert!(requests[0] == requests[1]);
+    assert_eq!(
+        client
+            .register(&request, &IdempotencyKey::random())
+            .await
+            .unwrap_err(),
+        IdentityError::InvalidRequest
+    );
+    let malformed = IdempotencyKey::new("z".repeat(43)).unwrap();
+    assert_eq!(
+        client.register(&request, &malformed).await.unwrap_err(),
+        IdentityError::InvalidRequest
+    );
+}

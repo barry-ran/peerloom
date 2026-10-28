@@ -2,10 +2,8 @@ package authorization
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"strings"
 
+	"github.com/barry-ran/peerloom/src/device-server/internal/tenantlock"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -15,8 +13,7 @@ func LockTenant(ctx context.Context, tx pgx.Tx, tenantID string) error {
 	if !uuidPattern.MatchString(tenantID) {
 		return failure("INVALID_INPUT", 422)
 	}
-	key := sha256.Sum256([]byte("peerloom-session:" + strings.ToLower(tenantID)))
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", int64(binary.BigEndian.Uint64(key[:8]))); err != nil {
+	if err := tenantlock.Acquire(ctx, tx, tenantID); err != nil {
 		return failure("DATABASE_UNAVAILABLE", 503)
 	}
 	return nil

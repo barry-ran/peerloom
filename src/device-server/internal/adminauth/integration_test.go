@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/barry-ran/peerloom/src/device-server/internal/management"
+	"github.com/barry-ran/peerloom/src/device-server/internal/migrate"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
 	"net/http"
@@ -48,8 +49,8 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	files, err := filepath.Glob("../../../../infra/migrations/*.up.sql")
-	if err != nil || len(files) != 6 {
-		t.Fatal("expected baseline1..5 plus admin6 fixture migrations")
+	if err != nil || int64(len(files)) != migrate.CurrentVersion {
+		t.Fatal("expected all current fixture migrations")
 	}
 	for _, file := range files {
 		data, err := os.ReadFile(file)

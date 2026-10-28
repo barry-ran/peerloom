@@ -49,15 +49,26 @@ impl ManagedIceServers {
     }
 }
 
+#[cfg(test)]
 fn parse(
     data: &[u8],
     session_id: &str,
     now: OffsetDateTime,
 ) -> Result<ManagedIceServers, IdentityError> {
+    parse_generation(data, session_id, 1, now)
+}
+
+fn parse_generation(
+    data: &[u8],
+    session_id: &str,
+    generation: u64,
+    now: OffsetDateTime,
+) -> Result<ManagedIceServers, IdentityError> {
     let wire: WireResponse =
         serde_json::from_slice(data).map_err(|_| IdentityError::InvalidResponse)?;
     if wire.session_id != session_id
-        || wire.negotiation_generation != 1
+        || u64::from(wire.negotiation_generation) != generation
+        || !(1..=32).contains(&generation)
         || wire.ice_servers.len() > 4
     {
         return Err(IdentityError::InvalidResponse);
@@ -149,6 +160,18 @@ impl IdentityClient {
         session_id: &str,
         credential: &SecretString,
     ) -> Result<ManagedIceServers, IdentityError> {
+        self.session_ice_servers_generation(session_id, credential, 1)
+            .await
+    }
+    pub async fn session_ice_servers_generation(
+        &self,
+        session_id: &str,
+        credential: &SecretString,
+        generation: u64,
+    ) -> Result<ManagedIceServers, IdentityError> {
+        if !(1..=32).contains(&generation) {
+            return Err(IdentityError::InvalidRequest);
+        }
         let token = credential.expose();
         if token.len() != 47
             || !token.starts_with("dev_")
@@ -170,7 +193,7 @@ impl IdentityClient {
                 200,
             )
             .await?;
-        parse(&bytes, &session_id, OffsetDateTime::now_utc())
+        parse_generation(&bytes, &session_id, generation, OffsetDateTime::now_utc())
     }
 }
 
