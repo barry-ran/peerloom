@@ -141,6 +141,26 @@ python3 scripts/test-management.py --base-url http://127.0.0.1:18080 \
 )
 rm -rf -- "$management_fixture"
 management_fixture=""
+# C ABI服务测试会轮换source凭证，必须再次生成独立pair。
+fixture="$(mktemp "$PWD/.secrets/identity-fixture.XXXXXX")"
+chmod 600 "$fixture"
+"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-bootstrap device-server --development --pair > "$fixture"
+python3 - "$fixture" <<'PAIR'
+import json
+import sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        data = json.load(stream)
+    for side in ("source", "target"):
+        for key in ("application_id", "device_id", "device_credential", "expires_at"):
+            assert isinstance(data[side][key], str) and data[side][key]
+except Exception:
+    raise SystemExit("disposable pair fixture validation failed; contents withheld") from None
+PAIR
+TEST_IDENTITY_BASE_URL=http://127.0.0.1:18080 TEST_SIGNAL_FIXTURE_FILE="$fixture" \
+  python3 src/device-sdk/device-ffi/tests/run-service.py
+rm -f -- "$fixture"
+fixture=""
 "${compose[@]}" restart device-server
 "${compose[@]}" up -d --wait device-server gateway
 curl --fail --silent --show-error http://127.0.0.1:18080/readyz > /dev/null

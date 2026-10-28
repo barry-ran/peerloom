@@ -26,9 +26,9 @@ tokio-tungstenite = { version = "=0.30.0", default-features = false, features = 
 futures-util = { version = "=0.3.34", features = ["sink"] }
 
 rustls = { version = "=0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
-rustls-native-certs = "=0.8.5"
+rustls-platform-verifier = "=0.7.1"
 
 [dev-dependencies]
 async-trait = "=0.1.89"
-rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }

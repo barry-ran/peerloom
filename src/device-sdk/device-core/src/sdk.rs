@@ -134,7 +134,18 @@ impl std::fmt::Debug for Connection {
             .finish_non_exhaustive()
     }
 }
+/// 只读授权观察器；跨 ABI 排队的事件在交付前必须再次检查，不提供恢复/延长授权能力。
+#[derive(Clone)]
+pub struct ConnectionValidity(Arc<Gate>);
+impl ConnectionValidity {
+    pub fn is_valid(&self) -> bool {
+        self.0.check().is_ok()
+    }
+}
 impl Connection {
+    pub fn validity(&self) -> ConnectionValidity {
+        ConnectionValidity(self.gate.clone())
+    }
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -1277,6 +1288,20 @@ mod tests {
             gate,
             send,
         )
+    }
+    #[test]
+    fn readonly_validity_observer_tracks_expiry_and_owner_drop() {
+        let (connection, gate, _) = connection();
+        let observer = connection.validity();
+        assert!(observer.is_valid());
+        gate.update(Some(Instant::now()));
+        assert!(!observer.is_valid());
+        gate.update(Some(Instant::now() + Duration::from_secs(10)));
+        assert!(observer.is_valid());
+        drop(connection);
+        assert!(!observer.is_valid());
+        gate.update(Some(Instant::now() + Duration::from_secs(10)));
+        assert!(!observer.is_valid());
     }
     #[tokio::test]
     async fn revoke_wakes_pending_receive_and_blocks_buffered_delivery() {

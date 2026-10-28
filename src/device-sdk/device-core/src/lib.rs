@@ -5,6 +5,7 @@ pub mod identity;
 pub mod lease;
 pub mod sdk;
 pub mod signaling;
+mod tls;
 
 use device_protocol::{ChannelMode, OverflowPolicy};
 use std::collections::VecDeque;

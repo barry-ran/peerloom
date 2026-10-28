@@ -88,13 +88,19 @@ async fn successful_pair(phase: &'static str) -> (PairKinds, PairKinds) {
             let mut receiver = b.accept_channel().await?;
             eprintln!("TURN {phase} stage=open-reliable");
             sender.wait_open().await?;
+            eprintln!("TURN {phase} stage=open-remote-reliable");
             receiver.wait_open().await?;
             for payload in ["真实中继双向消息".as_bytes(), &[0, 255, 1, 0]] {
+                eprintln!("TURN {phase} stage=send-reliable");
                 sender.send(payload).await?;
+                eprintln!("TURN {phase} stage=receive-reliable");
                 assert_eq!(receiver.receive().await?, payload);
+                eprintln!("TURN {phase} stage=reply-reliable");
                 receiver.send(payload).await?;
+                eprintln!("TURN {phase} stage=receive-reliable-reply");
                 assert_eq!(sender.receive().await?, payload);
             }
+            eprintln!("TURN {phase} stage=create-low-latency");
             let mut fast = a
                 .create_channel("relay.low-latency", ChannelMode::LowLatencyMessage)
                 .await?;
@@ -102,12 +108,17 @@ async fn successful_pair(phase: &'static str) -> (PairKinds, PairKinds) {
             let mut incoming = b.accept_channel().await?;
             eprintln!("TURN {phase} stage=open-low-latency");
             fast.wait_open().await?;
+            eprintln!("TURN {phase} stage=open-remote-low-latency");
             incoming.wait_open().await?;
             eprintln!("TURN {phase} stage=echo-low-latency");
             fast.send(b"fast").await?;
+            eprintln!("TURN {phase} stage=receive-low-latency");
             assert_eq!(incoming.receive().await?, b"fast");
+            eprintln!("TURN {phase} stage=reply-low-latency");
             incoming.send(b"reply").await?;
+            eprintln!("TURN {phase} stage=receive-low-latency-reply");
             assert_eq!(fast.receive().await?, b"reply");
+            eprintln!("TURN {phase} stage=selected-pair");
             Ok::<_, TransportError>((
                 a.selected_candidate_types().await?,
                 b.selected_candidate_types().await?,
@@ -116,7 +127,9 @@ async fn successful_pair(phase: &'static str) -> (PairKinds, PairKinds) {
         .await
     })
     .await;
+    eprintln!("TURN {phase} stage=close-a");
     let a_close = a.close().await;
+    eprintln!("TURN {phase} stage=close-b");
     let b_close = b.close().await;
     a_close.expect("close TURN A");
     b_close.expect("close TURN B");

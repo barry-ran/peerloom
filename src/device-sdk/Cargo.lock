@@ -488,7 +488,7 @@ dependencies = [
  "rcgen",
  "reqwest",
  "rustls",
- "rustls-native-certs",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "time",
@@ -497,6 +497,19 @@ dependencies = [
  "tokio-tungstenite",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "device-ffi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "device-core",
+ "device-storage",
+ "device-transport-webrtc",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

@@ -160,30 +160,9 @@ impl SignalClient {
             .max_write_buffer_size(LIMIT + 1024)
             .max_message_size(Some(LIMIT))
             .max_frame_size(Some(LIMIT));
-        // Explicit provider avoids aws-lc/ring feature-unification ambiguity with WebRTC.
-        // Loading system certificates may block, so keep it off the async/UI executor.
-        let connector = tokio::task::spawn_blocking(|| {
-            let mut roots = rustls::RootCertStore::empty();
-            let certificates = rustls_native_certs::load_native_certs();
-            for certificate in certificates.certs {
-                roots.add(certificate).map_err(|_| SignalError::Transport)?;
-            }
-            if roots.is_empty() {
-                return Err(SignalError::Transport);
-            }
-            let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
-                rustls::crypto::aws_lc_rs::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .map_err(|_| SignalError::Transport)?
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-            Ok(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(
-                config,
-            )))
-        })
-        .await
-        .map_err(|_| SignalError::Transport)??;
+        // Reuse the HTTPS platform verifier, including OS trust policy. No separate
+        // native-root fallback; configuration was initialized by IdentityClient.
+        let connector = tokio_tungstenite::Connector::Rustls(identity_client.tls_config.clone());
         let (mut socket, _) = tokio::time::timeout(
             Duration::from_secs(10),
             tokio_tungstenite::connect_async_tls_with_config(

@@ -1,6 +1,6 @@
 # SDK 身份与信令模块
 
-本模块位于 `src/device-sdk/device-core` 与 `device-storage`。`DeviceSdk`/`Connection` 已把身份、原生 WSS、目标确认、授权期限与真实 WebRTC 组合为可调用的 Rust facade；也保留低层组件供专门集成。当前硬边界是**单个活动或待确认会话、单条可靠消息通道**，不是最终多连接多通道 SDK，不包含五端安全存储或稳定 C ABI。
+本模块位于 `src/device-sdk/device-core` 与 `device-storage`。`DeviceSdk`/`Connection` 已把身份、原生 WSS、目标确认、授权期限与真实 WebRTC 组合为可调用的 Rust facade；也保留低层组件供专门集成。当前硬边界是**单个活动或待确认会话、单条可靠消息通道**，不是最终多连接多通道 SDK，不包含五端安全存储；Linux 的 C ABI 子集见 [C 语言接口模块](C语言接口模块.md)，不代表五端 ABI 已验收。
 
 ```mermaid
 flowchart LR

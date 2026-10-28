@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["device-protocol", "device-core", "device-transport-webrtc", "device-storage"]
+members = ["device-protocol", "device-core", "device-transport-webrtc", "device-storage", "device-ffi"]
 
 [workspace.package]
 version = "0.1.0"

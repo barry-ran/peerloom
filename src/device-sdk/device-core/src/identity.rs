@@ -120,6 +120,7 @@ pub struct DeviceInfo {
 #[derive(Clone)]
 pub struct IdentityClient {
     client: Client,
+    pub(crate) tls_config: std::sync::Arc<rustls::ClientConfig>,
     pub(crate) origin: Url,
 }
 impl IdentityClient {
@@ -151,14 +152,21 @@ impl IdentityClient {
         {
             return Err(IdentityError::InvalidConfiguration);
         }
+        let tls_config =
+            crate::tls::client_config().map_err(|_| IdentityError::InvalidConfiguration)?;
         let client = Client::builder()
+            .tls_backend_preconfigured((*tls_config).clone())
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .no_proxy()
             .timeout(timeout)
             .build()
             .map_err(|_| IdentityError::InvalidConfiguration)?;
-        Ok(Self { client, origin })
+        Ok(Self {
+            client,
+            origin,
+            tls_config,
+        })
     }
     async fn request(
         &self,
