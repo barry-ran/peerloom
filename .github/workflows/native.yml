@@ -62,7 +62,6 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
       PEERLOOM_REPO_ROOT: ${{ github.workspace }}
-      PEERLOOM_APPLE_OUTPUT: ${{ runner.temp }}/peerloom-apple-validation
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -70,6 +69,7 @@ jobs:
       - name: 固定 Apple Rust 目标和 Xcode
         run: |
           set -euo pipefail
+          printf 'PEERLOOM_APPLE_OUTPUT=%s/peerloom-apple-validation\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           [[ $(xcodebuild -version) == $'Xcode 16.4\nBuild version 16F6' ]]
           rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
           rustup default 1.99.1
