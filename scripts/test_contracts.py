@@ -60,10 +60,10 @@ class ContractTests(unittest.TestCase):
 
     def test_openapi_only_implemented_endpoints(self):
         api = json.loads((ROOT / 'api/openapi.json').read_text())
-        self.assertEqual(set(api['paths']), {'/healthz', '/readyz', '/metrics', '/v1/device-registrations', '/v1/device-self', '/v1/device-credentials/refresh'})
+        self.assertEqual(set(api['paths']), {'/healthz', '/readyz', '/metrics', '/v1/device-registrations', '/v1/device-self', '/v1/device-credentials/refresh', '/v1/device-signal'})
         for path in api['paths'].values():
             operation = next(iter(path.values()))
-            self.assertTrue({'200', '201'} & set(operation['responses']))
+            self.assertTrue({'101', '200', '201'} & set(operation['responses']))
         Draft202012Validator.check_schema(api['components']['schemas']['Problem'])
 
 

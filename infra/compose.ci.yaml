@@ -3,6 +3,9 @@ services:
   postgres:
     networks: [backend, ci_access]
     ports: ['127.0.0.1:15432:5432']
+  redis:
+    networks: [backend, ci_access]
+    ports: ['127.0.0.1:16379:6379']
 networks:
   ci_access:
     # 仅测试覆盖层使用；internal-only 网络不支持主机端口发布。

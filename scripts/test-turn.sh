@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# 仅 Linux 本机/CI 的真实 TURN 验收，不属于默认 Compose 或生产部署。
+set +x
+set -euo pipefail
+cd "$(dirname "$0")/.."
+test "$(uname -s)" = Linux
+if [ "$(id -u)" = 0 ]; then echo 'TURN test requires a non-root caller' >&2; exit 1; fi
+umask 077
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/peerloom-turn.XXXXXXXX")"
+container="peerloom-turn-$(basename "$fixture")"
+cleanup() {
+  docker rm -f -v "$container" > /dev/null 2>&1 || true
+  rm -rf -- "$fixture"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+python3 - "$fixture" <<'CONFIG'
+from pathlib import Path
+import secrets
+import sys
+p = Path(sys.argv[1])
+username = 'test-' + secrets.token_hex(8)
+password = secrets.token_urlsafe(32)
+(p / 'username').write_text(username)
+(p / 'password').write_text(password)
+(p / 'turnserver.conf').write_text('''listening-ip=127.0.0.1
+relay-ip=127.0.0.1
+listening-port=53478
+min-port=55000
+max-port=55031
+lt-cred-mech
+realm=peerloom.test
+fingerprint
+no-tcp
+no-tls
+no-dtls
+no-tcp-relay
+no-multicast-peers
+# 仅loopback测试例外，禁止复制到生产环境。
+allow-loopback-peers
+cli=0
+relay-threads=1
+user-quota=8
+total-quota=16
+max-bps=1048576
+stale-nonce=600
+no-software-attribute
+log-file=stdout
+simple-log
+pidfile=/tmp/turnserver.pid
+userdb=/tmp/turndb
+''' + f'user={username}:{password}\n')
+for file in p.iterdir():
+    file.chmod(0o600)
+CONFIG
+# host network 只用于本脚本；配置明确仅绑定loopback，绝不映射公网端口。
+docker run --detach --rm --name "$container" \
+  --network host --user "$(id -u):$(id -g)" \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --tmpfs /var/lib/coturn:rw,noexec,nosuid,size=1m \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --pids-limit 64 --memory 128m --cpus 2 --stop-timeout 10 \
+  --mount "type=bind,src=$fixture/turnserver.conf,dst=/etc/coturn/turnserver.conf,readonly" \
+  --entrypoint /usr/bin/turnserver \
+  coturn/coturn:4.18.0-r0@sha256:bbefd3e1fdfdc0d58770fe01b581fd8b00d9f3a5580d00acb77cf719a6bc78e3 \
+  -c /etc/coturn/turnserver.conf > /dev/null
+# 不打印服务配置/日志；真实STUN响应只作为ready，最终gate依赖真实relay消息。
+python3 - <<'READY'
+import secrets
+import socket
+import struct
+import time
+transaction = secrets.token_bytes(12)
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+    sock.settimeout(.2)
+    for attempt in range(50):
+        sock.sendto(struct.pack('!HHI', 1, 0, 0x2112a442) + transaction, ('127.0.0.1', 53478))
+        try:
+            data, _ = sock.recvfrom(4096)
+        except TimeoutError:
+            time.sleep(.1)
+            continue
+        if data[:2] == b'\x01\x01' and data[8:20] == transaction:
+            break
+    else:
+        raise SystemExit('isolated TURN UDP readiness failed; no secrets logged')
+READY
+(
+  cd src/device-sdk
+  TEST_TURN_URL='turn:127.0.0.1:53478?transport=udp' \
+  TEST_TURN_USERNAME="$(cat "$fixture/username")" TEST_TURN_CREDENTIAL_FILE="$fixture/password" \
+    cargo test -p device-transport-webrtc --test turn_pair --locked -- --ignored --nocapture
+)

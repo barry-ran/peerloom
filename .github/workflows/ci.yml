@@ -38,6 +38,9 @@ jobs:
         timeout-minutes: 5
         working-directory: src/device-sdk
         run: cargo test -p device-transport-webrtc --test native_pair --locked -- --ignored --nocapture
+      - name: 真实 TURN 中继与错误凭证拒绝
+        timeout-minutes: 2
+        run: ./scripts/test-turn.sh
       - name: 构建可下载检查产物
         run: ./scripts/build.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
