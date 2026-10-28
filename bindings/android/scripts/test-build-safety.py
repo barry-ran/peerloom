@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parent
 
@@ -18,6 +19,7 @@ def module(name):
 
 checksums = module("verify-checksums")
 kvm = module("kvm-access")
+artifacts = module("verify-artifacts")
 ACL = "# file: /dev/kvm\n# owner: root\n# group: kvm\nuser::rw-\ngroup::rw-\nother::---\n"
 
 class Checksums(unittest.TestCase):
@@ -59,6 +61,38 @@ class Checksums(unittest.TestCase):
                     apk.symlink_to(path / "library-release.aar")
                 with self.assertRaises(ValueError):
                     checksums.verify(path)
+
+class ReleaseTrust(unittest.TestCase):
+    def test_test_manifest_override_is_not_a_production_override(self):
+        import xml.etree.ElementTree as ET
+        android = ROOT.parent / "library/src"
+        test = ET.parse(android / "androidTest/AndroidManifest.xml").getroot().find("application")
+        self.assertEqual(test.attrib["{http://schemas.android.com/tools}replace"], "android:networkSecurityConfig")
+        main = (android / "main/AndroidManifest.xml").read_text()
+        self.assertNotIn("peerloom_test_", main)
+        self.assertNotIn("tools:replace", main)
+        self.assertFalse((android / "main/res/raw/peerloom_test_ca.pem").exists())
+
+    def test_release_aar_rejects_test_certificates_and_xml_references(self):
+        for bad in (None, "manifest", "resource", "private_key", "xml"):
+            with self.subTest(case=bad), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "library-release.aar"
+                with zipfile.ZipFile(path, "w") as out:
+                    text = '<manifest><application /></manifest>'
+                    if bad == "manifest":
+                        text = '<manifest><application test="@xml/peerloom_test_network" /></manifest>'
+                    out.writestr("AndroidManifest.xml", text)
+                    if bad == "resource":
+                        out.writestr("res/raw/peerloom_test_ca.pem", "synthetic test CA")
+                    if bad == "private_key":
+                        out.writestr("assets/valid.p12", "synthetic test key")
+                    if bad == "xml":
+                        out.writestr("res/xml/renamed.xml", '<network-security-config test="@raw/peerloom_test_ca"/>')
+                if bad is None:
+                    artifacts.verify_no_test_trust(path)
+                else:
+                    with self.assertRaises(ValueError):
+                        artifacts.verify_no_test_trust(path)
 
 class KvmAccess(unittest.TestCase):
     def test_existing_access_is_not_modified(self):
