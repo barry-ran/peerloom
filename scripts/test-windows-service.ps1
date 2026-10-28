@@ -24,16 +24,35 @@ if (@($existing | ForEach-Object { ($_ -replace "`0", '').Trim() }) -contains $n
 $root = Split-Path -Parent $PSScriptRoot
 $directory = Join-Path $env:RUNNER_TEMP $name
 if (Test-Path $directory) { throw 'REFUSE_EXISTING_TEST_DIRECTORY' }
-New-Item -ItemType Directory $directory | Out-Null
-# Empty new directory only. Install a protected current-user DACL before writing secrets.
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = [System.Security.AccessControl.DirectorySecurity]::new()
-$acl.SetOwner($sid)
-$acl.SetAccessRuleProtection($true, $false)
-$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-    $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-$acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $directory -AclObject $acl
+if ($ImportProbeOnly) {
+    # Check only this target's ancestor chain; never enumerate other task/user trees.
+    $ancestor = [System.IO.DirectoryInfo]::new([System.IO.Path]::GetFullPath($env:RUNNER_TEMP))
+    if ($ancestor.FullName.StartsWith('\\')) { throw 'PUBLIC_PROBE_UNC_FORBIDDEN' }
+    while ($null -ne $ancestor) {
+        if (($ancestor.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'PUBLIC_PROBE_REPARSE_ANCESTOR_FORBIDDEN'
+        }
+        $ancestor = $ancestor.Parent
+    }
+}
+# New-Item without -Force fails if a competing creator wins; never adopt its directory.
+New-Item -ItemType Directory $directory -ErrorAction Stop | Out-Null
+if ($ImportProbeOnly -and ((Get-Item -LiteralPath $directory -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'PUBLIC_PROBE_REPARSE_ROOT_FORBIDDEN'
+}
+if (-not $ImportProbeOnly) {
+    # Empty new directory only. Install a protected current-user DACL before writing secrets.
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetOwner($sid)
+    $acl.SetAccessRuleProtection($true, $false)
+    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    $acl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $directory -AclObject $acl
+} else {
+    Write-Output 'Public import-only staging uses its new directory inherited ACL; no credentials or SDK state are created.'
+}
 try {
     if ($ImportProbeOnly) {
         # One independent owned fixture; this mutates only its UUID distribution.
@@ -85,5 +104,29 @@ try {
     if (@($remaining | ForEach-Object { ($_ -replace "`0", '').Trim() }) -contains $name) {
         throw 'OWNED_DISTRO_CLEANUP_INCOMPLETE_PRIVATE_DIRECTORY_RETAINED'
     }
-    Remove-Item -LiteralPath $directory -Recurse -Force
+    if ($ImportProbeOnly) {
+        # WSL unregister owns rootfs removal. Never traverse guest symlinks here.
+        if (((Get-Item -LiteralPath $directory -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'PUBLIC_PROBE_REPARSE_CLEANUP_ROOT_RETAINED'
+        }
+        $items = @(Get-ChildItem -LiteralPath $directory -Force)
+        $publicFiles = @('ubuntu_base.archive', 'ubuntu_base.tar', 'import-output.txt')
+        foreach ($item in $items) {
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'PUBLIC_PROBE_REPARSE_REMAINDER_RETAINED'
+            }
+            if ($item.PSIsContainer) {
+                if ($item.Name -ne 'wsl' -or @(Get-ChildItem -LiteralPath $item.FullName -Force).Count -ne 0) {
+                    throw 'PUBLIC_PROBE_NONEMPTY_REMAINDER_RETAINED'
+                }
+            } elseif ($publicFiles -notcontains $item.Name) {
+                throw 'PUBLIC_PROBE_UNKNOWN_REMAINDER_RETAINED'
+            }
+        }
+        foreach ($item in $items) { Remove-Item -LiteralPath $item.FullName -Force }
+        Remove-Item -LiteralPath $directory -Force
+        Write-Output 'Public probe UUID absent and owned staging cleanup: PASS'
+    } else {
+        Remove-Item -LiteralPath $directory -Recurse -Force
+    }
 }

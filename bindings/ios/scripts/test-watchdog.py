@@ -352,6 +352,116 @@ class WatchdogTests(unittest.TestCase):
         self.assertIn("inspect-test-signing.py", native)
         self.assertIn("summary['totalTestCount'] >= 12 and summary['failedTests'] == 0", native)
 
+    def runtime_probe(self, root, first=0, second=0, payload=None, second_payload=None, name="out"):
+        out = root / name
+        out.mkdir()
+        valid = json.dumps({"runtimes": [{"identifier": "target-runtime", "isAvailable": True}]}).encode()
+        (out / "first-input").write_bytes(valid if payload is None else payload)
+        (out / "second-input").write_bytes(valid if second_payload is None else second_payload)
+        source = SCRIPT.with_name("test-native.sh").read_text()
+        block = source[source.index("    # Environment discovery only:"):source.index("    # New unique simulator only;")]
+        stub = '''run_capture() {
+  printf '%s\\n' "$*" >> "$RUNNER_TEMP/calls"
+  python3 - "$1" "$2" <<'PYMOCK'
+import json,os,sys
+from pathlib import Path
+out=Path(os.environ['OUT'])
+first=sys.argv[1]=='ios-runtime-list'
+code=int(os.environ['FIRST_CODE'] if first else os.environ['SECOND_CODE'])
+(out/('phase-'+sys.argv[1]+'.json')).write_text(json.dumps({'exit_code':code,'timeout_seconds':int(sys.argv[2]),'elapsed_seconds':32.25 if first else 41.5}),encoding='utf-8')
+(out/('phase-'+sys.argv[1]+'.stdout')).write_bytes((out/('first-input' if first else 'second-input')).read_bytes())
+PYMOCK
+  if [[ $1 == ios-runtime-list ]]; then return "$FIRST_CODE"; else return "$SECOND_CODE"; fi
+}
+'''
+        env = dict(os.environ, RUNNER_TEMP=str(root), OUT=str(out), RUNTIME="target-runtime",
+                   FIRST_CODE=str(first), SECOND_CODE=str(second))
+        result = subprocess.run(["bash", "-euc", stub + block + '\nprintf "SDK-tests-continue\\n"\n'],
+                                env=env, capture_output=True, text=True, timeout=5)
+        report = json.loads((out / "phase-ios-runtime-readiness.json").read_text(encoding="utf-8"))
+        calls = (root / "calls").read_text().splitlines()
+        return result, report, calls
+
+    def test_runtime_fast_path_does_not_use_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, report, calls = self.runtime_probe(Path(directory))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(calls, ["ios-runtime-list 30 xcrun simctl list runtimes -j"])
+            self.assertIn("SDK-tests-continue", result.stdout)
+            self.assertFalse(report["recovered"])
+            self.assertFalse(report["recovery_attempted"])
+            self.assertTrue(report["availability_verified"])
+            self.assertEqual(report["fast_path"]["elapsed_seconds"], 32.25)
+            self.assertFalse((Path(directory) / "peerloom-simctl-recovery-used").exists())
+
+    def test_runtime_single_recovery_keeps_both_results_and_cumulative_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result, report, calls = self.runtime_probe(root, first=124)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(calls, ["ios-runtime-list 30 xcrun simctl list runtimes -j",
+                                     "ios-runtime-readiness-recovery 120 xcrun simctl list runtimes -j"])
+            self.assertIn("SDK-tests-continue", result.stdout)
+            self.assertTrue(report["recovered"])
+            self.assertFalse(report["recovery_is_cold_start"])
+            self.assertEqual(report["fast_path"]["exit_code"], 124)
+            self.assertEqual(report["recovery"], {"exit_code": 0, "timeout_seconds": 120, "elapsed_seconds": 41.5})
+            self.assertEqual(report["probe_elapsed_seconds_total"], 73.75)
+            self.assertEqual((root / "peerloom-simctl-recovery-used").stat().st_mode & 0o777, 0o600)
+            # A later full iOS stage in the SAME job cannot repeat the 120s probe.
+            result, report, calls = self.runtime_probe(root, first=124, name="later-stage")
+            self.assertEqual(result.returncode, 124, result.stderr)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(sum(" 120 " in call for call in calls), 1)
+            self.assertFalse(report["recovery_attempted"])
+            self.assertNotIn("SDK-tests-continue", result.stdout)
+
+    def test_runtime_failed_recovery_or_cancellation_never_starts_sdk_tests(self):
+        for first, second, expected_calls in ((124, 124, 2), (7, 9, 2), (143, 0, 1), (130, 0, 1)):
+            with self.subTest(first=first, second=second), tempfile.TemporaryDirectory() as directory:
+                result, report, calls = self.runtime_probe(Path(directory), first=first, second=second)
+                self.assertEqual(result.returncode, second if expected_calls == 2 else first, result.stderr)
+                self.assertEqual(len(calls), expected_calls)
+                self.assertFalse(report["recovered"])
+                self.assertFalse(report["availability_verified"])
+                self.assertNotIn("SDK-tests-continue", result.stdout)
+
+    def test_runtime_json_is_strict_on_fast_and_recovery_paths(self):
+        invalid = [b"not-json", b"[]", b'{"runtimes":{}}', b'{"runtimes":[null]}',
+                   b'{"runtimes":[]}', b'{"runtimes":[{"identifier":"other","isAvailable":true}]}',
+                   b'{"runtimes":[{"identifier":"target-runtime","isAvailable":"true"}]}',
+                   b'{"runtimes":[{"identifier":"target-runtime","isAvailable":1}]}',
+                   b'{"runtimes":[{"identifier":"target-runtime","isAvailable":false}]}',
+                   b'{"runtimes":[{"identifier":"target-runtime","isAvailable":true},{"identifier":"target-runtime","isAvailable":false}]}',
+                   b'{"runtimes":[{"identifier":"target-runtime","isAvailable":true,"isAvailable":false}]}',
+                   b'{"runtimes":[],"runtimes":[{"identifier":"target-runtime","isAvailable":true}]}',
+                   b'{"runtimes":[],"other":NaN}', b'{"runtimes":[],"other":"\xff"}',
+                   b' ' * (1024 * 1024) + b'{}']
+        for recovered in (False, True):
+            for index, payload in enumerate(invalid):
+                with self.subTest(recovered=recovered, invalid=index), tempfile.TemporaryDirectory() as directory:
+                    result, report, calls = self.runtime_probe(Path(directory), first=124 if recovered else 0,
+                                                               payload=None if recovered else payload, second_payload=payload)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(len(calls), 2 if recovered else 1)
+                    self.assertFalse(report["recovered"])
+                    self.assertFalse(report["availability_verified"])
+                    self.assertEqual(report["classification"], "invalid-probe-evidence")
+                    self.assertNotIn("SDK-tests-continue", result.stdout)
+
+    def test_runtime_recovery_marker_never_follows_or_overwrites_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            victim = root / "unrelated"
+            victim.write_text("preserve")
+            (root / "peerloom-simctl-recovery-used").symlink_to(victim)
+            result, report, calls = self.runtime_probe(root, first=124)
+            self.assertEqual(result.returncode, 124, result.stderr)
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(report["recovery_attempted"])
+            self.assertEqual(victim.read_text(), "preserve")
+            self.assertNotIn("SDK-tests-continue", result.stdout)
+
     def test_real_ios_runs_before_diagnostics_and_both_fail_closed(self):
         source = SCRIPT.with_name("test-native.sh").read_text()
         block = source[source.index("    test_status=0"):source.index("    run_capture ios-summary")]

@@ -221,6 +221,27 @@ class ImportProbeTest(unittest.TestCase):
             finally:
                 stdout.detach()
 
+    def test_public_probe_keeps_secret_fixture_acl_and_never_recurses_rootfs(self):
+        script = (ROOT/'test-windows-service.ps1').read_text(encoding='utf-8')
+        acl_start = script.index('if (-not $ImportProbeOnly) {')
+        acl_end = script.index('} else {', acl_start)
+        private_acl = script[acl_start:acl_end]
+        self.assertIn('$acl.SetAccessRuleProtection($true, $false)', private_acl)
+        self.assertIn('Set-Acl -LiteralPath $directory -AclObject $acl', private_acl)
+        self.assertEqual(script.count('Set-Acl -LiteralPath'), 1)
+        self.assertIn('New-Item -ItemType Directory $directory -ErrorAction Stop', script)
+        self.assertIn('PUBLIC_PROBE_REPARSE_ANCESTOR_FORBIDDEN', script)
+        cleanup_start = script.index('# WSL unregister owns rootfs removal.')
+        cleanup_end = script.index('    } else {', cleanup_start)
+        public_cleanup = script[cleanup_start:cleanup_end]
+        self.assertNotIn('-Recurse', public_cleanup)
+        self.assertLess(public_cleanup.index('PUBLIC_PROBE_REPARSE_CLEANUP_ROOT_RETAINED'), public_cleanup.index('Get-ChildItem'))
+        self.assertIn('PUBLIC_PROBE_NONEMPTY_REMAINDER_RETAINED', public_cleanup)
+        self.assertIn('PUBLIC_PROBE_UNKNOWN_REMAINDER_RETAINED', public_cleanup)
+        self.assertIn('PUBLIC_PROBE_REPARSE_REMAINDER_RETAINED', public_cleanup)
+        self.assertIn('Public probe UUID absent and owned staging cleanup: PASS', public_cleanup)
+        self.assertLess(script.index('OWNED_DISTRO_CLEANUP_INCOMPLETE_PRIVATE_DIRECTORY_RETAINED'), cleanup_start)
+
     def test_workflow_source_uses_utf8_under_windows_legacy_locale(self):
         original = Path.read_text
         def windows_default(path, encoding=None, errors=None):

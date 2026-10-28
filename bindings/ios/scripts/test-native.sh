@@ -131,11 +131,90 @@ assert 'PeerloomSimulatorHost' in schemes, '缺少显式应用宿主测试 schem
 PYSCHEME
     RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-18-5
     TYPE=com.apple.CoreSimulator.SimDeviceType.iPhone-16
-    run_capture ios-runtime-list 30 xcrun simctl list runtimes -j
-    python3 - "$OUT/phase-ios-runtime-list.stdout" "$RUNTIME" <<'PY'
-import json,sys
-assert any(v['identifier']==sys.argv[2] and v.get('isAvailable') for v in json.load(open(sys.argv[1]))['runtimes']), '固定 iOS 18.5 runtime 不可用'
-PY
+    # Environment discovery only: preserve the 30s fast path, then allow at most
+    # one additional bounded read-only probe per job (shared by both iOS stages).
+    runtime_first_status=0
+    runtime_recovery_status=-1
+    run_capture ios-runtime-list 30 xcrun simctl list runtimes -j || runtime_first_status=$?
+    if [[ $runtime_first_status -ne 0 && $runtime_first_status -ne 130 && $runtime_first_status -ne 143 ]]; then
+      if python3 - "${RUNNER_TEMP:-$OUT}/peerloom-simctl-recovery-used" <<'PYONCE'
+import os,sys
+try:
+    descriptor=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    os.close(descriptor)
+except OSError:
+    print('环境恢复机会已使用或不可用；不再重试',file=sys.stderr)
+    raise SystemExit(1)
+PYONCE
+      then
+        runtime_recovery_status=0
+        run_capture ios-runtime-readiness-recovery 120 xcrun simctl list runtimes -j || runtime_recovery_status=$?
+      fi
+    fi
+    python3 - "$OUT" "$RUNTIME" "$runtime_first_status" "$runtime_recovery_status" <<'PYRUNTIME'
+import json,math,os,sys
+from pathlib import Path
+os.umask(0o077)
+out=Path(sys.argv[1])
+first,second=map(int,sys.argv[3:5])
+def unique(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result: raise ValueError('duplicate JSON key')
+        result[key]=value
+    return result
+def reject_constant(_):
+    raise ValueError('non-finite JSON constant')
+def read_json(path):
+    with path.open('rb') as source:
+        data=source.read(1024*1024+1)
+    if len(data)>1024*1024: raise ValueError('oversized JSON')
+    return json.loads(data.decode('utf-8'),object_pairs_hook=unique,parse_constant=reject_constant)
+def elapsed(name,code,budget):
+    status=read_json(out/('phase-'+name+'.json'))
+    value=status.get('elapsed_seconds')
+    if (type(status.get('exit_code')) is not int or status['exit_code']!=code
+            or status.get('timeout_seconds')!=budget or type(value) not in (int,float)
+            or not math.isfinite(value) or value<0):
+        raise ValueError('invalid probe evidence')
+    return value
+report={'environment_preparation_only':True,'recovery_attempted':second>=0,
+        'recovery_is_cold_start':False if second>=0 else None,'recovered':False,
+        'availability_verified':False,'fast_path':{'exit_code':first,'timeout_seconds':30},
+        'recovery':{'exit_code':second,'timeout_seconds':120} if second>=0 else None}
+selected='ios-runtime-readiness-recovery' if second>=0 else 'ios-runtime-list'
+code=second if second>=0 else first
+try:
+    report['fast_path']['elapsed_seconds']=elapsed('ios-runtime-list',first,30)
+    total=report['fast_path']['elapsed_seconds']
+    if second>=0:
+        report['recovery']['elapsed_seconds']=elapsed(selected,second,120)
+        total+=report['recovery']['elapsed_seconds']
+    # This is cumulative probe time, not a new cold-start measurement.
+    report['probe_elapsed_seconds_total']=round(total,3)
+    report['classification']='probe-failed'
+    if code==0:
+        info=read_json(out/('phase-'+selected+'.stdout'))
+        if not isinstance(info,dict) or not isinstance(info.get('runtimes'),list):
+            raise ValueError('invalid runtime JSON')
+        entries=info['runtimes']
+        if len(entries)>128 or any(not isinstance(item,dict) for item in entries):
+            raise ValueError('invalid runtime entries')
+        matches=[item for item in entries if item.get('identifier')==sys.argv[2]]
+        if len(matches)!=1 or matches[0].get('isAvailable') is not True:
+            raise ValueError('target runtime unavailable or ambiguous')
+        report['availability_verified']=True
+        report['recovered']=second>=0
+        report['classification']='recovered' if second>=0 else 'ready'
+except (OSError,ValueError,TypeError,AttributeError,RecursionError):
+    report['classification']='invalid-probe-evidence'
+    code=code or 1
+with (out/'phase-ios-runtime-readiness.json').open('x',encoding='utf-8') as evidence:
+    json.dump(report,evidence,ensure_ascii=False,sort_keys=True,indent=2)
+    evidence.write('\n')
+print('[Apple runtime readiness] '+report['classification']+' exit='+str(code))
+raise SystemExit(code)
+PYRUNTIME
     # New unique simulator only; never erase, shut down or delete an existing operator device.
     run_capture ios-create 30 xcrun simctl create "PeerloomValidation-$$" "$TYPE" "$RUNTIME"
     DEVICE=$(python3 - "$OUT/phase-ios-create.stdout" <<'PY'
