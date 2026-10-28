@@ -1,13 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "设备注册输入草案",
-  "description": "M1 待接入运行时；本 schema 不承担认证、公钥持有证明或限流。metadata 首期仅允许有限标量字段。HTTP 原始请求体另限 16 KiB。",
+  "title": "设备注册输入",
+  "description": "M1 当前只实现 grant 注册；metadata 仅有限标量字段。16 KiB 原始请求体上限由 HTTP 入口实施。installation_public_key 当前仅作为不透明安装标签哈希，不验证算法，也不用于认证或恢复。",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "application_id",
     "platform",
-    "installation_public_key"
+    "installation_public_key",
+    "registration_grant"
   ],
   "properties": {
     "application_id": {
@@ -36,24 +37,31 @@
     },
     "sdk_version": {
       "type": "string",
-      "maxLength": 64
+      "maxLength": 64,
+      "pattern": "^[^\\u0000]*$"
     },
     "metadata": {
       "type": "object",
       "maxProperties": 32,
       "propertyNames": {
         "minLength": 1,
-        "maxLength": 64
+        "maxLength": 64,
+        "pattern": "^[^\\u0000]*$"
       },
       "additionalProperties": {
         "anyOf": [
           {
             "type": "string",
-            "maxLength": 1024
+            "maxLength": 1024,
+            "pattern": "^[^\\u0000]*$"
+          },
+          {
+            "type": "number",
+            "minimum": -1.7976931348623157e+308,
+            "maximum": 1.7976931348623157e+308
           },
           {
             "type": [
-              "number",
               "boolean",
               "null"
             ]

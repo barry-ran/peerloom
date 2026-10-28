@@ -21,11 +21,11 @@ class ContractTests(unittest.TestCase):
         check = validator('device-registration.schema.json')
         for platform in ('windows', 'macos', 'linux', 'android', 'ios', 'web'):
             check.validate({'application_id': UUID, 'platform': platform,
-                            'installation_public_key': 'format-selected-in-M1'})
+                            'installation_public_key': 'opaque-installation-label', 'registration_grant': 'reg_test'})
 
     def test_registration_negative(self):
         check = validator('device-registration.schema.json')
-        valid = {'application_id': UUID, 'platform': 'linux', 'installation_public_key': 'key'}
+        valid = {'application_id': UUID, 'platform': 'linux', 'installation_public_key': 'key', 'registration_grant': 'reg_test'}
         bad = [dict(valid, platform='other'), dict(valid, application_id='not-uuid'),
                dict(valid, tenant_id=UUID), dict(valid, metadata={'deep': {'nested': True}}),
                dict(valid, metadata={'text': 'x' * 1025}),
@@ -60,9 +60,10 @@ class ContractTests(unittest.TestCase):
 
     def test_openapi_only_implemented_endpoints(self):
         api = json.loads((ROOT / 'api/openapi.json').read_text())
-        self.assertEqual(set(api['paths']), {'/healthz', '/readyz', '/metrics'})
+        self.assertEqual(set(api['paths']), {'/healthz', '/readyz', '/metrics', '/v1/device-registrations', '/v1/device-self', '/v1/device-credentials/refresh'})
         for path in api['paths'].values():
-            self.assertIn('200', path['get']['responses'])
+            operation = next(iter(path.values()))
+            self.assertTrue({'200', '201'} & set(operation['responses']))
         Draft202012Validator.check_schema(api['components']['schemas']['Problem'])
 
 

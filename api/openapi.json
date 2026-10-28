@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Peerloom 工程基础接口",
+    "title": "Peerloom 基础与设备身份接口",
     "version": "0.1.0-dev",
-    "description": "仅列 M0 实际健康端点。业务 REST、WSS 和 SDK 尚未交付。"
+    "description": "已实现健康与 grant-only 身份服务。没有管理后台、direct 注册、WSS 或平台授权 WebRTC 连接入口。"
   },
   "paths": {
     "/healthz": {
@@ -86,6 +86,385 @@
           }
         }
       }
+    },
+    "/v1/device-registrations": {
+      "post": {
+        "summary": "使用一次性 grant 原子注册安装身份",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            },
+            "description": "相同授权上下文与逻辑请求使用相同键；不能用新键再次消费一次性 grant。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Registration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "成功；凭证响应禁止缓存或日志记录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/device-self": {
+      "get": {
+        "summary": "当前凭证对应的设备身份",
+        "security": [
+          {
+            "DeviceCredential": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；凭证响应禁止缓存或日志记录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/device-credentials/refresh": {
+      "post": {
+        "summary": "轮换设备凭证；旧凭证仅短暂重叠",
+        "security": [
+          {
+            "DeviceCredential": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            },
+            "description": "相同授权上下文与逻辑请求使用相同键；不能用新键再次消费一次性 grant。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "须 Content-Type: application/json；允许空请求体或空对象",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功；凭证响应禁止缓存或日志记录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -112,6 +491,193 @@
             "type": "string"
           }
         }
+      },
+      "Registration": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "设备注册输入",
+        "description": "M1 当前只实现 grant 注册；metadata 仅有限标量字段。16 KiB 原始请求体上限由 HTTP 入口实施。installation_public_key 当前仅作为不透明安装标签哈希，不验证算法，也不用于认证或恢复。",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "application_id",
+          "platform",
+          "installation_public_key",
+          "registration_grant"
+        ],
+        "properties": {
+          "application_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "platform": {
+            "enum": [
+              "windows",
+              "macos",
+              "linux",
+              "android",
+              "ios",
+              "web"
+            ]
+          },
+          "installation_public_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "registration_grant": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "sdk_version": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "metadata": {
+            "type": "object",
+            "maxProperties": 32,
+            "propertyNames": {
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1024,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                {
+                  "type": "number",
+                  "minimum": -1.7976931348623157e+308,
+                  "maximum": 1.7976931348623157e+308
+                },
+                {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "Credential": {
+        "type": "object",
+        "required": [
+          "device_id",
+          "device_credential",
+          "expires_at"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "device_credential": {
+            "type": "string",
+            "pattern": "^dev_[A-Za-z0-9_-]{43}$"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Device": {
+        "type": "object",
+        "required": [
+          "device_id",
+          "tenant_id",
+          "application_id",
+          "platform",
+          "metadata"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "application_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "platform": {
+            "enum": [
+              "windows",
+              "macos",
+              "linux",
+              "android",
+              "ios",
+              "web"
+            ]
+          },
+          "metadata": {
+            "type": "object",
+            "maxProperties": 32,
+            "propertyNames": {
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1024,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                {
+                  "type": "number",
+                  "minimum": -1.7976931348623157e+308,
+                  "maximum": 1.7976931348623157e+308
+                },
+                {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "IdentityProblem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Problem"
+          },
+          {
+            "type": "object",
+            "required": [
+              "request_id",
+              "detail"
+            ],
+            "properties": {
+              "request_id": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "securitySchemes": {
+      "DeviceCredential": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque dev_ token"
       }
     }
   }

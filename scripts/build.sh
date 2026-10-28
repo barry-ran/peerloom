@@ -10,7 +10,7 @@ mkdir -p "$root/dist"
     suffix=""
     if [ "$os" = windows ]; then suffix=.exe; fi
     mkdir -p "$root/dist/$os-$arch"
-    for binary in device-server device-migrate; do
+    for binary in device-server device-migrate device-bootstrap; do
       CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -o "$root/dist/$os-$arch/$binary$suffix" "./cmd/$binary"
     done
   done

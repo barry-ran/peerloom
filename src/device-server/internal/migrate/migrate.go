@@ -18,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const CurrentVersion int64 = 1
+const CurrentVersion int64 = 2
 const lockID int64 = 0x504545524c4f4f4d
 
 type Migration struct {

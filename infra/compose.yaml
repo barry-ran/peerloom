@@ -56,7 +56,8 @@ services:
     environment:
       DATABASE_URL_FILE: /run/secrets/database_url
       LISTEN_ADDRESS: :8080
-    secrets: [database_url]
+      REPLAY_KEY_FILE: /run/secrets/replay_key
+    secrets: [database_url, replay_key]
     networks: [backend]
     depends_on:
       postgres: {condition: service_healthy}
@@ -106,3 +107,5 @@ secrets:
     file: ../.secrets/redis_password
   redis_config:
     file: ../.secrets/redis_config
+  replay_key:
+    file: ../.secrets/replay_key
