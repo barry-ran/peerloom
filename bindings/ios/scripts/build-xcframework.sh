@@ -21,10 +21,11 @@ mkdir -m 700 "$PEERLOOM_APPLE_OUTPUT"
 OUT=$(cd "$PEERLOOM_APPLE_OUTPUT" && pwd)
 export CARGO_TARGET_DIR="$OUT/cargo"
 export IPHONEOS_DEPLOYMENT_TARGET=15.0 MACOSX_DEPLOYMENT_TARGET=12.0
-features=()
+# Bash 3.2 with nounset rejects expansion of an empty array. Keep argv nonempty.
+cargo_args=(build --locked --release -p device-ffi)
 if [[ -n ${PEERLOOM_CARGO_FEATURES:-} ]]; then
   [[ "$PEERLOOM_CARGO_FEATURES" =~ ^[a-zA-Z0-9_,-]+$ ]] || exit 2
-  features=(--features "$PEERLOOM_CARGO_FEATURES")
+  cargo_args+=(--features "$PEERLOOM_CARGO_FEATURES")
 fi
 for target in "${TARGETS[@]}"; do
   case "$target" in
@@ -34,7 +35,7 @@ for target in "${TARGETS[@]}"; do
   esac
   export SDKROOT
   SDKROOT=$(xcrun --sdk "$sdk" --show-sdk-path)
-  (cd "$ROOT/src/device-sdk" && cargo build --locked --release -p device-ffi --target "$target" "${features[@]}")
+  (cd "$ROOT/src/device-sdk" && cargo "${cargo_args[@]}" --target "$target")
 done
 unset SDKROOT
 mkdir -p "$OUT/headers" "$OUT/macos" "$OUT/ios-device" "$OUT/ios-simulator"
