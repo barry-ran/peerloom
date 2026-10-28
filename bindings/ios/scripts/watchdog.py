@@ -21,6 +21,7 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
     interrupted = []
     previous = {}
     process = None
+    group_cleanup_completed = False
     selector = selectors.DefaultSelector()
     # Existing evidence must not be overwritten by a repeated phase.
     with ExitStack() as files:
@@ -79,6 +80,7 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
                         break
             try:
                 status["child_returncode"] = process.wait(timeout=2)
+                group_cleanup_completed = killed_at is not None
             except subprocess.TimeoutExpired:
                 status["child_returncode"] = None
                 status["reap_failed"] = True
@@ -86,18 +88,21 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
             status["classification"] = "launch-or-io-error"
         finally:
             if process is not None:
-                # Also reap ordinary children after failure. Never target an unrelated process.
-                signal_group(process.pid, signal.SIGTERM)
-                if process.poll() is None:
-                    try:
-                        process.wait(timeout=grace)
-                    except subprocess.TimeoutExpired:
-                        signal_group(process.pid, signal.SIGKILL)
+                # Only skip redundant signals after the timeout/interruption loop has
+                # already completed group SIGKILL AND reaped our leader. Ordinary
+                # leader exit can still leave same-group children with closed pipes.
+                if not group_cleanup_completed:
+                    signal_group(process.pid, signal.SIGTERM)
+                    if process.poll() is None:
                         try:
-                            process.wait(timeout=2)
+                            process.wait(timeout=grace)
                         except subprocess.TimeoutExpired:
-                            status["reap_failed"] = True
-                signal_group(process.pid, signal.SIGKILL)
+                            signal_group(process.pid, signal.SIGKILL)
+                            try:
+                                process.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                status["reap_failed"] = True
+                    signal_group(process.pid, signal.SIGKILL)
                 process.stdout.close()
                 process.stderr.close()
             selector.close()

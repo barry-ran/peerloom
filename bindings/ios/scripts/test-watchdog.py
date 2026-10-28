@@ -19,6 +19,9 @@ import xml.etree.ElementTree as ET
 from unittest import mock
 
 SCRIPT = Path(__file__).with_name("watchdog.py")
+WATCHDOG_SPEC = importlib.util.spec_from_file_location("watchdog", SCRIPT)
+WATCHDOG = importlib.util.module_from_spec(WATCHDOG_SPEC)
+WATCHDOG_SPEC.loader.exec_module(WATCHDOG)
 VERIFY_SPEC = importlib.util.spec_from_file_location("verify_swift", SCRIPT.with_name("verify-swift-tests.py"))
 VERIFY = importlib.util.module_from_spec(VERIFY_SPEC)
 VERIFY_SPEC.loader.exec_module(VERIFY)
@@ -69,6 +72,41 @@ class WatchdogTests(unittest.TestCase):
             value = heartbeat.read_bytes()
             time.sleep(0.15)
             self.assertEqual(heartbeat.read_bytes(), value, "owned descendant survived timeout")
+
+    def test_completed_group_kill_and_reap_never_resignals_stale_pgid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sent = []
+            original = WATCHDOG.signal_group
+            handlers = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+            def reject_redundant_signal(pid, number):
+                if sent == [signal.SIGTERM, signal.SIGKILL]:
+                    raise PermissionError("synthetic stale PGID after completed cleanup")
+                sent.append(number)
+                original(pid, number)
+            try:
+                with mock.patch.object(WATCHDOG, "signal_group", side_effect=reject_redundant_signal), contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), encoding="utf-8")):
+                    code = WATCHDOG.run([sys.executable, "-c", "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(100)"],
+                                        0.25, 0.05, root / "log", root / "status")
+                self.assertEqual(code, 124)
+                self.assertEqual(sent, [signal.SIGTERM, signal.SIGKILL])
+                self.assertEqual(json.loads((root / "status").read_text())["classification"], "timeout")
+            finally:
+                for number, handler in handlers.items(): signal.signal(number, handler)
+
+    def test_normal_exited_parent_still_cleans_same_group_with_closed_pipes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); heartbeat = root / "heartbeat"
+            child = "import pathlib,signal,time,sys;signal.signal(signal.SIGTERM,signal.SIG_IGN);p=pathlib.Path(sys.argv[1]);\nwhile True:p.write_text(str(time.monotonic()));time.sleep(.02)"
+            parent = "import pathlib,subprocess,sys,time;p=pathlib.Path(sys.argv[2]);subprocess.Popen([sys.executable,'-c',sys.argv[1],str(p)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);\nwhile not p.exists():time.sleep(.01)\nprint('child owns closed pipes',flush=True)"
+            result = self.execute(root, parent, extra=[child, heartbeat])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            value = heartbeat.read_bytes(); time.sleep(0.15)
+            self.assertEqual(heartbeat.read_bytes(), value, "ordinary leader exit skipped owned group cleanup")
+
+    def test_permission_error_is_not_ignored_for_group_signal(self):
+        with mock.patch.object(WATCHDOG.os, "killpg", side_effect=PermissionError("synthetic denied live group")):
+            with self.assertRaises(PermissionError): WATCHDOG.signal_group(12345, signal.SIGTERM)
 
     def test_exited_parent_with_inherited_pipe_is_still_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
