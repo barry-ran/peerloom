@@ -63,8 +63,33 @@ class AdminDeploymentTests(unittest.TestCase):
         self.assertIn('linux/amd64 linux/arm64 darwin/arm64 windows/amd64', body)
         self.assertIn('"$root/dist/$os-$arch/$binary$suffix"', body)
         subprocess.run(['bash', '-n', str(script)], check=True)
-        self.assertLess(body.index('package-third-party.py'), body.index('cp -R \"$root/third_party/admin-web-build/.\"'))
-        self.assertIn('admin-web-build/package-lock.json', body)
+        self.assert_build_notice_pipeline(body, (ROOT / 'scripts/package-third-party.py').read_text())
+
+    def assert_build_notice_pipeline(self, body, producer):
+        invocation = 'python3 "$root/scripts/package-third-party.py" --include-build-notices'
+        self.assertIn(invocation, body.splitlines())
+        self.assertLess(body.index(invocation), body.index('python3 "$root/scripts/package-release.py"'))
+        self.assertIn("sources['admin-web-build/package-lock.json'] = root / 'src/admin-web/package-lock.json'", producer)
+        self.assertIn("admin = root / 'third_party/admin-web-build'", producer)
+        self.assertIn('if args.include_build_notices:\n        copy_build_notices(root, output)', producer)
+        self.assertIn('append_owned_manifest(output, owned)', producer)
+        self.assertIn('if actual != set(expected):', producer)
+        self.assertIn('if sha_file(output / name) != checksum:', producer)
+
+    def test_build_notice_pipeline_rejects_missing_flag_or_wrong_producer(self):
+        body = (ROOT / 'scripts/build.sh').read_text()
+        producer = (ROOT / 'scripts/package-third-party.py').read_text()
+        cases = [
+            (body.replace(' --include-build-notices', ''), producer),
+            (body.replace('scripts/package-third-party.py', 'scripts/generate-third-party.py'), producer),
+            (body, producer.replace('append_owned_manifest(output, owned)', 'print("not checksummed")')),
+            (body, producer.replace('if actual != set(expected):', 'if False:')),
+        ]
+        for changed_body, changed_producer in cases:
+            with self.subTest(body_changed=changed_body != body, producer_changed=changed_producer != producer):
+                with self.assertRaises(AssertionError):
+                    self.assert_build_notice_pipeline(changed_body, changed_producer)
+
 
 
 if __name__ == '__main__':
