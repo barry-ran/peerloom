@@ -441,7 +441,7 @@ def main():
                        'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'DEVELOPMENT_TEAM=']
             with (output / 'service-build.log').open('xb') as build_log:
                 # Build before provisioning fixture; this subprocess gets no DB/Redis config.
-                run(command + ['build-for-testing'], env=dict(os.environ), timeout=600,
+                run(command + ['build-for-testing'], cwd=package, env=dict(os.environ), timeout=600,
                     stdout=build_log, stderr=subprocess.STDOUT)
             app = derived / 'Build/Products/Debug-iphonesimulator/PeerloomSimulatorHost.app'
             run(['xcrun', 'simctl', 'install', simulator, str(app)], timeout=60)
@@ -459,7 +459,7 @@ def main():
             test_status = 0
             try:
                 with (private_dir / 'runtime.log').open('xb') as runtime_log:
-                    run(command + ['-resultBundlePath', str(result), 'test-without-building'], env=dict(os.environ),
+                    run(command + ['-resultBundlePath', str(result), 'test-without-building'], cwd=package, env=dict(os.environ),
                         stdout=runtime_log, stderr=subprocess.STDOUT, timeout=300)
             except Failure:
                 test_status = 1

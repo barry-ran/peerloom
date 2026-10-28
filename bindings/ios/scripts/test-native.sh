@@ -90,6 +90,7 @@ case "$PHASE" in
     for stage in macos-swift macos-rust-tls ios-simulator ios-device finalize; do "$HERE/scripts/test-native.sh" --stage "$stage"; done
     ;;
   macos-swift)
+    run macos-package-resolution 180 python3 "$HERE/scripts/verify-package-resolution.py" "$OUT/SwiftPackage" "$HERE"
     start_tls
     run macos-probe-build 300 swift build --product PeerloomStoreProbe
     export PEERLOOM_STORE_PROBE_BIN

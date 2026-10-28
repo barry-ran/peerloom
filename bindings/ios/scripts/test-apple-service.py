@@ -2,6 +2,7 @@
 # MIT — Copyright (c) 2026 Peerloom contributors.
 """Apple real-service fixture safety contracts; not Swift/native execution evidence."""
 import importlib.util
+import ast
 import hashlib
 import io
 import json
@@ -194,6 +195,25 @@ class ServiceSafety(unittest.TestCase):
         self.assertIn('256 * 1024', source)
         self.assertIn('finishWrite()', source)
         self.assertIn('mode: .lowLatencyMessage', source)
+
+    def test_service_xcodebuild_uses_real_package_cwd_for_binary_target(self):
+        tree = ast.parse((HERE / 'apple-service.py').read_text())
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name) and node.func.id == 'run' and node.args
+                 and isinstance(node.args[0], ast.BinOp) and isinstance(node.args[0].left, ast.Name)
+                 and node.args[0].left.id == 'command']
+        self.assertEqual(len(calls), 2, 'build and test must both use the same verified package directory')
+        for node in calls:
+            cwd = next((item.value for item in node.keywords if item.arg == 'cwd'), None)
+            self.assertIsInstance(cwd, ast.Name)
+            self.assertEqual(cwd.id, 'package')
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary) / 'SwiftPackage'
+            (package / 'Artifacts/CPeerloom.xcframework').mkdir(parents=True)
+            probe = "import pathlib;raise SystemExit(0 if pathlib.Path('Artifacts/CPeerloom.xcframework').is_dir() else 7)"
+            with self.assertRaisesRegex(SERVICE.Failure, 'exit 7'):
+                SERVICE.run([sys.executable, '-c', probe], cwd=Path(temporary))
+            SERVICE.run([sys.executable, '-c', probe], cwd=package)
 
     def test_signing_requires_exact_service_bundle_and_expanded_group(self):
         with tempfile.TemporaryDirectory() as temporary:

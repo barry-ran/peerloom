@@ -2,7 +2,8 @@
 // MIT — Copyright (c) 2026 Peerloom contributors.
 import PackageDescription
 import Foundation
-let binary = FileManager.default.fileExists(atPath: "Artifacts/CPeerloom.xcframework")
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let binary = FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent("Artifacts/CPeerloom.xcframework").path)
 let native: Target = binary
     ? .binaryTarget(name: "CPeerloom", path: "Artifacts/CPeerloom.xcframework")
     : .systemLibrary(name: "CPeerloom", path: "Sources/CPeerloom")

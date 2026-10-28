@@ -3,7 +3,9 @@
     "version": "24.04.3",
     "url": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04.3/release/ubuntu-base-24.04.3-base-amd64.tar.gz",
     "sha256": "6bc2cde3930ad088b3bb46fa45279e96d25bc3810f209850ecbe4722711874f9",
-    "checksum_source": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04.3/release/SHA256SUMS"
+    "checksum_source": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04.3/release/SHA256SUMS",
+    "tar_size": 84101120,
+    "tar_sha256": "c0bb584a1fe79db423329609b8c8280ca755e99fdee6be4555420061bdd08cde"
   },
   "redis": {
     "version": "8.10.3",

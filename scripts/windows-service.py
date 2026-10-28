@@ -3,6 +3,7 @@
 import argparse
 import base64
 import hashlib
+import gzip
 import importlib.util
 from datetime import datetime, timedelta, timezone
 import uuid
@@ -60,6 +61,40 @@ def download(spec, destination):
             out.write(chunk)
     if digest.hexdigest() != spec['sha256']:
         raise ValueError('official archive checksum mismatch')
+
+
+def prepare_wsl_tar(archive, destination, spec):
+    """Normalize the pinned gzip to the documented plain TarFile; never extract members."""
+    if archive.is_symlink() or not archive.is_file() or destination.parent != archive.parent:
+        raise ValueError('owned regular archive and sibling output required')
+    expected_size = spec['tar_size']
+    if type(expected_size) is not int or not 512 <= expected_size <= 512 * 1024 * 1024:
+        raise ValueError('invalid plain tar bound')
+    digest = hashlib.sha256()
+    with archive.open('rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            digest.update(chunk)
+    if digest.hexdigest() != spec['sha256']:
+        raise ValueError('official archive checksum mismatch')
+    # Exclusive creation preserves any pre-existing file or symlink on all failures.
+    with destination.open('xb') as output:
+        try:
+            digest = hashlib.sha256()
+            size = 0
+            with gzip.open(archive, 'rb') as source:
+                while chunk := source.read(min(1024 * 1024, expected_size - size + 1)):
+                    size += len(chunk)
+                    if size > expected_size:
+                        raise ValueError('plain tar exceeds pinned size')
+                    digest.update(chunk)
+                    output.write(chunk)
+            if size != expected_size or digest.hexdigest() != spec['tar_sha256']:
+                raise ValueError('plain tar size or checksum mismatch')
+        except BaseException:
+            output.close()
+            destination.unlink()
+            raise
+    print('Owned WSL input: format=plain-tar bytes=' + str(size) + ' sha256=' + digest.hexdigest())
 
 
 def extract_postgres(archive, destination):
@@ -248,12 +283,14 @@ def main():
         extract_postgres(directory / 'postgresql.archive', directory / 'postgresql')
         pg = directory / 'postgresql/pgsql/bin'
         assert b'18.6' in run([str(pg / 'postgres.exe'), '--version'])
+        STAGE = 'prepare-owned-wsl-tar'
+        prepare_wsl_tar(directory / 'ubuntu_base.archive', directory / 'ubuntu_base.tar', dependencies['ubuntu_base'])
         STAGE = 'import-owned-wsl1'
         wsl_status_diagnostic([str(directory), args.distro, os.environ.get('USERPROFILE', ''),
                                os.environ.get('HOME', ''), os.environ.get('RUNNER_TEMP', '')])
         imported = True  # An uncertain result is checked/cleaned; import is never repeated.
         run(['wsl.exe', '--import', args.distro, str(directory / 'wsl'),
-             str(directory / 'ubuntu_base.archive'), '--version', '1'], timeout=180, import_diagnostic=True)
+             str(directory / 'ubuntu_base.tar'), '--version', '1'], timeout=180, import_diagnostic=True)
         # No default distribution/version/network setting is changed.
         STAGE = 'build-real-redis-in-owned-wsl1'
         wsl('/bin/bash', '-ec', 'mkdir -m 700 /root/peerloom-ci; apt-get update; '

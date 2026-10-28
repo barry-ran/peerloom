@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Host-only negative tests; no Windows features, WSL, processes or services are changed."""
 import hashlib
+import gzip
+import tarfile
 import importlib.util
 import io
 import json
@@ -143,6 +145,73 @@ class ProcessTest(unittest.TestCase):
         with patch.object(service.subprocess, 'Popen', return_value=child), patch.object(service.subprocess, 'run', return_value=service.subprocess.CompletedProcess([], 1)), patch.object(service.sys, 'platform', 'win32'):
             with self.assertRaisesRegex(RuntimeError, 'cleanup unconfirmed'):
                 service.run(['cargo', 'test'], timeout=1)
+
+
+class PlainTarTest(unittest.TestCase):
+    def fixture(self, directory):
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode='w') as tar:
+            item = tarfile.TarInfo('../not-extracted')
+            item.size = 4
+            tar.addfile(item, io.BytesIO(b'data'))
+        plain = data.getvalue()
+        compressed = gzip.compress(plain)
+        archive = directory / 'ubuntu_base.archive'
+        archive.write_bytes(compressed)
+        return archive, plain, {'sha256': hashlib.sha256(compressed).hexdigest(),
+                                'tar_size': len(plain), 'tar_sha256': hashlib.sha256(plain).hexdigest()}
+
+    def test_pinned_gzip_becomes_exact_plain_tar_without_member_extraction(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            archive, plain, spec = self.fixture(directory)
+            output = directory / 'ubuntu_base.tar'
+            service.prepare_wsl_tar(archive, output, spec)
+            self.assertEqual(output.read_bytes(), plain)
+            self.assertEqual(sorted(p.name for p in directory.iterdir()), ['ubuntu_base.archive', 'ubuntu_base.tar'])
+            self.assertFalse((directory.parent / 'not-extracted').exists())
+            with self.assertRaises(FileExistsError):
+                service.prepare_wsl_tar(archive, output, spec)
+            self.assertEqual(output.read_bytes(), plain)
+
+    def test_hash_size_and_corrupt_gzip_fail_without_partial_output(self):
+        for mutation in ('source_hash', 'tar_hash', 'too_small', 'too_large', 'corrupt', 'bad_bound'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                archive, plain, spec = self.fixture(directory)
+                output = directory / 'ubuntu_base.tar'
+                if mutation == 'source_hash': spec['sha256'] = '0'*64
+                if mutation == 'tar_hash': spec['tar_sha256'] = '0'*64
+                if mutation == 'too_small': spec['tar_size'] -= 1
+                if mutation == 'too_large': spec['tar_size'] += 1
+                if mutation == 'bad_bound': spec['tar_size'] = 513*1024*1024
+                if mutation == 'corrupt':
+                    archive.write_bytes(archive.read_bytes()[:-5])
+                    spec['sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
+                with self.assertRaises((ValueError, EOFError, OSError)):
+                    service.prepare_wsl_tar(archive, output, spec)
+                self.assertFalse(output.exists())
+
+    def test_source_symlink_and_existing_output_symlink_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            archive, plain, spec = self.fixture(directory)
+            output = directory / 'ubuntu_base.tar'
+            # Mock the filesystem type check; Windows does not require symlink privileges.
+            with patch.object(Path, 'is_symlink', return_value=True), self.assertRaises(ValueError):
+                service.prepare_wsl_tar(archive, output, spec)
+            output.write_bytes(b'preserved')
+            with self.assertRaises(FileExistsError): service.prepare_wsl_tar(archive, output, spec)
+            self.assertEqual(output.read_bytes(), b'preserved')
+
+    def test_single_import_keeps_version_and_io_with_plain_tar_argument(self):
+        source = (ROOT / 'windows-service.py').read_text()
+        self.assertIn("str(directory / 'ubuntu_base.tar'), '--version', '1']", source)
+        self.assertNotIn("str(directory / 'ubuntu_base.archive'), '--version', '1']", source)
+        self.assertIn('stdin=subprocess.DEVNULL if owned_import else None', source)
+        pins = json.loads((ROOT / 'windows-service-dependencies.json').read_text())['ubuntu_base']
+        self.assertEqual(pins['tar_size'], 84101120)
+        self.assertEqual(pins['tar_sha256'], 'c0bb584a1fe79db423329609b8c8280ca755e99fdee6be4555420061bdd08cde')
 
 
 class ManagementFixture(unittest.TestCase):
