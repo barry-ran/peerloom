@@ -92,4 +92,10 @@ XCFramework 包含独立的 iOS device arm64、iOS simulator arm64+x86_64、macO
 
 验收必须实际执行：macOS Swift/XCTest、独立临时 Keychain 锁定失败和两进程 CAS、真实 C create/load/shutdown、宿主排队后过期重验、宿主事件溢出、macOS Rust 系统 TLS 负向，以及 Swift macOS/iOS 两次真实自签握手拒绝（服务器侧计数，绝不安装信任根）；iOS 18.5 模拟器 XCTest/DP Keychain；unsigned iOS device build 与三类 XCFramework 结构。真机签名/安装、真机锁屏、后台暂停、生产 entitlement、完整双端 Swift 通信尚不能仅由这些门禁替代。
 
+iOS 测试使用 `SimulatorHost` 中的空应用宿主和显式 XCTest target，直接引用原有 `KeychainTests.swift` / `NativeCoreTests.swift`，不复制或删减 8 项断言。裸 SwiftPM 测试由 Xcode `xctest` agent 托管，实际返回 `errSecMissingEntitlement` 时不能归咎为锁文件失败或改用明文存储。标准 `TEST_HOST` 将测试注入本次构建的应用 executable。[Apple TEST_HOST 定义](https://developer.apple.com/documentation/xcode/build-settings-reference)、[Keychain entitlement 错误](https://developer.apple.com/documentation/security/errsecmissingentitlement)
+
+此夹具仅支持 `iphonesimulator`，使用本地 ad-hoc Simulator 签名；不设置虚构 Team ID、不导入证书、不请求 provisioning profile。Keychain group 由 Xcode 展开标准 `$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)`，门禁检查实际 xctestrun 宿主及 Xcode 生成的 `.xcent`；Simulator entitlement 也可能被放入 Mach-O，而非代码签名，因此只看 `codesign` 不能冒充完整权限验收。应用宿主只是测试容器，没有业务 UI。该方案的运行结果仍须真实 CI 确认，不能外推为真机或生产 macOS DP 签名权限通过。
+
+为尽快定位模拟器问题，CI 先构建独立单 arm64 Simulator 诊断包并执行相同 8 项测试；此产物不是发布 XCFramework。诊断通过后仍须完成全部五 slice 构建与全部原生门禁，失败不会跳过检查晋级。
+
 Linux 可运行 `python3 bindings/ios/scripts/test-static.py`，只覆盖打包平台/头一致性与脚本拒绝伪构建。Swift/Keychain/Xcode 真测试仍标**待原生 CI 验证**。产物保留项目 MIT；第三方按自身许可，已有 notice/SBOM 的缺项及非法律清关状态继续保留。

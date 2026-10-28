@@ -113,16 +113,19 @@ case "$PHASE" in
     ;;
   ios-simulator)
     start_tls
-    # The package also contains an implicit executable product. Its aggregate scheme
-    # owns all test targets; the PeerloomSwift library product scheme has no TestAction.
-    run_capture ios-schemes 60 xcodebuild -list -json
+    # Bare SwiftPM XCTest runs in Xcode's entitlement-less xctest agent. Use a normal
+    # simulator-only application host for the SAME original test sources and SDK.
+    [[ ! -e "$OUT/SimulatorHost" ]]
+    cp -R "$HERE/SimulatorHost" "$OUT/SimulatorHost"
+    IOS_PROJECT="$OUT/SimulatorHost/PeerloomSimulatorHost.xcodeproj"
+    run_capture ios-schemes 60 xcodebuild -project "$IOS_PROJECT" -list -json
     python3 - "$OUT/phase-ios-schemes.stdout" <<'PYSCHEME'
 import json,sys
 info=json.load(open(sys.argv[1]))
 schemes=[]
 for kind in ('workspace','project'):
     schemes.extend(info.get(kind,{}).get('schemes',[]))
-assert 'PeerloomApple-Package' in schemes, '缺少全包测试 scheme；不回退到产品或任意首个 scheme'
+assert 'PeerloomSimulatorHost' in schemes, '缺少显式应用宿主测试 scheme；不回退或跳过测试'
 PYSCHEME
     RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-18-5
     TYPE=com.apple.CoreSimulator.SimDeviceType.iPhone-16
@@ -146,13 +149,15 @@ PY
     run ios-bootstatus 180 xcrun simctl bootstatus "$DEVICE" -b
     # build-for-testing verifies the actual TestAction and builds the test runner.
     # Only a real test-without-building execution can satisfy the >=8-test gate below.
-    run ios-build-for-testing 600 xcodebuild -scheme PeerloomApple-Package -destination "platform=iOS Simulator,id=$DEVICE" \
-      -derivedDataPath "$OUT/DerivedData-simulator" CODE_SIGNING_ALLOWED=NO build-for-testing
+    run ios-build-for-testing 600 xcodebuild -project "$IOS_PROJECT" -scheme PeerloomSimulatorHost -destination "platform=iOS Simulator,id=$DEVICE" \
+      -derivedDataPath "$OUT/DerivedData-simulator" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
+      "PEERLOOM_TLS_ORIGIN=$PEERLOOM_TLS_ORIGIN" build-for-testing
     run ios-test-signing 45 python3 "$HERE/scripts/inspect-test-signing.py" \
-      "$OUT/DerivedData-simulator/Build/Products" "$DEVELOPER_DIR"
-    run ios-simulator 180 xcodebuild -scheme PeerloomApple-Package -destination "platform=iOS Simulator,id=$DEVICE" \
+      "$OUT/DerivedData-simulator/Build/Products" "$DEVELOPER_DIR" --simulator-host
+    run ios-simulator 180 xcodebuild -project "$IOS_PROJECT" -scheme PeerloomSimulatorHost -destination "platform=iOS Simulator,id=$DEVICE" \
       -derivedDataPath "$OUT/DerivedData-simulator" -resultBundlePath "$OUT/iOS模拟器测试.xcresult" \
-      CODE_SIGNING_ALLOWED=NO test-without-building
+      CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
+      "PEERLOOM_TLS_ORIGIN=$PEERLOOM_TLS_ORIGIN" test-without-building
     run_capture ios-summary 30 xcrun xcresulttool get test-results summary --path "$OUT/iOS模拟器测试.xcresult"
     cp "$OUT/phase-ios-summary.stdout" "$OUT/iOS测试摘要.json"
     python3 - "$OUT/iOS测试摘要.json" <<'PY'

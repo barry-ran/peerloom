@@ -1,0 +1,39 @@
+// !$*UTF8*$!
+// MIT — Copyright (c) 2026 Peerloom contributors.
+{
+    archiveVersion = 1;
+    classes = {};
+    objectVersion = 56;
+    objects = {
+        A00000000000000000000001 = {isa = PBXProject; attributes = {LastUpgradeCheck = 1640; TargetAttributes = {A00000000000000000000010 = {CreatedOnToolsVersion = 16.4; }; A00000000000000000000011 = {CreatedOnToolsVersion = 16.4; TestTargetID = A00000000000000000000010; }; }; }; buildConfigurationList = A00000000000000000000030; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = A00000000000000000000002; packageReferences = (A00000000000000000000040); productRefGroup = A00000000000000000000003; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000010, A00000000000000000000011); };
+        A00000000000000000000002 = {isa = PBXGroup; children = (A00000000000000000000004, A00000000000000000000005, A00000000000000000000006, A00000000000000000000007, A00000000000000000000003); sourceTree = "<group>"; };
+        A00000000000000000000003 = {isa = PBXGroup; children = (A00000000000000000000008, A00000000000000000000009); name = Products; sourceTree = "<group>"; };
+        A00000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+        A00000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SimulatorHost.entitlements; sourceTree = "<group>"; };
+        A00000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../SwiftPackage/Tests/PeerloomSwiftTests/KeychainTests.swift; sourceTree = SOURCE_ROOT; };
+        A00000000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../SwiftPackage/Tests/PeerloomSwiftTests/NativeCoreTests.swift; sourceTree = SOURCE_ROOT; };
+        A00000000000000000000008 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PeerloomSimulatorHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        A00000000000000000000009 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PeerloomSwiftTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+        A00000000000000000000010 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000031; buildPhases = (A00000000000000000000020, A00000000000000000000022); buildRules = (); dependencies = (); name = PeerloomSimulatorHost; productName = PeerloomSimulatorHost; productReference = A00000000000000000000008; productType = "com.apple.product-type.application"; };
+        A00000000000000000000011 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000032; buildPhases = (A00000000000000000000021, A00000000000000000000023); buildRules = (); dependencies = (A00000000000000000000025); name = PeerloomSimulatorTests; packageProductDependencies = (A00000000000000000000041); productName = PeerloomSwiftTests; productReference = A00000000000000000000009; productType = "com.apple.product-type.bundle.unit-test"; };
+        A00000000000000000000020 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000050); runOnlyForDeploymentPostprocessing = 0; };
+        A00000000000000000000021 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000051, A00000000000000000000052); runOnlyForDeploymentPostprocessing = 0; };
+        A00000000000000000000022 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        A00000000000000000000023 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000053); runOnlyForDeploymentPostprocessing = 0; };
+        A00000000000000000000024 = {isa = PBXContainerItemProxy; containerPortal = A00000000000000000000001; proxyType = 1; remoteGlobalIDString = A00000000000000000000010; remoteInfo = PeerloomSimulatorHost; };
+        A00000000000000000000025 = {isa = PBXTargetDependency; target = A00000000000000000000010; targetProxy = A00000000000000000000024; };
+        A00000000000000000000030 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000033); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        A00000000000000000000031 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000034); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        A00000000000000000000032 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000035); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        A00000000000000000000033 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {CLANG_ENABLE_MODULES = YES; CODE_SIGN_STYLE = Manual; CODE_SIGN_IDENTITY = "-"; CODE_SIGNING_ALLOWED = YES; DEVELOPMENT_TEAM = ""; ENABLE_TESTABILITY = YES; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.0; SDKROOT = iphonesimulator; SUPPORTED_PLATFORMS = iphonesimulator; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; };
+        A00000000000000000000034 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {CODE_SIGN_ENTITLEMENTS = SimulatorHost.entitlements; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.0.0; PRODUCT_BUNDLE_IDENTIFIER = io.peerloom.validation.simulatorhost; PRODUCT_NAME = "$(TARGET_NAME)"; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = NO; INFOPLIST_KEY_UILaunchScreen_Generation = YES; }; };
+        A00000000000000000000035 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; PRODUCT_BUNDLE_IDENTIFIER = io.peerloom.validation.simulatorhost.tests; PRODUCT_NAME = PeerloomSwiftTests; PRODUCT_MODULE_NAME = PeerloomSwiftTests; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PeerloomSimulatorHost.app/PeerloomSimulatorHost"; TEST_TARGET_NAME = PeerloomSimulatorHost; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks"); }; };
+        A00000000000000000000040 = {isa = XCLocalSwiftPackageReference; relativePath = ../SwiftPackage; };
+        A00000000000000000000041 = {isa = XCSwiftPackageProductDependency; package = A00000000000000000000040; productName = PeerloomSwift; };
+        A00000000000000000000050 = {isa = PBXBuildFile; fileRef = A00000000000000000000004; };
+        A00000000000000000000051 = {isa = PBXBuildFile; fileRef = A00000000000000000000006; };
+        A00000000000000000000052 = {isa = PBXBuildFile; fileRef = A00000000000000000000007; };
+        A00000000000000000000053 = {isa = PBXBuildFile; productRef = A00000000000000000000041; };
+    };
+    rootObject = A00000000000000000000001;
+}

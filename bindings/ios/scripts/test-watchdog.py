@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+import xml.etree.ElementTree as ET
 from unittest import mock
 
 SCRIPT = Path(__file__).with_name("watchdog.py")
@@ -154,20 +155,20 @@ class WatchdogTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     VERIFY.discovery(path)
 
-    def test_requires_actual_package_scheme_not_product_or_guessed_first(self):
+    def test_requires_actual_application_host_scheme_not_product_or_guessed_first(self):
         source = SCRIPT.with_name("test-native.sh").read_text()
         validator = source.split("<<'PYSCHEME'\n", 1)[1].split("\nPYSCHEME", 1)[0]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "schemes.json"
             for kind in ("workspace", "project"):
-                path.write_text(json.dumps({kind: {"schemes": ["PeerloomSwift", "PeerloomApple-Package"]}}))
+                path.write_text(json.dumps({kind: {"schemes": ["PeerloomSwift", "PeerloomSimulatorHost"]}}))
                 self.assertEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
             for wrong in ({}, {"workspace": {"schemes": ["PeerloomSwift", "PeerloomStoreProbe"]}},
                           {"workspace": {"schemes": ["Other-Package"]}}):
                 path.write_text(json.dumps(wrong))
                 self.assertNotEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
         self.assertIn("summary['totalTestCount'] >= 8 and summary['failedTests'] == 0", source)
-        self.assertIn("CODE_SIGNING_ALLOWED=NO test-without-building", source)
+        self.assertIn("CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=", source)
         self.assertIn("run ios-device 600 xcodebuild -scheme PeerloomSwift", source)
         self.assertNotIn("-skip-testing", source)
         self.assertEqual(source.count("    verify_tls"), 2)
@@ -221,6 +222,56 @@ class WatchdogTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     SIGNING.inspect(products, developer)
                 run.assert_not_called()
+
+    def test_application_host_is_simulator_only_and_reuses_original_tests(self):
+        root = SCRIPT.parent.parent / "SimulatorHost"
+        project = root / "PeerloomSimulatorHost.xcodeproj/project.pbxproj"
+        source = project.read_text()
+        definitions = re.findall(r"^        (A[0-9A-F]{23}) = ", source, re.M)
+        self.assertEqual(len(definitions), len(set(definitions)))
+        references = set(re.findall(r"\bA[0-9A-F]{23}\b", source))
+        self.assertEqual(references, set(definitions))
+        self.assertIn("SUPPORTED_PLATFORMS = iphonesimulator", source)
+        self.assertNotIn("SUPPORTED_PLATFORMS = iphoneos", source)
+        self.assertIn('DEVELOPMENT_TEAM = ""', source)
+        self.assertNotIn("PROVISIONING_PROFILE", source)
+        self.assertIn('CODE_SIGN_IDENTITY = "-"', source)
+        self.assertIn('TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PeerloomSimulatorHost.app/PeerloomSimulatorHost"', source)
+        for name in ("KeychainTests.swift", "NativeCoreTests.swift"):
+            self.assertIn("../SwiftPackage/Tests/PeerloomSwiftTests/" + name, source)
+        entitlement = plistlib.loads((root / "SimulatorHost.entitlements").read_bytes())
+        self.assertEqual(entitlement, {"keychain-access-groups": ["$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)"]})
+        scheme = ET.parse(root / "PeerloomSimulatorHost.xcodeproj/xcshareddata/xcschemes/PeerloomSimulatorHost.xcscheme")
+        testables = scheme.findall("./TestAction/Testables/TestableReference")
+        self.assertEqual(len(testables), 1)
+        self.assertEqual(testables[0].get("skipped"), "NO")
+        self.assertEqual(testables[0].find("BuildableReference").get("BlueprintName"), "PeerloomSimulatorTests")
+        if sys.platform == "darwin":
+            result = subprocess.run(["plutil", "-lint", str(project)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_host_evidence_requires_real_app_path_and_expanded_keychain_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products, developer = root / "Build/Products", root / "developer"
+            products.mkdir(parents=True); developer.mkdir()
+            app = products / "PeerloomSimulatorHost.app"
+            app.mkdir()
+            host = app / "PeerloomSimulatorHost"; host.write_bytes(b"synthetic Mach-O placeholder for mock only")
+            document = products / "fixture.xctestrun"
+            document.write_bytes(plistlib.dumps({"TestHostPath": "__TESTROOT__/PeerloomSimulatorHost.app/PeerloomSimulatorHost"}))
+            intermediates = products.parent / "Intermediates.noindex"; intermediates.mkdir()
+            entitlement = intermediates / "PeerloomSimulatorHost.app-Simulated.xcent"
+            entitlement.write_bytes(plistlib.dumps({"keychain-access-groups": ["io.peerloom.validation.simulatorhost"]}))
+            result = subprocess.CompletedProcess([], 0, "", "Signature=adhoc")
+            with mock.patch.object(SIGNING.subprocess, "run", return_value=result), contextlib.redirect_stdout(io.StringIO()):
+                SIGNING.inspect(products, developer, require_host=True)
+                entitlement.write_bytes(plistlib.dumps({"keychain-access-groups": ["$(AppIdentifierPrefix)io.peerloom.validation.simulatorhost"]}))
+                with self.assertRaisesRegex(ValueError, "展开"):
+                    SIGNING.inspect(products, developer, require_host=True)
+                document.write_bytes(plistlib.dumps({"TestBundlePath": "__TESTROOT__/PeerloomSimulatorHost.app/PeerloomSimulatorHost"}))
+                with self.assertRaisesRegex(ValueError, "绑定"):
+                    SIGNING.inspect(products, developer, require_host=True)
 
     def test_ios_fast_diagnostic_cannot_replace_full_native_acceptance(self):
         ios = SCRIPT.parent.parent
