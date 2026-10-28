@@ -15,5 +15,5 @@ type Bootstrap struct {
 }
 
 func capabilities() Bootstrap {
-	return Bootstrap{APIVersion: 1, SignalingPath: "/v1/device-signal", RegistrationModes: []string{"grant"}, ChannelTypes: []string{"reliable_message", "low_latency_message"}, WebRTCDTLSRequired: true, MaxSignalFrameBytes: 128 << 10, MaxMessageBytes: 64 << 10}
+	return Bootstrap{APIVersion: 1, SignalingPath: "/v1/device-signal", RegistrationModes: []string{"grant"}, ChannelTypes: []string{"reliable_message", "low_latency_message"}, ManagedTURN: true, WebRTCDTLSRequired: true, MaxSignalFrameBytes: 128 << 10, MaxMessageBytes: 64 << 10}
 }
