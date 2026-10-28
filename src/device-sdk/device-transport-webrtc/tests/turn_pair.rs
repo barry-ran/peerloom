@@ -53,7 +53,7 @@ fn assert_relay_sdp(sdp: &str) {
 
 type PairKinds = Option<(CandidateKind, CandidateKind)>;
 
-async fn successful_pair() -> (PairKinds, PairKinds) {
+async fn successful_pair(phase: &'static str) -> (PairKinds, PairKinds) {
     let a = PeerTransport::new(relay_config(false))
         .await
         .expect("TURN A");
@@ -76,12 +76,17 @@ async fn successful_pair() -> (PairKinds, PairKinds) {
             let mut sender = a
                 .create_channel("relay.echo", ChannelMode::ReliableMessage)
                 .await?;
+            eprintln!("TURN {phase} stage=gather-offer");
             let offer = a.create_offer().await?;
             assert_relay_sdp(&offer.sdp);
+            eprintln!("TURN {phase} stage=gather-answer");
             let answer = b.answer_offer(offer).await?;
             assert_relay_sdp(&answer.sdp);
+            eprintln!("TURN {phase} stage=apply-answer");
             a.apply_answer(answer).await?;
+            eprintln!("TURN {phase} stage=accept-reliable");
             let mut receiver = b.accept_channel().await?;
+            eprintln!("TURN {phase} stage=open-reliable");
             sender.wait_open().await?;
             receiver.wait_open().await?;
             for payload in ["真实中继双向消息".as_bytes(), &[0, 255, 1, 0]] {
@@ -93,9 +98,12 @@ async fn successful_pair() -> (PairKinds, PairKinds) {
             let mut fast = a
                 .create_channel("relay.low-latency", ChannelMode::LowLatencyMessage)
                 .await?;
+            eprintln!("TURN {phase} stage=accept-low-latency");
             let mut incoming = b.accept_channel().await?;
+            eprintln!("TURN {phase} stage=open-low-latency");
             fast.wait_open().await?;
             incoming.wait_open().await?;
+            eprintln!("TURN {phase} stage=echo-low-latency");
             fast.send(b"fast").await?;
             assert_eq!(incoming.receive().await?, b"fast");
             incoming.send(b"reply").await?;
@@ -123,7 +131,7 @@ async fn successful_pair() -> (PairKinds, PairKinds) {
 #[ignore = "requires isolated real coturn with bounded loopback relay ports"]
 async fn relay_only_bidirectional_and_invalid_credentials_fail_closed() {
     // 正向对照排除服务未运行导致的假阴性。
-    let before = successful_pair().await;
+    let before = successful_pair("before-invalid-credential").await;
     let invalid = PeerTransport::new(relay_config(true))
         .await
         .expect("invalid credential peer");
@@ -148,7 +156,7 @@ async fn relay_only_bidirectional_and_invalid_credentials_fail_closed() {
         Err(_) => panic!("transport operation exceeded its configured timeout"),
     }
     // 拒绝以后再次正向验证服务可用，不能以服务退出冒充凭证拒绝。
-    let after = successful_pair().await;
+    let after = successful_pair("after-invalid-credential").await;
     for selected in [before.0, before.1, after.0, after.1] {
         assert_eq!(selected, Some((CandidateKind::Relay, CandidateKind::Relay)));
     }
