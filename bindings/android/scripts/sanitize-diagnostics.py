@@ -28,6 +28,12 @@ def sanitize(line):
         return f'process_killed pid={kill[1]} instrumentation_reason={"instrumentation" in line.lower()}'
     if 'Force stopping io.peerloom.sdk.test' in line:
         return f'package_force_stopped instrumentation_reason={"instrumentation" in line.lower()}'
+    memory = re.search(r'\bstore-memory (phase=(?:before-bind|bound|probe-lock-held|caller-lock-held|after-kill-recovery|after-unbind) pid=\d+ pss_kib=\d+ importance=\d+ caller_count=\d+ probe_count=\d+|unavailable)(?=\s|$)', line)
+    if memory:
+        return f'store-memory {memory[1]}'
+    alive = re.search(r'\bstore-alive phase=(before-contention|after-timeout) pid=(\d+)(?=\s|$)', line)
+    if alive:
+        return f'store-alive phase={alive[1]} pid={alive[2]}'
     probe = re.search(r'\bstore-probe-(bound pid=\d+|request kind=\d+ pid=\d+|cas-(?:start|success|conflict) pid=\d+|error category=[A-Za-z]+(?:Exception|Error) pid=\d+|exit pid=\d+ reason=\d+ status=\d+ importance=\d+)', line)
     if probe:
         return f'store-probe-{probe[1]}'

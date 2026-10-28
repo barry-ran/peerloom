@@ -13,6 +13,32 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 
+/** Only own process data; invoked on the instrumentation/worker thread, never the UI thread. */
+private fun logStoreProcessMemory(context: Context, phase: String) {
+    try {
+        val self = android.app.ActivityManager.RunningAppProcessInfo()
+        android.app.ActivityManager.getMyMemoryState(self)
+        val activity = context.getSystemService(android.app.ActivityManager::class.java)
+        val own =
+            activity.runningAppProcesses.orEmpty().filter {
+                it.uid == android.os.Process.myUid() &&
+                    (it.processName == context.packageName ||
+                        it.processName == context.packageName + ":storeProbe")
+            }
+        val callers = own.count { it.processName == context.packageName }
+        val probes = own.count { it.processName == context.packageName + ":storeProbe" }
+        android.util.Log.i(
+            "PeerloomTestDiag",
+            "store-memory phase=$phase pid=${android.os.Process.myPid()} " +
+                "pss_kib=${Debug.getPss()} importance=${self.importance} " +
+                "caller_count=$callers probe_count=$probes",
+        )
+    } catch (_: Exception) {
+        // Observation failure must not replace the lock/liveness assertion.
+        android.util.Log.i("PeerloomTestDiag", "store-memory unavailable")
+    }
+}
+
 /** Test APK only: never exported, never included in the release AAR. */
 class StoreProbeService : Service() {
     private val work = Executors.newSingleThreadExecutor()
@@ -50,6 +76,7 @@ class StoreProbeService : Service() {
                                 require(file.name.matches(Regex("[a-f0-9]{64}\\.lock")))
                                 FileOutputStream(file, true).use { output ->
                                     output.channel.lock().use {
+                                        logStoreProcessMemory(this, "probe-lock-held")
                                         result.arg1 = 0
                                         reply.send(result)
                                         // Parent kills this isolated process to test OS lock
@@ -124,6 +151,7 @@ class StoreProcessTest {
             "PeerloomTestDiag",
             "store-process instrumentation_targets=${instrumentation.targetProcesses ?: "<default>"}",
         )
+        logStoreProcessMemory(context, "before-bind")
         val connected = CountDownLatch(1)
         val disconnected = CountDownLatch(1)
         val responses = LinkedBlockingQueue<Triple<Int, Int, Int>>()
@@ -150,12 +178,18 @@ class StoreProcessTest {
             context.bindService(
                 Intent(context, StoreProbeService::class.java),
                 connection,
-                Context.BIND_AUTO_CREATE,
+                // This test depends on the remote lock owner while its client is active.
+                // Match client importance; do not prefer killing the client (ABOVE_CLIENT).
+                Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT,
             )
         )
         var completed = false
         try {
             assertTrue(connected.await(10, TimeUnit.SECONDS))
+            // Keep this generation: AUTO_CREATE may reconnect a different process after death.
+            val probe = remote
+            val lockOwnerBinder = probe.binder
+            logStoreProcessMemory(context, "bound")
             android.util.Log.i(
                 "PeerloomTestDiag",
                 "store-process bound caller_pid=${android.os.Process.myPid()}",
@@ -168,7 +202,7 @@ class StoreProcessTest {
             val alias = keys.aliases().toList().single { it !in before }
             val request = storageRequest(app, "save", 1)
             val start = SystemClock.elapsedRealtime() + 500
-            remote.send(
+            probe.send(
                 Message.obtain().apply {
                     what = 1
                     replyTo = replies
@@ -205,7 +239,7 @@ class StoreProcessTest {
             )
             assertEquals(setOf(0, 11), setOf(local, other.second))
             assertEquals(2L, store.execute(storageRequest(app, "load")).getLong("revision"))
-            remote.send(
+            probe.send(
                 Message.obtain().apply {
                     what = 2
                     replyTo = replies
@@ -220,12 +254,29 @@ class StoreProcessTest {
             )
             assertEquals(Triple(2, 0, other.third), responses.poll(10, TimeUnit.SECONDS))
             android.util.Log.i("PeerloomTestDiag", "store-process remote-lock-held")
+            logStoreProcessMemory(context, "caller-lock-held")
+            assertTrue(
+                "remote lock owner must be alive before contention",
+                lockOwnerBinder.pingBinder(),
+            )
+            android.util.Log.i(
+                "PeerloomTestDiag",
+                "store-alive phase=before-contention pid=${other.third}",
+            )
             try {
                 store.execute(storageRequest(app, "save", 2))
                 fail("another process holds the lock")
             } catch (_: IllegalStateException) {}
+            assertTrue(
+                "remote lock owner must remain alive after timeout",
+                lockOwnerBinder.pingBinder(),
+            )
+            android.util.Log.i(
+                "PeerloomTestDiag",
+                "store-alive phase=after-timeout pid=${other.third}",
+            )
             android.util.Log.i("PeerloomTestDiag", "store-process local-lock-timeout-confirmed")
-            remote.send(
+            probe.send(
                 Message.obtain().apply {
                     what = 3
                     arg1 = android.os.Process.myPid()
@@ -233,7 +284,12 @@ class StoreProcessTest {
             )
             assertTrue(disconnected.await(10, TimeUnit.SECONDS))
             android.util.Log.i("PeerloomTestDiag", "store-process remote-disconnected")
+            assertFalse(
+                "the original explicitly killed Binder must remain dead",
+                lockOwnerBinder.pingBinder(),
+            )
             assertEquals(3L, store.execute(storageRequest(app, "save", 2)).getLong("revision"))
+            logStoreProcessMemory(context, "after-kill-recovery")
             completed = true
         } finally {
             if (!completed) {
@@ -268,6 +324,7 @@ class StoreProcessTest {
                 }
             }
             context.unbindService(connection)
+            logStoreProcessMemory(context, "after-unbind")
         }
     }
 }

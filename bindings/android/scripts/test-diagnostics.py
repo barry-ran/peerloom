@@ -36,6 +36,19 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(module.sanitize('store-probe-cas-start pid=4723 payload=secret'), 'store-probe-cas-start pid=4723')
         self.assertIsNone(module.sanitize('store-probe-exit description=private trace=private'))
 
+    def test_owned_memory_and_liveness_are_fixed_numeric_fields(self):
+        for phase in ['before-bind', 'bound', 'probe-lock-held', 'caller-lock-held', 'after-kill-recovery', 'after-unbind']:
+            line = f'store-memory phase={phase} pid=123 pss_kib=456 importance=100 caller_count=1 probe_count=1'
+            self.assertEqual(module.sanitize(line + ' payload=secret'), line)
+        for phase in ['before-contention', 'after-timeout']:
+            line = f'store-alive phase={phase} pid=321'
+            self.assertEqual(module.sanitize(line + ' secret'), line)
+        for line in ['store-memory phase=other pid=1 pss_kib=2 importance=100 caller_count=1 probe_count=1',
+                     'store-memory phase=bound pid=1 pss_kib=secret importance=100 caller_count=1 probe_count=1',
+                     'store-alive phase=other pid=1', 'store-alive phase=after-timeout pid=1secret',
+                     'store-memory process=other.app payload=secret']:
+            self.assertIsNone(module.sanitize(line))
+
     def test_native_and_checkjni_categories(self):
         self.assertEqual(module.sanitize('Fatal signal 6 (SIGABRT), code -1, secret'), 'native fatal signal=6 category=SIGABRT')
         self.assertEqual(module.sanitize('JNI DETECTED ERROR IN APPLICATION: secret'), 'CheckJNI detected an error')
