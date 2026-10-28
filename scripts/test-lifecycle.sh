@@ -55,12 +55,8 @@ for round in 1 2 3; do
     exit "$original_status"
   fi
 done
-python3 scripts/prepare-lifecycle-fixture.py --base-url "$base_url" \
-  --admin-fixture "$admin" --pair-output "$fixture/recovery.json"
-./scripts/test-managed-relay.sh --recovery --base-url "$base_url" \
-  --shared-secret-file "$secret" --pair-fixture "$fixture/recovery.json"
-
-rm -f -- "$fixture/recovery.json"
+# Relay outage/recovery is orchestrated separately by test-compose.sh while its
+# shared node is enabled and the owned TURN process is alive.
 python3 scripts/prepare-multiconnection-fixture.py --base-url "$base_url" \
   --admin-fixture "$admin" --output "$fixture/multiconnection.json"
 TEST_IDENTITY_BASE_URL="$base_url" TEST_MULTICONNECTION_FIXTURE_FILE="$fixture/multiconnection.json" \

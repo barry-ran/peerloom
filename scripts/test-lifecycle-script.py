@@ -128,7 +128,7 @@ class LifecycleScriptTests(unittest.TestCase):
             if not failure:
                 self.assertTrue((root / 'c-ran').exists())
                 self.assertEqual((root / 'c-count').read_text(), '3')
-                self.assertTrue((root / 'recovery-ran').exists())
+                self.assertFalse((root / 'recovery-ran').exists())
                 self.assertTrue((root / 'multiconnection-ran').exists())
                 self.assertTrue((root / 'channels-ran').exists())
                 self.assertTrue((root / 'ffi-channels-ran').exists())
@@ -148,8 +148,6 @@ class LifecycleScriptTests(unittest.TestCase):
     def test_diagnostic_prepare_failure_cannot_replace_original_status(self):
         self.run_shell('c-diagnostic-prepare')
 
-    def test_recovery_failure_cleanup(self):
-        self.run_shell('recovery')
 
     def test_multiconnection_prepare_failure_cleanup(self):
         self.run_shell('multiconnection-prepare')

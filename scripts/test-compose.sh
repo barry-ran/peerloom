@@ -9,8 +9,38 @@ compose=(docker compose -p "$project" -f infra/compose.yaml -f infra/compose.ci.
 fixture=""
 management_fixture=""
 relay_fixture=""
+shared_node_active=false
+set_shared_node() {
+  "${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
+    relay-set-shared --offline --node-id 88888888-8888-4888-8888-888888888888 \
+    --name ci-managed-relay --endpoint 'turn:127.0.0.1:53478?transport=udp' \
+    --secret-ref ci-managed-relay "--enabled=$1" > /dev/null
+}
+with_shared_relay() {
+  local result=0
+  # Mark before mutation: an interrupted/unknown enable must still be disabled.
+  shared_node_active=true
+  if set_shared_node true; then :; else return "$?"; fi
+  if "$@"; then result=0; else result=$?; fi
+  if set_shared_node false; then
+    shared_node_active=false
+  else
+    local disable_status=$?
+    if ((result == 0)); then result=$disable_status; fi
+  fi
+  return "$result"
+}
 cleanup() {
   result=$?
+  trap '' TERM INT
+  if "$shared_node_active"; then
+    if set_shared_node false; then
+      shared_node_active=false
+    else
+      disable_status=$?
+      if ((result == 0)); then result=$disable_status; fi
+    fi
+  fi
   if [ -n "$fixture" ]; then rm -f -- "$fixture"; fi
   if [ -n "$management_fixture" ]; then rm -rf -- "$management_fixture"; fi
   "${compose[@]}" down --volumes --remove-orphans || result=$?
@@ -18,6 +48,8 @@ cleanup() {
   return "$result"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 relay_fixture="$(mktemp -d "$PWD/.secrets/relay-fixture.XXXXXX")"
 export PEERLOOM_TEST_RELAY_REGISTRY_FILE="$relay_fixture/registry.json"
 python3 - "$relay_fixture" <<'REGISTRY'
@@ -182,16 +214,13 @@ TEST_IDENTITY_BASE_URL=http://127.0.0.1:18080 TEST_SIGNAL_FIXTURE_FILE="$fixture
 rm -f -- "$fixture"
 fixture=""
 # 新pair通过控制面自动取得REST凭证，不能复用已轮换的设备，也不向SDK提供静态TURN秘密。
-"${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
-  relay-set-shared --offline --node-id 88888888-8888-4888-8888-888888888888 \
-  --name ci-managed-relay --endpoint 'turn:127.0.0.1:53478?transport=udp' --secret-ref ci-managed-relay > /dev/null
 management_fixture="$(mktemp -d "$PWD/.secrets/management-fixture.XXXXXX")"
 "${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
   bootstrap --offline --tenant-name ci-managed-lease --scope admin > "$management_fixture/admin.json"
 python3 scripts/test-management.py --base-url http://127.0.0.1:18080 \
   --admin-fixture "$management_fixture/admin.json" --pair-output "$management_fixture/pair.json"
 fixture="$management_fixture/pair.json"
-./scripts/test-managed-relay.sh --shared-secret-file "$relay_fixture/shared-secret" \
+with_shared_relay ./scripts/test-managed-relay.sh --shared-secret-file "$relay_fixture/shared-secret" \
   --pair-fixture "$fixture" --base-url http://127.0.0.1:18080 \
   --lease-admin-fixture "$management_fixture/admin.json"
 rm -f -- "$fixture"
@@ -204,6 +233,13 @@ management_fixture="$(mktemp -d "$PWD/.secrets/management-fixture.XXXXXX")"
   bootstrap --offline --tenant-name ci-lifecycle --scope admin > "$management_fixture/admin.json"
 ./scripts/test-lifecycle.sh --base-url http://127.0.0.1:18080 \
   --admin-fixture "$management_fixture/admin.json" --shared-secret-file "$relay_fixture/shared-secret"
+# Recovery has its own fresh identities and scoped live relay interval. Non-relay
+# C/multichannel/control tests must never inherit an enabled, stopped TURN node.
+python3 scripts/prepare-lifecycle-fixture.py --base-url http://127.0.0.1:18080 \
+  --admin-fixture "$management_fixture/admin.json" --pair-output "$management_fixture/recovery.json"
+with_shared_relay ./scripts/test-managed-relay.sh --recovery --base-url http://127.0.0.1:18080 \
+  --shared-secret-file "$relay_fixture/shared-secret" --pair-fixture "$management_fixture/recovery.json"
+rm -f -- "$management_fixture/recovery.json"
 python3 scripts/test-control-recovery.py --project "$project" --base-url http://127.0.0.1:18080 \
   --admin-fixture "$management_fixture/admin.json"
 rm -rf -- "$management_fixture"

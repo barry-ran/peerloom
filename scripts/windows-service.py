@@ -6,9 +6,10 @@ import hashlib
 import importlib.util
 from datetime import datetime, timedelta, timezone
 import uuid
+import unicodedata
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import secrets
 import socket
@@ -91,18 +92,46 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def wsl_import_diagnostic(returncode, output, errors):
-    codes = set()
-    for data in (output, errors):
-        if not data:
-            continue
-        bounded = data[-8192:]
-        encoding = 'utf-16-le' if bounded.count(b'\x00') > len(bounded) // 8 else 'utf-8'
-        text = bounded.decode(encoding, errors='replace')
-        codes.update(re.findall(r'\b(?:0x[0-9A-Fa-f]{8}|(?:WSL|HCS)_E_[A-Z0-9_]{1,100})\b', text))
-    # Only numeric status and recognized public error identifiers; never echo a
-    # command, path, environment, server log, or arbitrary localized message.
-    return 'Owned WSL1 import diagnostic: exit=' + str(int(returncode)) + ' codes=' + ','.join(sorted(codes)[:8])
+def bounded_wsl_text(data, redactions):
+    if not data:
+        return ''
+    # WSL on Windows emits either UTF-8 or UTF-16LE. Decode before redaction;
+    # never print undecoded bytes/base64 or a second unredacted interpretation.
+    if len(data) > 8192:
+        return '[WSL diagnostic output exceeded safe input bound]'
+    bounded = data
+    encoding = 'utf-16-le' if bounded.startswith(b'\xff\xfe') or bounded.count(b'\x00') > len(bounded) // 8 else 'utf-8'
+    text = bounded.decode(encoding, errors='replace').lstrip('\ufeff')
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+    text = ''.join(c if c in '\n\t' or not unicodedata.category(c).startswith('C') else '' for c in text)
+    for value in sorted({v for v in redactions if isinstance(v, str) and len(v) > 2}, key=len, reverse=True):
+        for variant in {value, value.replace('\\', '/'), value.replace('/', '\\')}:
+            text = re.sub(re.escape(variant), '[owned-path]', text, flags=re.I)
+    # 1 KiB per diagnostic including multibyte text, never split a UTF-8 scalar.
+    return text.encode('utf-8')[-768:].decode('utf-8', errors='ignore')
+
+
+def wsl_import_diagnostic(returncode, output, errors, redactions=()):
+    # Do not mix UTF-16 stdout with UTF-8 stderr before decoding.
+    text = bounded_wsl_text(output, redactions) + '\n' + bounded_wsl_text(errors, redactions)
+    text = text.encode('utf-8')[-768:].decode('utf-8', errors='ignore')
+    return 'Owned WSL1 import diagnostic: exit=' + str(int(returncode)) + ' text=' + text
+
+
+def owned_wsl_redactions(argv):
+    root = str(PureWindowsPath(argv[3]).parent) if re.match(r'^[A-Za-z]:', argv[3]) else str(Path(argv[3]).parent)
+    return [argv[2], argv[3], argv[4], root, os.environ.get('USERPROFILE', ''),
+            os.environ.get('HOME', ''), os.environ.get('RUNNER_TEMP', '')]
+
+
+def wsl_status_diagnostic(redactions):
+    try:
+        result = subprocess.run(['wsl.exe', '--status'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=20, check=False)
+        text = wsl_import_diagnostic(result.returncode, result.stdout, result.stderr, redactions)
+        print(text.replace('Owned WSL1 import diagnostic:', 'Read-only WSL status diagnostic:', 1), file=sys.stderr)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print('Read-only WSL status diagnostic unavailable: category=' + type(error).__name__, file=sys.stderr)
 
 
 def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import_diagnostic=False):
@@ -129,7 +158,7 @@ def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import
         raise TimeoutError('owned command deadline') from None
     if process.returncode:
         if import_diagnostic and len(argv) == 7 and argv[:2] == ['wsl.exe', '--import'] and argv[-2:] == ['--version', '1']:
-            print(wsl_import_diagnostic(process.returncode, output, errors), file=sys.stderr)
+            print(wsl_import_diagnostic(process.returncode, output, errors, owned_wsl_redactions(argv)), file=sys.stderr)
         # Never include command/environment or arbitrary server stderr in CI logs.
         raise RuntimeError('child command failed')
     return output
@@ -214,6 +243,8 @@ def main():
         pg = directory / 'postgresql/pgsql/bin'
         assert b'18.6' in run([str(pg / 'postgres.exe'), '--version'])
         STAGE = 'import-owned-wsl1'
+        wsl_status_diagnostic([str(directory), args.distro, os.environ.get('USERPROFILE', ''),
+                               os.environ.get('HOME', ''), os.environ.get('RUNNER_TEMP', '')])
         imported = True  # An uncertain result is checked/cleaned; import is never repeated.
         run(['wsl.exe', '--import', args.distro, str(directory / 'wsl'),
              str(directory / 'ubuntu_base.archive'), '--version', '1'], timeout=180, import_diagnostic=True)

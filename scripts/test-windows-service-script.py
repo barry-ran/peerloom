@@ -76,8 +76,8 @@ class ProcessTest(unittest.TestCase):
     def test_owned_wsl_import_only_reports_codes_in_utf8_and_utf16(self):
         for encoding in ('utf-8', 'utf-16-le'):
             child = Mock(returncode=1)
-            child.communicate.return_value = (('private/path secret WSL_E_WSL1_NOT_SUPPORTED 0x8007019e').encode(encoding), b'private stderr')
-            args = ['wsl.exe', '--import', 'PeerloomCI-' + 'a'*32, 'owned', 'archive', '--version', '1']
+            child.communicate.return_value = (('C:\\runner-private\\owned WSL_E_WSL1_NOT_SUPPORTED 0x8007019e').encode(encoding), b'')
+            args = ['wsl.exe', '--import', 'PeerloomCI-' + 'a'*32, r'C:\runner-private\owned\wsl', r'C:\runner-private\owned\archive', '--version', '1']
             with patch.object(service.subprocess, 'Popen', return_value=child), patch('sys.stderr', new_callable=io.StringIO) as output:
                 with self.assertRaisesRegex(RuntimeError, 'child command failed'):
                     service.run(args, import_diagnostic=True)
@@ -85,7 +85,31 @@ class ProcessTest(unittest.TestCase):
             self.assertIn('WSL_E_WSL1_NOT_SUPPORTED', text)
             self.assertIn('0x8007019e', text)
             self.assertNotIn('private', text)
-            self.assertNotIn('secret', text)
+            self.assertLessEqual(len(text.encode('utf-8')), 1024)
+
+    def test_import_redacts_owned_paths_home_ansi_and_bounds_utf8(self):
+        root = r'C:\Users\private-user\runner\PeerloomCI-' + 'a'*32
+        for encoding in ('utf-8', 'utf-16-le'):
+            data = ('\x1b[31mImport failed at ' + root + '/archive\x00\n' + '错误' * 700).encode(encoding)
+            text = service.wsl_import_diagnostic(-1, data, b'', [root, r'C:\Users\private-user'])
+            self.assertNotIn('private-user', text)
+            self.assertNotIn('PeerloomCI-', text)
+            self.assertNotIn('\x1b', text)
+            self.assertNotIn('\x00', text)
+            self.assertLessEqual(len(text.encode('utf-8')), 1024)
+
+    def test_oversize_diagnostic_never_exposes_partial_redaction(self):
+        text = service.bounded_wsl_text(b'x'*8190 + b'private-home', ['private-home'])
+        self.assertEqual(text, '[WSL diagnostic output exceeded safe input bound]')
+
+    def test_readonly_status_diagnostic_no_mutation_or_secret_paths(self):
+        result = service.subprocess.CompletedProcess(['wsl.exe', '--status'], 1, b'error at private-home', b'failure')
+        with patch.object(service.subprocess, 'run', return_value=result) as probe, patch('sys.stderr', new_callable=io.StringIO) as output:
+            service.wsl_status_diagnostic(['private-home'])
+            self.assertNotIn('private-home', output.getvalue())
+            self.assertIn('Read-only WSL status diagnostic:', output.getvalue())
+            probe.assert_called_once_with(['wsl.exe', '--status'], stdout=service.subprocess.PIPE,
+                                          stderr=service.subprocess.PIPE, timeout=20, check=False)
 
     def test_other_process_stderr_stays_private(self):
         child = Mock(returncode=1)
