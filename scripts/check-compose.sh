@@ -17,3 +17,13 @@ assert not s["redis"].get("ports"), "Redis must not be published"
 assert all(p.get("host_ip") == "127.0.0.1" for p in s["gateway"]["ports"]), "Gateway must stay loopback-only"
 assert s["device-server"]["environment"].get("DATABASE_URL_FILE"), "Use file-mounted DB secret"
 '
+
+# Docker 不为仅连接 internal 网络的服务建立可用主机端口发布。
+"${compose[@]}" config --format json | python3 -c '
+import json, sys
+c = json.load(sys.stdin)
+for name, service in c["services"].items():
+    if service.get("ports"):
+        assert any(not c["networks"][network].get("internal", False) for network in service["networks"]), f"{name}: host ports require a non-internal network"
+assert c["networks"]["backend"]["internal"] is True, "Backend isolation must remain enabled"
+'

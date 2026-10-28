@@ -1,4 +1,9 @@
 # 仅 CI 测试覆盖层：数据库端口只绑定 runner 回环地址。
 services:
   postgres:
+    networks: [backend, ci_access]
     ports: ['127.0.0.1:15432:5432']
+networks:
+  ci_access:
+    # 仅测试覆盖层使用；internal-only 网络不支持主机端口发布。
+    internal: false

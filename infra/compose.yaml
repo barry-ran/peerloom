@@ -76,7 +76,7 @@ services:
     volumes:
       - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
     ports: ['127.0.0.1:18080:8080']
-    networks: [backend]
+    networks: [backend, frontend]
     depends_on:
       device-server: {condition: service_healthy}
     read_only: true
@@ -92,6 +92,9 @@ services:
 networks:
   backend:
     internal: true
+  frontend:
+    # 唯一常规入站网关；仅绑定主机回环地址。
+    internal: false
 volumes:
   postgres_data:
 secrets:

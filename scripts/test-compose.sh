@@ -10,6 +10,8 @@ trap cleanup EXIT
 "${compose[@]}" build
 "${compose[@]}" up -d --wait postgres redis
 "${compose[@]}" run --rm migrate
+# 仅打印地址，不输出环境变量、DSN 或秘密。
+"${compose[@]}" port postgres 5432
 # 凭证只传给当前测试进程，禁止 shell xtrace 和 URL 日志。
 TEST_DATABASE_URL="$(python3 - <<'PY'
 from pathlib import Path
