@@ -1,0 +1,13 @@
+# Preserve reviewed upstream bytes and pinned manifests, including original CRLF.
+third_party/** -text
+# Byte-defined migration ledger, dependency inventories, and shipped originals.
+infra/migrations/*.sql -text
+src/device-sdk/Cargo.toml -text
+src/device-sdk/Cargo.lock -text
+src/device-server/go.mod -text
+src/device-server/go.sum -text
+src/admin-web/package-lock.json -text
+src/device-sdk/device-ffi/include/device_sdk.h -text
+bindings/android/gradle/wrapper/来源.json -text
+bindings/android/gradle/wrapper/许可证.txt -text
+LICENSE -text

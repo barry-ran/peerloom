@@ -16,10 +16,14 @@ class EvidenceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.cache = Path(self.temp.name)
-        self.pom = self.file('demo.pom', b'<project><licenses><license><name>MIT</name></license></licenses></project>')
+        self.pom = self.file('demo.pom', b'<project><groupId>org.example</groupId><artifactId>demo</artifactId><version>1.2.3</version><licenses><license><name>MIT</name></license></licenses></project>')
         self.jar = self.archive({'META-INF/LICENSE': b'Original license\r\n'})
-        record = {'coordinate': 'org.example:demo:1.2.3', 'pom': self.pom, 'artifacts': [self.jar], 'issues': []}
+        record = {'coordinate': 'org.example:demo:1.2.3', 'pom': self.pom, 'artifacts': [self.jar], 'issues': [], 'binding': self.binding(self.pom, [self.jar])}
         self.source = {'format_version': 1, 'scopes': [{'name': name, 'packages': [record.copy()], 'edges': [{'from': '@root', 'to': 'org.example:demo:1.2.3', 'direct': True}]} for name in sorted(gen.SCOPES)]}
+
+    def binding(self, pom, artifacts):
+        return {'coordinate': 'org.example:demo:1.2.3', 'pom_sha256': pom['sha256'],
+                'artifacts': [{'name': Path(a['path']).name, 'bytes': a['bytes'], 'sha256': a['sha256']} for a in artifacts]}
 
     def file(self, name, data):
         path = self.cache / name
@@ -43,7 +47,9 @@ class EvidenceTests(unittest.TestCase):
 
     def test_missing_license_incomplete_not_approved(self):
         item = self.archive({'META-INF/NOTICE': b'Only attribution'})
-        for scope in self.source['scopes']: scope['packages'][0]['artifacts'] = [item]
+        for scope in self.source['scopes']:
+            scope['packages'][0]['artifacts'] = [item]
+            scope['packages'][0]['binding'] = self.binding(self.pom, [item])
         files, incomplete = gen.collect(self.source, self.cache)
         self.assertTrue(incomplete)
         self.assertIn(b'LICENSE_TEXT_MISSING', files['report.json'])
@@ -62,10 +68,12 @@ class EvidenceTests(unittest.TestCase):
 
     def test_xml_entity_rejected(self):
         self.pom.update(self.file('demo.pom', b'<!DOCTYPE x [<!ENTITY secret SYSTEM "file:///etc/passwd">]><project/>'))
+        for scope in self.source['scopes']: scope['packages'][0]['binding'] = self.binding(self.pom, [self.jar])
         with self.assertRaisesRegex(gen.EvidenceError, 'UNSAFE_POM'): gen.collect(self.source, self.cache)
 
     def test_archive_path_rejected(self):
         self.jar.update(self.archive({'../LICENSE': b'bad'}))
+        for scope in self.source['scopes']: scope['packages'][0]['binding'] = self.binding(self.pom, [self.jar])
         with self.assertRaisesRegex(gen.EvidenceError, 'UNSAFE_ARCHIVE'): gen.collect(self.source, self.cache)
 
     def test_scope_omission(self):
@@ -78,8 +86,37 @@ class EvidenceTests(unittest.TestCase):
 
     def test_missing_pom_incomplete(self):
         for scope in self.source['scopes']: scope['packages'][0]['pom'] = None
-        files, incomplete = gen.collect(self.source, self.cache)
-        self.assertTrue(incomplete)
-        self.assertIn(b'POM_MISSING', files['report.json'])
+        with self.assertRaisesRegex(gen.EvidenceError, 'POM_BINDING_MISMATCH'):
+            gen.collect(self.source, self.cache)
+
+    def test_wrong_pom_coordinate_or_version_rejected(self):
+        for identity in ('<groupId>wrong</groupId><artifactId>demo</artifactId><version>1.2.3</version>',
+                         '<groupId>org.example</groupId><artifactId>demo</artifactId><version>9.9.9</version>'):
+            self.pom.update(self.file('demo.pom', ('<project>' + identity + '</project>').encode()))
+            for scope in self.source['scopes']: scope['packages'][0]['binding'] = self.binding(self.pom, [self.jar])
+            with self.assertRaisesRegex(gen.EvidenceError, 'POM_COORDINATE_MISMATCH'):
+                gen.collect(self.source, self.cache)
+
+    def test_changed_binary_even_with_updated_input_hash_rejected(self):
+        replacement = self.archive({'META-INF/LICENSE': b'replacement archive'})
+        for scope in self.source['scopes']: scope['packages'][0]['artifacts'] = [replacement]
+        with self.assertRaisesRegex(gen.EvidenceError, 'BINARY_BINDING_MISMATCH'):
+            gen.collect(self.source, self.cache)
+
+    def test_changed_pom_even_with_updated_input_hash_rejected(self):
+        self.pom.update(self.file('demo.pom', b'<project/>'))
+        with self.assertRaisesRegex(gen.EvidenceError, 'POM_BINDING_MISMATCH'):
+            gen.collect(self.source, self.cache)
+
+    def test_binding_cannot_be_omitted(self):
+        self.source['scopes'][0]['packages'][0].pop('binding')
+        with self.assertRaisesRegex(gen.EvidenceError, 'BINDING_REQUIRED'):
+            gen.collect(self.source, self.cache)
+
+    def test_parent_group_and_version_without_network_resolution(self):
+        self.pom.update(self.file('demo.pom', b'<project><parent><groupId>org.example</groupId><artifactId>parent</artifactId><version>1.2.3</version></parent><artifactId>demo</artifactId></project>'))
+        for scope in self.source['scopes']: scope['packages'][0]['binding'] = self.binding(self.pom, [self.jar])
+        _, incomplete = gen.collect(self.source, self.cache)
+        self.assertFalse(incomplete)
 
 if __name__ == '__main__': unittest.main()

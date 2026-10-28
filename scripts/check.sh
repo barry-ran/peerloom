@@ -12,6 +12,7 @@ python3 scripts/test-managed-relay-script.py
 python3 scripts/test-managed-relay-helper.py
 python3 scripts/test-turn-script.py
 python3 scripts/test-turn-refresh-script.py
+python3 scripts/test-checkout-evidence.py
 python3 scripts/test-vendored-nix.py
 python3 scripts/test_contracts.py
 python3 scripts/test-package-third-party.py

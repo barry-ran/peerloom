@@ -66,6 +66,23 @@ def license_entries(path, data):
                 entries.append((name, archive.read(item)))
     return entries
 
+def pom_identity(xml):
+    def child(node, name):
+        matches = [item for item in node if item.tag.split('}')[-1] == name] if node is not None else []
+        if len(matches) > 1:
+            raise EvidenceError('DUPLICATE_POM_IDENTITY')
+        return matches[0] if matches else None
+    if xml.tag.split('}')[-1] != 'project':
+        raise EvidenceError('POM_COORDINATE_MISMATCH')
+    parent = child(xml, 'parent')
+    values = []
+    for field in ('groupId', 'artifactId', 'version'):
+        item = child(xml, field)
+        if item is None and field != 'artifactId':
+            item = child(parent, field)
+        values.append((item.text or '').strip() if item is not None else '')
+    return ':'.join(values)
+
 def collect(source, cache):
     if source.get('format_version') != 1 or {s['name'] for s in source['scopes']} != SCOPES or len(source['scopes']) != 2:
         raise EvidenceError('REQUIRED_SCOPES_MISSING_OR_DUPLICATE')
@@ -77,12 +94,24 @@ def collect(source, cache):
             if not re.fullmatch(r'[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.+-]+', coordinate) or coordinate in identifiers:
                 raise EvidenceError('INVALID_OR_DUPLICATE_COORDINATE')
             identifiers.add(coordinate)
+            binding = item.get('binding')
+            if not isinstance(binding, dict) or binding.get('coordinate') != coordinate:
+                raise EvidenceError('POM_BINARY_BINDING_REQUIRED')
+            if item['pom'] is None or binding.get('pom_sha256') != item['pom']['sha256']:
+                raise EvidenceError('POM_BINDING_MISMATCH')
+            binaries = [{'name': Path(a['path']).name, 'bytes': a['bytes'], 'sha256': a['sha256']} for a in item['artifacts']]
+            if binding.get('artifacts') != binaries:
+                raise EvidenceError('BINARY_BINDING_MISMATCH')
             record = {'coordinate': coordinate, 'artifacts': [], 'declared_licenses': [], 'evidence': [], 'issues': list(item['issues'])}
             if item['pom'] is not None:
                 path, data = checked_file(item['pom'], cache)
                 if len(data) > MAX_TEXT or b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper():
                     raise EvidenceError('UNSAFE_POM')
                 xml = ET.fromstring(data)
+                if pom_identity(xml) != coordinate:
+                    raise EvidenceError('POM_COORDINATE_MISMATCH')
+                record['pom_coordinate'] = coordinate
+                record['pom_binary_binding'] = binding
                 for licenses in xml:
                     if licenses.tag.split('}')[-1] == 'licenses':
                         for element in licenses:

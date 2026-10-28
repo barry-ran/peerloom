@@ -1,21 +1,24 @@
 // Applied by library/build.gradle.kts. Run after the normal build, with --offline.
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import javax.xml.parsers.DocumentBuilderFactory
 import java.security.MessageDigest
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
 import org.gradle.maven.MavenModule
 import org.gradle.maven.MavenPomArtifact
 
-tasks.register('collectMavenEvidence') {
-    group = 'verification'
-    description = 'Export resolved Maven inputs; offline only, no legal approval.'
-    doLast {
-        if (!gradle.startParameter.offline) {
-            throw new GradleException('Maven evidence requires --offline; build/fetch separately')
+// Both phases use only already-resolved module IDs and the existing repository rules.
+// No POM URL, parent repository or new dependency is followed by this task.
+def collectEvidence = { boolean prepare ->
+        if (gradle.startParameter.offline == prepare) {
+            throw new GradleException(prepare ? 'POM preparation requires the normal online build phase' :
+                'Maven evidence requires --offline; build/fetch separately')
         }
         new GroovyShell().run(rootProject.file('scripts/test-maven-keys.groovy'),
             [rootProject.file('scripts/maven-evidence.gradle').absolutePath] as String[])
-        def output = rootProject.layout.buildDirectory.file('maven-evidence-input.json').get().asFile
+        def bindingFile = rootProject.layout.buildDirectory.file('maven-pom-bindings.json').get().asFile
+        def output = prepare ? bindingFile : rootProject.layout.buildDirectory.file('maven-evidence-input.json').get().asFile
         if (output.exists()) {
             throw new GradleException('Evidence input already exists; use a fresh build directory')
         }
@@ -63,7 +66,39 @@ tasks.register('collectMavenEvidence') {
                 }
             }
             records.values().each { record ->
-                if (record.pom == null) record.issues.add('POM_NOT_IN_OFFLINE_CACHE')
+                if (record.pom == null) {
+                    throw new GradleException('POM_REQUIRED_FOR_RESOLVED_COORDINATE: ' + record.coordinate)
+                }
+                def pomFile = new File(record.pom.path)
+                if (pomFile.length() > 2 * 1024 * 1024) {
+                    throw new GradleException('POM_SIZE_LIMIT')
+                }
+                def factory = DocumentBuilderFactory.newInstance()
+                factory.setFeature('http://apache.org/xml/features/disallow-doctype-decl', true)
+                factory.setFeature('http://xml.org/sax/features/external-general-entities', false)
+                factory.setFeature('http://xml.org/sax/features/external-parameter-entities', false)
+                factory.setXIncludeAware(false)
+                factory.setExpandEntityReferences(false)
+                factory.setAttribute('http://javax.xml.XMLConstants/property/accessExternalDTD', '')
+                factory.setAttribute('http://javax.xml.XMLConstants/property/accessExternalSchema', '')
+                def xml = factory.newDocumentBuilder().parse(pomFile).documentElement
+                def child = { node, name ->
+                    def found = []
+                    for (int i = 0; node != null && i < node.childNodes.length; i++) {
+                        def item = node.childNodes.item(i)
+                        if (item.nodeType == 1 && item.nodeName == name) found.add(item)
+                    }
+                    if (found.size() > 1) throw new GradleException('DUPLICATE_POM_IDENTITY')
+                    found ? found.first() : null
+                }
+                def parent = child(xml, 'parent')
+                def group = child(xml, 'groupId') ?: child(parent, 'groupId')
+                def artifact = child(xml, 'artifactId')
+                def version = child(xml, 'version') ?: child(parent, 'version')
+                def identity = [group, artifact, version].collect { it?.textContent?.trim() }.join(':')
+                if (xml.nodeName != 'project' || identity != record.coordinate) {
+                    throw new GradleException('POM_COORDINATE_MISMATCH')
+                }
                 record.artifacts.sort { it.path }
             }
             def edges = result.allDependencies.collect { dependency ->
@@ -76,7 +111,41 @@ tasks.register('collectMavenEvidence') {
             }.unique().sort { a, b -> (a.from + '\n' + a.to) <=> (b.from + '\n' + b.to) }
             scopes.add([name: scope, packages: records.values().sort { it.coordinate }, edges: edges])
         }
+        if (!prepare) {
+            if (!bindingFile.isFile() || bindingFile.length() > 16 * 1024 * 1024) {
+                throw new GradleException('POM_BINDING_REQUIRED')
+            }
+            def expected = new JsonSlurper().parse(bindingFile, 'UTF-8')
+            if (expected.format_version != 1 || expected.scopes != scopes) {
+                throw new GradleException('RESOLVED_POM_OR_BINARY_CHANGED_SINCE_PREPARATION')
+            }
+            scopes.each { scope ->
+                scope.packages.each { record ->
+                    record.binding = [coordinate: record.coordinate,
+                        pom_sha256: record.pom.sha256,
+                        artifacts: record.artifacts.collect { [sha256: it.sha256, bytes: it.bytes, name: new File(it.path).name] }]
+                }
+            }
+        }
         output.parentFile.mkdirs()
-        output.text = JsonOutput.prettyPrint(JsonOutput.toJson([format_version: 1, scopes: scopes])) + '\n'
+        output.setText(JsonOutput.prettyPrint(JsonOutput.toJson([format_version: 1, scopes: scopes])) + '\n', 'UTF-8')
+}
+
+tasks.register('prepareMavenPomEvidence') {
+    group = 'verification'
+    description = 'Prefetch only exact resolved POMs and bind current binary hashes.'
+    doLast { collectEvidence(true) }
+}
+tasks.register('collectMavenEvidence') {
+    group = 'verification'
+    description = 'Recheck the prepared binding offline; no legal approval.'
+    doLast { collectEvidence(false) }
+}
+
+tasks.register('testMavenPomBinding') {
+    group = 'verification'
+    doLast {
+        new GroovyShell().run(rootProject.file('scripts/test-maven-pom-binding.groovy'),
+            [rootProject.file('scripts/maven-evidence.gradle').absolutePath] as String[])
     }
 }

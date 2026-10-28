@@ -45,6 +45,7 @@ jobs:
           cp ../../LICENSE ../../dist/android/
           ./gradlew --no-daemon :library:dependencies --configuration releaseRuntimeClasspath > ../../dist/android/maven-runtime.txt
           ./gradlew --no-daemon :library:dependencies --configuration debugAndroidTestRuntimeClasspath > ../../dist/android/maven-test.txt
+          ./gradlew --no-daemon :library:testMavenPomBinding :library:prepareMavenPomEvidence
           cargo +1.99.1 metadata --manifest-path ../../src/device-sdk/Cargo.toml --format-version 1 --locked > ../../dist/android/cargo-metadata.json
       - name: 离线采集 Maven 原文证据（不代表法律清关）
         working-directory: bindings/android

@@ -93,7 +93,7 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 
 16KB 测试曾从本包 `ApplicationExitInfo` 取得 `REASON_LOW_MEMORY=3` 的明确记录，表明持锁测试进程被系统低内存清理，因而采用上述固定内存 fixture；保持原断言、五轮首败即红，不重试掩盖。该证据不追认更早所有崩溃都属于同一根因，也不证明任意低内存真机的长期行为。失败诊断仅保留白名单阶段、数值退出原因和受限异常类别，不读取进程 trace/description，不上传原始 logcat 或凭证。普通 emulator 不等于真机；移动网络切换、系统休眠、OEM Keystore 与长期后台生命周期仍需专项验收。
 
-产物必须随带项目 MIT、Rust Android target 与 Maven runtime/test 分开的依赖/许可证证据。现有 Linux SBOM 不能冒充 AAR 完整清单；Maven 证据仍需配套发布流程补齐，不能仅凭 native tests 绿就宣布许可证审计完成。
+产物必须随带项目 MIT、Rust Android target 与 Maven runtime/test 分开的依赖/许可证证据。 正常联网构建阶段仅针对两个已解析 configuration 的精确外部坐标，使用既有仓库规则预取 POM；不跟随 POM 内任意下载 URL，不改版本或加入新依赖。预取清单绑定依赖图、POM 身份/摘要与解析到的 binary 大小/摘要；离线采集重新解析并逐项核对，缺 POM、坐标不符或准备后字节替换均拒绝。POM 可继承同文档 parent 的 group/version，但不会联网追踪 parent。可得原文及 notice 必须保留；仅剩许可证原文不足仍如实标记 incomplete，不自动获得 Maven 交付例外或法律批准。现有 Linux SBOM 不能冒充 AAR 完整清单；Maven 证据仍需配套发布流程补齐，不能仅凭 native tests 绿就宣布许可证审计完成。
 
 ## 官方依据
 
