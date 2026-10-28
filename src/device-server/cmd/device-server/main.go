@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/barry-ran/peerloom/src/device-server/internal/presence"
+	"github.com/barry-ran/peerloom/src/device-server/internal/relay"
 	"github.com/barry-ran/peerloom/src/device-server/internal/signaling"
 	"github.com/redis/go-redis/v9"
 	"log/slog"
@@ -118,7 +119,15 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 	defer func() { sweepCancel(); <-sweepDone }()
-	administration, err := management.New(pool, key, management.DefaultSettings(), online)
+	relayIssuer, relayLimits, err := relay.LoadFromEnvironment(os.Getenv)
+	if err != nil {
+		return errors.New("cannot initialize relay registry")
+	}
+	relayService, err := relay.NewService(pool, relayIssuer, sessions, relayLimits)
+	if err != nil {
+		return errors.New("cannot initialize relay service")
+	}
+	administration, err := management.NewWithRelay(pool, key, management.DefaultSettings(), online, relayIssuer)
 	if err != nil {
 		return errors.New("cannot initialize management service")
 	}
@@ -135,6 +144,9 @@ func run(logger *slog.Logger) error {
 			case <-ticker.C:
 				operationCtx, cancel := context.WithTimeout(managementCtx, 3*time.Second)
 				err := administration.PurgeExpired(operationCtx)
+				if err == nil {
+					err = relayService.PurgeExpired(operationCtx)
+				}
 				cancel()
 				if err != nil && managementCtx.Err() == nil {
 					logger.Warn("expired management replay cleanup unavailable")
@@ -145,10 +157,11 @@ func run(logger *slog.Logger) error {
 	defer func() { managementCancel(); <-managementDone }()
 	api := http.NewServeMux()
 	managementHandler := management.NewHandler(administration, signalingServer.NotifySession)
-	for _, resource := range []string{"applications", "registration-grants", "devices", "connection-grants", "sessions", "audit-events"} {
+	for _, resource := range []string{"applications", "registration-grants", "devices", "connection-grants", "sessions", "audit-events", "relay-nodes"} {
 		api.Handle("/v1/"+resource, managementHandler)
 		api.Handle("/v1/"+resource+"/", managementHandler)
 	}
+	api.Handle("/v1/device-sessions/", relay.NewHandler(relayService, store))
 	api.Handle("/v1/device-signal", signalingServer)
 	api.Handle("/", httpapi.New(store))
 	postgresReady := database.Ready(pool, migrate.CurrentVersion)

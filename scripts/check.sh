@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 python3 scripts/test-dev-secrets.py
 python3 scripts/test-compose-script.py
 python3 scripts/test-turn-script.py
+python3 scripts/test-turn-refresh-script.py
 python3 scripts/test_contracts.py
 python3 scripts/test-package-third-party.py
 (
@@ -11,6 +12,8 @@ python3 scripts/test-package-third-party.py
   test -z "$(gofmt -l .)"
   go vet ./...
   go test -race ./...
+  # 真实TURN到期窗口计时前先编译发行fixture，避免冷编译占用短TTL。
+  go test -tags=integration -run '^$' ./internal/relay
 )
 (
   cd src/device-sdk

@@ -14,15 +14,17 @@ import (
 	"unicode/utf8"
 
 	"github.com/barry-ran/peerloom/src/device-server/internal/authorization"
+	"github.com/barry-ran/peerloom/src/device-server/internal/relay"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Service struct {
-	pool     *pgxpool.Pool
-	aead     cipher.AEAD
-	settings Settings
-	presence Presence
+	pool        *pgxpool.Pool
+	aead        cipher.AEAD
+	settings    Settings
+	presence    Presence
+	relayIssuer *relay.Issuer
 }
 
 func New(pool *pgxpool.Pool, key []byte, settings Settings, presence ...Presence) (*Service, error) {

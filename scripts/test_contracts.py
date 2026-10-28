@@ -84,6 +84,8 @@ class ContractTests(unittest.TestCase):
             '/v1/connection-grants/{id}': {'get', 'delete'},
             '/v1/sessions': {'get'}, '/v1/sessions/{id}': {'get'},
             '/v1/sessions/{id}/terminate': {'post'}, '/v1/audit-events': {'get'},
+            '/v1/relay-nodes': {'get', 'post'}, '/v1/relay-nodes/{id}': {'get', 'patch', 'delete'},
+            '/v1/device-sessions/{id}/ice-servers': {'get'},
         }
         self.assertEqual(set(api['paths']), set(expected))
         for name, methods in expected.items():
@@ -142,7 +144,7 @@ class ContractTests(unittest.TestCase):
                     parameter = next(p for p in operation['parameters'] if p['in'] == 'path')
                     self.assertTrue(parameter['required'])
                     self.assertEqual(parameter['schema']['format'], 'uuid')
-        self.assertEqual(operations, 17)
+        self.assertEqual(operations, 22)
 
     def test_management_patch_preserves_null_and_rejects_empty(self):
         device = self.management_validator('ManagementDevicePatch')
@@ -198,9 +200,24 @@ class ContractTests(unittest.TestCase):
         list_device = api['paths']['/v1/devices']['get']
         self.assertEqual({p['name'] for p in list_device['parameters']},
                          {'limit', 'cursor', 'application_id', 'online', 'tags'})
-        self.assertNotIn('/v1/relay-nodes', api['paths'])
+        self.assertIn('/v1/relay-nodes', api['paths'])
         self.assertNotIn('/v1/webhook-endpoints', api['paths'])
 
+
+
+    def test_relay_typed_node_and_credentials(self):
+        create = self.management_validator('ManagementRelayNodeCreate')
+        value = {'name': '中继', 'endpoint': 'turn:relay.example.com:3478?transport=udp', 'secret_ref': 'tenant-v1'}
+        create.validate(value)
+        self.assertFalse(create.is_valid(dict(value, tenant_id=UUID)))
+        self.assertFalse(create.is_valid(dict(value, secret='not-accepted')))
+        patch = self.management_validator('ManagementRelayNodePatch')
+        patch.validate({'enabled': False})
+        self.assertFalse(patch.is_valid({}))
+        self.assertFalse(patch.is_valid({'enabled': None}))
+        response = self.management_validator('SessionICEServers')
+        response.validate({'session_id': UUID, 'negotiation_generation': 1, 'ice_servers': []})
+        self.assertFalse(response.is_valid({'session_id': UUID, 'negotiation_generation': 2, 'ice_servers': []}))
 
 
 if __name__ == '__main__':

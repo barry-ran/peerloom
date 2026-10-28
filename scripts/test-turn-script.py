@@ -13,6 +13,12 @@ import json, os, pathlib, re, stat, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
 root = pathlib.Path(os.environ["TEST_ROOT"])
 if name == "python3":
+    if len(sys.argv) > 1 and sys.argv[1] == "scripts/test-turn-refresh.py":
+        assert sys.argv[2] == "--container-image" and sys.argv[3].startswith("peerloom-turn-test:")
+        assert (root / "test-invoked").exists() and (root / "container-cleaned").exists()
+        assert not (root / "image-cleaned").exists()
+        (root / "refresh-invoked").touch()
+        sys.exit(6 if os.environ["TEST_FAIL"] == "refresh" else 0)
     source = sys.stdin.read()
     if "isolated TURN UDP readiness failed" in source:
         sys.exit(0)  # 本测试不声称执行网络探活。
@@ -99,6 +105,11 @@ class TurnScriptTest(unittest.TestCase):
                 self.assertIn("diagnostic-redaction-test [redacted]", result.stderr)
             if failure not in ("docker", "build"):
                 self.assertTrue((root / "test-invoked").exists())
+
+            self.assertEqual((root / "refresh-invoked").exists(), failure in ("", "refresh"))
+
+    def test_refresh_failure(self):
+        self.exercise("refresh", 6)
 
     def test_success(self):
         self.exercise("", 0)

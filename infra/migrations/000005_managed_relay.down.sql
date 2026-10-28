@@ -1,0 +1,3 @@
+DROP TABLE relay_issuance_windows,relay_issuances;
+DROP INDEX sessions_tenant_identity_idx,relay_nodes_management_page_idx;
+ALTER TABLE relay_nodes DROP COLUMN revision;

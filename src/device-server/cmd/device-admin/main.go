@@ -26,6 +26,9 @@ func run(args []string) error {
 		return errors.New("usage: device-admin bootstrap|issue-key|revoke-key --offline [options]; key output is secret")
 	}
 	command := args[0]
+	if command == "relay-set-shared" {
+		return runSharedRelay(args[1:])
+	}
 	if command != "bootstrap" && command != "issue-key" && command != "revoke-key" {
 		return errors.New("unsupported offline administration command")
 	}

@@ -19,8 +19,10 @@ func TestManagementMigrationRollbackAndReapply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {
-		t.Fatal(err)
+	for i := len(migrations) - 1; i >= 0 && migrations[i].Version >= 4; i-- {
+		if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var absent bool
 	if err = f.pool.QueryRow(f.ctx, "SELECT to_regclass('tenant_service_credentials') IS NULL AND to_regclass('management_requests') IS NULL").Scan(&absent); err != nil || !absent {

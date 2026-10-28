@@ -3,7 +3,7 @@
   "info": {
     "title": "Peerloom 服务接口",
     "version": "0.1.0-dev",
-    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap和tenant service-key管理API；不包含交互登录、direct注册、relay节点管理或webhook管理。生产入口必须TLS。"
+    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap、tenant service-key管理API及托管TURN节点/会话凭证接口；不包含交互登录、direct注册或webhook管理。SDK自动ICE凭证拉取与restart尚未接入。生产入口必须TLS。"
   },
   "paths": {
     "/healthz": {
@@ -1800,6 +1800,450 @@
           }
         ]
       }
+    },
+    "/v1/relay-nodes": {
+      "get": {
+        "summary": "分页读取本租户中继节点（不含运维共享节点）",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNodePage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": "不透明keyset游标，绑定tenant/resource/filter；非快照。"
+          }
+        ]
+      },
+      "post": {
+        "summary": "创建运维注册表已批准的租户中继节点",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementRelayNodeCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/relay-nodes/{id}": {
+      "get": {
+        "summary": "读取本租户中继节点",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "read",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "summary": "部分更新中继节点并递增revision",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementRelayNodePatch"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "软禁用中继节点；不撤回已经签发的TURN凭证",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "服务端从凭证派生tenant；不接受payload授权声明。响应no-store。JSON请求体上限16KiB；变更与审计、回执同事务。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementRelayNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "相同principal+operation内绑定逻辑请求。默认响应回放10分钟，摘要保留24小时；响应过期返回409，不静默重执行。"
+          }
+        ]
+      }
+    },
+    "/v1/device-sessions/{id}/ice-servers": {
+      "get": {
+        "summary": "获取已授权会话的短期TURN凭证",
+        "tags": [
+          "设备中继"
+        ],
+        "security": [
+          {
+            "DeviceCredential": []
+          }
+        ],
+        "description": "重新验证设备Bearer、参与者、目标已接受、双端租约与grant。无配置返回ice_servers=[]；最多4节点，租户优先。固定协商generation=1。持久缓存与tenant/device/session分钟窗口限制；Cache-Control:no-store。不接收query或body。短期凭证到期不代表现有allocation/P2P强制断开；当前SDK自动拉取/ICE restart尚未接入。",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "敏感凭证，仅授权设备读取",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionICEServers"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2995,6 +3439,212 @@
           "detail",
           "request_id"
         ]
+      },
+      "ManagementRelayNodeCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "endpoint",
+          "secret_ref"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000]+$"
+          },
+          "region": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "endpoint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^[^\\u0000]+$"
+          },
+          "secret_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        }
+      },
+      "ManagementRelayNodePatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000]+$"
+          },
+          "region": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "endpoint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^[^\\u0000]+$"
+          },
+          "secret_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ManagementRelayNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "region",
+          "endpoint",
+          "secret_ref",
+          "id",
+          "tenant_id",
+          "enabled",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000]+$"
+          },
+          "region": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "endpoint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^[^\\u0000]+$"
+          },
+          "secret_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ManagementRelayNodePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ManagementRelayNode"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionICEServer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "urls",
+          "username",
+          "credential",
+          "expires_at"
+        ],
+        "properties": {
+          "urls": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^[^\\u0000]+$"
+            }
+          },
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[^\\u0000]+$"
+          },
+          "credential": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SessionICEServers": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "session_id",
+          "negotiation_generation",
+          "ice_servers"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "negotiation_generation": {
+            "const": 1
+          },
+          "ice_servers": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "$ref": "#/components/schemas/SessionICEServer"
+            }
+          }
+        }
       }
     },
     "securitySchemes": {

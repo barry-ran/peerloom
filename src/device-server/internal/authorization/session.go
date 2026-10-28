@@ -2,6 +2,7 @@ package authorization
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -36,14 +37,16 @@ func (s *Service) operate(ctx context.Context, actor identity.Device, id string,
 		}
 		return value, failure("SESSION_CLOSED", 409)
 	}
-	from, to, err := loadPeers(ctx, tx, actor.TenantID, value.SourceDeviceID, value.TargetDeviceID)
+	g, at, err := validateSessionTx(ctx, tx, actor, value)
 	if err != nil {
-		return Session{}, err
-	}
-	if (actor.ID == from.id && actor.ApplicationID != from.app) || (actor.ID == to.id && actor.ApplicationID != to.app) {
-		return Session{}, failure("AUTH_INVALID", 401)
-	}
-	closeWithError := func(reason string, cause error) (Session, error) {
+		var public *Error
+		if !errors.As(err, &public) || public.Status != 403 {
+			return Session{}, err
+		}
+		reason := public.Code
+		if reason == "DEVICE_REVOKED" || reason == "APPLICATION_DISABLED" || reason == "TARGET_NOT_CONNECTABLE" {
+			reason = "IDENTITY_OR_POLICY_DISABLED"
+		}
 		closed, closeErr := closeSession(ctx, tx, value, reason)
 		if closeErr != nil {
 			return Session{}, closeErr
@@ -51,28 +54,7 @@ func (s *Service) operate(ctx context.Context, actor identity.Device, id string,
 		if closeErr = commit(ctx, tx); closeErr != nil {
 			return Session{}, closeErr
 		}
-		return closed, cause
-	}
-	// connectable only controls new acceptance, not an already accepted session.
-	if err = validatePeers(from, to, value.State == "requested" || value.State == "authorizing"); err != nil {
-		return closeWithError("IDENTITY_OR_POLICY_DISABLED", err)
-	}
-	if value.GrantID == "" {
-		return closeWithError("GRANT_REQUIRED", failure("GRANT_REQUIRED", 403))
-	}
-	g, err := loadGrant(ctx, tx, actor.TenantID, value.GrantID)
-	if err != nil {
-		return Session{}, err
-	}
-	at, err := now(ctx, tx)
-	if err != nil {
-		return Session{}, err
-	}
-	if !value.LeaseExpiresAt.After(at) {
-		return closeWithError("LEASE_EXPIRED", failure("LEASE_EXPIRED", 403))
-	}
-	if err = grantValid(g, value, at); err != nil {
-		return closeWithError(err.Error(), err)
+		return closed, err
 	}
 	result, err := fn(ctx, tx, value, g, at)
 	if err != nil {

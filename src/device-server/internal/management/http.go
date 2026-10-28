@@ -63,7 +63,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, id, err)
 		return
 	}
-	if h.serveResources(ctx, w, r, id, p) {
+	if h.serveRelays(ctx, w, r, id, p) || h.serveResources(ctx, w, r, id, p) {
 		return
 	}
 	switch {
