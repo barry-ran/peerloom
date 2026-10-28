@@ -564,9 +564,27 @@ class ReleaseTests(unittest.TestCase):
             admin.publish(outputs)
         self.assertFalse(api.writes)
 
-    def test_plan_default_disabled(self):
-        plan = json.loads((Path(__file__).resolve().parents[1] / 'release/approved-plan.json').read_text())
-        self.assertIs(plan['approved'], False)
+    def test_checked_in_plan_structure(self):
+        # Approval is a reviewed plan state, not an invariant of the source tree.
+        plan = json.loads((Path(__file__).resolve().parents[1] / 'release/approved-plan.json').read_text(encoding='utf-8'))
+        self.assertIsInstance(plan, dict)
+        self.assertEqual(plan['format_version'], 1)
+        self.assertEqual(plan['repository'], P.REPO)
+        self.assertIs(type(plan['approved']), bool)
+        self.assertEqual(plan['administration_sha'], 'event')
+        self.assertIn(plan['operation'], ('release', 'cleanup'))
+        if plan['operation'] == 'cleanup':
+            self.assertIsInstance(plan['branches'], list)
+            if plan['approved']:
+                self.assertTrue(plan['branches'])
+        else:
+            P.sha(plan['release_sha'])
+            self.assertRegex(plan['tag'], r'^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$')
+            self.assertIs(type(plan['prerelease']), bool)
+            self.assertIsInstance(plan['notes'], str)
+            self.assertTrue(plan['notes'])
+            self.assertIs(plan['final_scope_accepted'], True)
+            self.assertEqual(set(plan['artifacts']), set(P.PLATFORMS))
 
 class ExtraBoundaryTests(unittest.TestCase):
     def test_workflow_permission_isolation(self):
@@ -584,9 +602,32 @@ class ExtraBoundaryTests(unittest.TestCase):
 
     def test_plan_false_never_calls_api(self):
         from unittest.mock import patch
-        with patch.object(A, 'GitHub', side_effect=AssertionError('must remain offline')):
-            with patch('sys.argv', ['release-admin.py', '--execute']):
-                A.main()
+        plan = {'format_version': 1, 'repository': P.REPO, 'approved': False,
+                'administration_sha': 'event', 'operation': 'cleanup', 'branches': []}
+        with patch.dict(A.os.environ, {}, clear=True), \
+                patch.object(Path, 'read_text', return_value=json.dumps(plan)) as read, \
+                patch.object(A, 'GitHub', side_effect=AssertionError('must remain offline')) as api, \
+                patch('sys.argv', ['release-admin.py', '--execute']):
+            A.main()
+        read.assert_called_once()
+        api.assert_not_called()
+
+    def test_approved_plan_untrusted_event_never_calls_api(self):
+        from unittest.mock import patch
+        plan = {'format_version': 1, 'repository': P.REPO, 'approved': True,
+                'administration_sha': 'event', 'operation': 'cleanup',
+                'branches': [{'branch': 'feat/validation-release-packaging', 'sha': 'event',
+                              'inactive': True, 'no_wip': True, 'proof': 'ancestor'}]}
+        env = {'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_EVENT_PATH': '/fixture/event.json'}
+        with patch.dict(A.os.environ, env, clear=True), \
+                patch.object(Path, 'read_text', side_effect=[json.dumps(plan), '{}']), \
+                patch.object(A, 'GitHub', side_effect=AssertionError('must remain offline')) as api, \
+                patch.object(A.subprocess, 'check_output') as git, \
+                patch('sys.argv', ['release-admin.py', '--execute']), \
+                self.assertRaisesRegex(P.Rejected, 'UNTRUSTED_EVENT'):
+            A.main()
+        api.assert_not_called()
+        git.assert_not_called()
 
     def test_new_maven_policy_and_pin_are_trusted_checkout_inputs(self):
         from unittest.mock import patch, Mock
