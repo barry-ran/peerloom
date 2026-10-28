@@ -148,6 +148,8 @@ PY
     # Only a real test-without-building execution can satisfy the >=8-test gate below.
     run ios-build-for-testing 600 xcodebuild -scheme PeerloomApple-Package -destination "platform=iOS Simulator,id=$DEVICE" \
       -derivedDataPath "$OUT/DerivedData-simulator" CODE_SIGNING_ALLOWED=NO build-for-testing
+    run ios-test-signing 45 python3 "$HERE/scripts/inspect-test-signing.py" \
+      "$OUT/DerivedData-simulator/Build/Products" "$DEVELOPER_DIR"
     run ios-simulator 180 xcodebuild -scheme PeerloomApple-Package -destination "platform=iOS Simulator,id=$DEVICE" \
       -derivedDataPath "$OUT/DerivedData-simulator" -resultBundlePath "$OUT/iOS模拟器测试.xcresult" \
       CODE_SIGNING_ALLOWED=NO test-without-building

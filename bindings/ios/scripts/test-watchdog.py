@@ -2,6 +2,9 @@
 # MIT — Copyright (c) 2026 Peerloom contributors.
 """Linux/macOS 真实子进程测试；不是 Swift/XCTest 或 Apple Keychain 验收。"""
 import json
+import contextlib
+import io
+import plistlib
 import importlib.util
 import os
 from pathlib import Path
@@ -12,11 +15,15 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("watchdog.py")
 VERIFY_SPEC = importlib.util.spec_from_file_location("verify_swift", SCRIPT.with_name("verify-swift-tests.py"))
 VERIFY = importlib.util.module_from_spec(VERIFY_SPEC)
 VERIFY_SPEC.loader.exec_module(VERIFY)
+SIGNING_SPEC = importlib.util.spec_from_file_location("inspect_signing", SCRIPT.with_name("inspect-test-signing.py"))
+SIGNING = importlib.util.module_from_spec(SIGNING_SPEC)
+SIGNING_SPEC.loader.exec_module(SIGNING)
 
 
 class WatchdogTests(unittest.TestCase):
@@ -182,6 +189,60 @@ class WatchdogTests(unittest.TestCase):
                 for bad in ("invalid", original + "\n" + original, "", original.replace("-", ""), "{" + original + "}"):
                     path.write_text(bad)
                     self.assertNotEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
+
+    def test_signing_diagnostics_read_only_bounded_and_redacted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products, developer = root / "products", root / "developer"
+            products.mkdir(); developer.mkdir()
+            bundle = products / "fixture.xctest"
+            bundle.mkdir()
+            (products / "fixture.xctestrun").write_bytes(plistlib.dumps({"TestConfigurations": [
+                {"TestTargets": [{"TestBundlePath": "__TESTROOT__/fixture.xctest"}]}]}))
+            output = io.StringIO()
+            result = subprocess.CompletedProcess([], 1, "", str(bundle) + ": code object is not signed at all")
+            with mock.patch.object(SIGNING.subprocess, "run", return_value=result) as run, contextlib.redirect_stdout(output):
+                SIGNING.inspect(products, developer)
+            self.assertEqual(run.call_args.args[0], ["codesign", "-d", "--verbose=2", "--entitlements", ":-", str(bundle)])
+            self.assertEqual(run.call_args.kwargs["timeout"], 10)
+            self.assertNotIn(str(root), output.getvalue())
+            self.assertIn('"codesign_exit": 1', output.getvalue())
+            self.assertNotIn("--sign", str(run.call_args))
+
+    def test_signing_diagnostics_refuse_outside_product_or_developer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products, developer = root / "products", root / "developer"
+            products.mkdir(); developer.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            (products / "fixture.xctestrun").write_bytes(plistlib.dumps({"TestHostPath": "__TESTROOT__/../outside"}))
+            with mock.patch.object(SIGNING.subprocess, "run") as run, contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(ValueError):
+                    SIGNING.inspect(products, developer)
+                run.assert_not_called()
+
+    def test_ios_fast_diagnostic_cannot_replace_full_native_acceptance(self):
+        ios = SCRIPT.parent.parent
+        workflow = (ios.parent.parent / ".github/workflows/native.yml").read_text()
+        build = SCRIPT.with_name("build-ios-diagnostic.sh").read_text()
+        self.assertLess(workflow.index("build-ios-diagnostic.sh"), workflow.index("build-xcframework.sh"))
+        self.assertIn('"$RUNNER_TEMP/peerloom-ios-diagnostic"', workflow)
+        self.assertIn("--stage finalize", workflow)
+        self.assertIn("--stage macos-swift", workflow)
+        self.assertIn("--stage macos-rust-tls", workflow)
+        self.assertIn("--stage ios-device", workflow)
+        self.assertEqual(workflow.count("--stage ios-simulator"), 2)
+        self.assertIn("if: always()", workflow)
+        self.assertIn("peerloom-ios-diagnostic/phase-*.log", workflow)
+        self.assertIn("--target aarch64-apple-ios-sim", build)
+        self.assertNotIn("lipo", build)
+        self.assertIn("assert len(libraries)==1", build)
+        self.assertIn('cp -R "$HERE/Sources" "$HERE/Tests"', build)
+        self.assertNotIn("-skip-testing", workflow + build)
+        native = SCRIPT.with_name("test-native.sh").read_text()
+        self.assertIn("inspect-test-signing.py", native)
+        self.assertIn("summary['totalTestCount'] >= 8 and summary['failedTests'] == 0", native)
 
     def test_shell_helpers_preserve_failure_under_or_and_if(self):
         with tempfile.TemporaryDirectory() as directory:

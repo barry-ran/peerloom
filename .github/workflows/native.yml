@@ -76,6 +76,17 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
           rustup default 1.99.1
           rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - name: 提前构建单 slice iOS 诊断包（不是发布产物）
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          PEERLOOM_APPLE_OUTPUT="$RUNNER_TEMP/peerloom-ios-diagnostic" \
+            ./bindings/ios/scripts/build-ios-diagnostic.sh 2>&1 | tee "$RUNNER_TEMP/peerloom-ios-diagnostic-build.log"
+      - name: 提前执行原有全部 iOS XCTest（失败即停止完整构建）
+        timeout-minutes: 20
+        run: |
+          PEERLOOM_APPLE_OUTPUT="$RUNNER_TEMP/peerloom-ios-diagnostic" \
+            ./bindings/ios/scripts/test-native.sh --stage ios-simulator
       - name: 构建真实五 slice XCFramework 与 Swift Package
         run: ./bindings/ios/scripts/build-xcframework.sh
       - name: macOS XCTest、隔离 Keychain 与 Swift TLS 拒绝（进程限时）
@@ -96,9 +107,11 @@ jobs:
         timeout-minutes: 3
         if: always()
         run: |
-          if [[ -d "$PEERLOOM_APPLE_OUTPUT/SwiftPackage" ]]; then
-            ./bindings/ios/scripts/test-native.sh --stage cleanup
-          fi
+          for output in "$RUNNER_TEMP/peerloom-ios-diagnostic" "$PEERLOOM_APPLE_OUTPUT"; do
+            if [[ -d "$output/SwiftPackage" ]]; then
+              PEERLOOM_APPLE_OUTPUT="$output" ./bindings/ios/scripts/test-native.sh --stage cleanup
+            fi
+          done
       - name: 保存 Apple 检查产物（unsigned device build 非真机验证）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -120,6 +133,11 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
           path: |
+            ${{ runner.temp }}/peerloom-ios-diagnostic-build.log
+            ${{ runner.temp }}/peerloom-ios-diagnostic/*.xcresult
+            ${{ runner.temp }}/peerloom-ios-diagnostic/phase-*.log
+            ${{ runner.temp }}/peerloom-ios-diagnostic/*.txt
+            ${{ runner.temp }}/peerloom-ios-diagnostic/*.json
             ${{ runner.temp }}/peerloom-apple-validation/*.xcresult
             ${{ runner.temp }}/peerloom-apple-validation/phase-*.log
             ${{ runner.temp }}/peerloom-apple-validation/*.txt

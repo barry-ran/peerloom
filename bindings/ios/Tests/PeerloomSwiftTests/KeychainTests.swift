@@ -2,6 +2,8 @@
 import XCTest
 import Foundation
 import Security
+import LocalAuthentication
+import Darwin
 @_spi(Validation) @testable import PeerloomSwift
 
 func onWorker<T>(_ body: @escaping () throws -> T) async throws -> T {
@@ -64,7 +66,56 @@ final class KeychainTests: XCTestCase {
     private func identity(_ suffix: String = "one") -> StoredIdentity {
         StoredIdentity(deviceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", deviceCredential: "dev_private_" + suffix, expiresAt: "2030-01-01T00:00:00Z")
     }
+    #if os(iOS)
+    private func traceIOSFixture() async throws {
+        let locks = directory.appendingPathComponent("locks")
+        let service = "io.peerloom.validation.readonly." + UUID().uuidString
+        let report = try await onWorker {
+            var lines = ["[iOS fixture] main_thread=\(Thread.isMainThread)"]
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service, kSecAttrAccount as String: "probe",
+                kSecMatchLimit as String: kSecMatchLimitOne, kSecReturnData as String: true,
+                kSecReturnAttributes as String: true,
+                kSecUseAuthenticationContext as String: context]
+            // Random synthetic service, read-only query; no credential or returned data is logged.
+            var unused: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &unused)
+            lines.append("[iOS fixture] raw_SecItemCopyMatching_status=\(status)")
+            do {
+                try FileManager.default.createDirectory(at: locks, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+            } catch {
+                lines.append("[iOS fixture] directory_create_error_code=\((error as NSError).code)")
+                return lines.joined(separator: "\n") + "\n"
+            }
+            var info = stat()
+            let result = lstat(locks.path, &info)
+            lines.append("[iOS fixture] directory_lstat=\(result) mode=\(String(info.st_mode & 0o777, radix: 8)) owner_matches=\(info.st_uid == geteuid())")
+            let probe = locks.appendingPathComponent("probe-" + UUID().uuidString)
+            let descriptor = open(probe.path, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+            let openError = descriptor < 0 ? errno : 0
+            lines.append("[iOS fixture] lock_open_errno=\(openError)")
+            if descriptor >= 0 {
+                defer { close(descriptor); unlink(probe.path) }
+                var fileInfo = stat()
+                let fileStatus = fstat(descriptor, &fileInfo)
+                lines.append("[iOS fixture] lock_fstat=\(fileStatus) mode=\(String(fileInfo.st_mode & 0o777, radix: 8)) owner_matches=\(fileInfo.st_uid == geteuid()) single_link=\(fileInfo.st_nlink == 1)")
+                let locked = flock(descriptor, LOCK_EX | LOCK_NB)
+                let lockError = locked == 0 ? 0 : errno
+                lines.append("[iOS fixture] flock_result=\(locked) errno=\(lockError)")
+                if locked == 0 { _ = flock(descriptor, LOCK_UN) }
+            }
+            return lines.joined(separator: "\n") + "\n"
+        }
+        FileHandle.standardError.write(Data(report.utf8))
+    }
+    #endif
     func testSaveLoadCASAndPersistentDeleteTombstone() async throws {
+        #if os(iOS)
+        try await traceIOSFixture()
+        #endif
         let store = store!, scope = scope!, value = identity()
         let initial = try await onWorker { try store.perform(StorageRequest(operation: .load, scope: scope)) }
         XCTAssertEqual(initial, StorageReply(revision: 0))
