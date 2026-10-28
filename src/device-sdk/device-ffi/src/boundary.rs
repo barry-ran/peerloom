@@ -79,12 +79,13 @@ pub unsafe extern "C" fn dp_sdk_create(
             return Err(INVALID);
         }
         // Native validation stage: promote this exact SHA only after every required
-        // Windows/macOS/iOS native gate passes. No separate test-only create path.
+        // Windows/macOS/iOS/Android native gate passes. No separate test-only create path.
         if !cfg!(any(
             target_os = "linux",
             target_os = "macos",
             target_os = "ios",
-            target_os = "windows"
+            target_os = "windows",
+            target_os = "android"
         )) {
             return Err(UNSUPPORTED);
         }

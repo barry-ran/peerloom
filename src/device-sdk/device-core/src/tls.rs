@@ -3,15 +3,12 @@
 use std::sync::Arc;
 
 pub(crate) fn client_config() -> Result<Arc<rustls::ClientConfig>, rustls::Error> {
-    // Android requires a matching Kotlin verifier and initialized JVM/context.
-    // Until the JNI adapter exists, fail explicitly rather than panic or weaken TLS.
     #[cfg(target_os = "android")]
-    {
-        Err(rustls::Error::General(
-            "Android TLS adapter is not initialized/supported".into(),
-        ))
+    if !ANDROID_INITIALIZED.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(rustls::Error::General(
+            "Android TLS is not initialized".into(),
+        ));
     }
-    #[cfg(not(target_os = "android"))]
     {
         use rustls_platform_verifier::BuilderVerifierExt;
         let config = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -22,4 +19,18 @@ pub(crate) fn client_config() -> Result<Arc<rustls::ClientConfig>, rustls::Error
         .with_no_client_auth();
         Ok(Arc::new(config))
     }
+}
+
+#[cfg(target_os = "android")]
+static ANDROID_INITIALIZED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "android")]
+pub fn initialize_android(
+    env: &mut jni::Env<'_>,
+    context: jni::objects::JObject<'_>,
+) -> Result<(), jni::errors::Error> {
+    rustls_platform_verifier::android::init_with_env(env, context)?;
+    ANDROID_INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
+    Ok(())
 }

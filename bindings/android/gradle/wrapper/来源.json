@@ -1,0 +1,11 @@
+{
+  "component": "Gradle Wrapper",
+  "version": "8.13",
+  "source_commit": "073314332697ba45c16c0a0ce1891fa6794179ff",
+  "source_url": "https://github.com/gradle/gradle/blob/073314332697ba45c16c0a0ce1891fa6794179ff/gradle/wrapper/gradle-wrapper.jar",
+  "jar_sha256": "81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f",
+  "embedded_license": "META-INF/LICENSE",
+  "license_sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+  "license": "Apache-2.0",
+  "notice": "JAR contains META-INF/LICENSE and no separate NOTICE entry; Gradle wrapper scripts retain their upstream headers. This is provenance, not legal clearance."
+}

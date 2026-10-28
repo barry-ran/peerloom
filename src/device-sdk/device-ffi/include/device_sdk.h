@@ -62,6 +62,11 @@ typedef struct dp_event {
  * backpressure; a callback that never returns prevents release indefinitely.
  */
 typedef void (*dp_callback)(uint64_t context, const dp_event *event);
+#if defined(__ANDROID__)
+/* Same Rust image as the SDK. Call on a JVM-attached thread with live JNIEnv* and
+ * Application Context jobject before networking; both JNI arguments remain caller-owned. */
+uint32_t dp_android_tls_initialize(void *jni_env, void *application_context);
+#endif
 uint32_t dp_abi_version(void);
 uint64_t dp_capabilities(void);
 /* JSON UTF-8 <=16KiB, no trailing NUL. Required fields:

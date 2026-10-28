@@ -253,3 +253,6 @@ impl SendQueue {
         Ok(expired)
     }
 }
+
+#[cfg(target_os = "android")]
+pub use tls::initialize_android as initialize_android_tls;

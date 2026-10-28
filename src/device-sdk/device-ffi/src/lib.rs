@@ -6,3 +6,7 @@ mod bridge;
 mod state;
 mod storage;
 pub use boundary::*;
+
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+mod android;

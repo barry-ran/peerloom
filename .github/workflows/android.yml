@@ -1,0 +1,109 @@
+name: Android 原生封装验证
+on:
+  push:
+    branches: [master, 'feat/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: android-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: 隔离构建安全负例（不启动真实模拟器或修改KVM）
+        run: python3 bindings/android/scripts/test-build-safety.py
+      - name: 固定工具链
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          rustup toolchain install 1.99.1 --profile minimal
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
+          rustc +1.99.1 --version
+          cat "$ANDROID_HOME/ndk/29.0.14206865/source.properties"
+      - name: 两个ABI真实构建、AAR和示例APK
+        working-directory: bindings/android
+        run: |
+          ./gradlew --no-daemon :library:assembleRelease :library:assembleDebugAndroidTest :sample:assembleDebug
+          mkdir -p ../../dist/android
+          cp library/build/outputs/aar/library-release.aar ../../dist/android/
+          cp library/build/outputs/apk/androidTest/debug/library-debug-androidTest.apk ../../dist/android/
+          cp sample/build/outputs/apk/debug/sample-debug.apk ../../dist/android/
+          cp ../../src/device-sdk/device-ffi/include/device_sdk.h ../../dist/android/
+          cp ../../LICENSE ../../dist/android/
+          ./gradlew --no-daemon :library:dependencies --configuration releaseRuntimeClasspath > ../../dist/android/maven-runtime.txt
+          ./gradlew --no-daemon :library:dependencies --configuration debugAndroidTestRuntimeClasspath > ../../dist/android/maven-test.txt
+          cargo +1.99.1 metadata --manifest-path ../../src/device-sdk/Cargo.toml --format-version 1 --locked > ../../dist/android/cargo-metadata.json
+      - name: 验证ELF与APK真实16KB对齐
+        run: |
+          python3 bindings/android/scripts/verify-artifacts.py dist/android/library-release.aar dist/android/sample-debug.apk dist/android/library-debug-androidTest.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 dist/android/sample-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 dist/android/library-debug-androidTest.apk
+          (cd dist/android && sha256sum library-release.aar library-debug-androidTest.apk sample-debug.apk device_sdk.h LICENSE maven-runtime.txt maven-test.txt cargo-metadata.json > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-android-${{ github.sha }}
+          path: dist/android/
+          if-no-files-found: error
+          retention-days: 14
+  emulator:
+    name: android-emulator-${{ matrix.page }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - page: 4096
+            image: 'system-images;android-36;google_apis;x86_64'
+          - page: 16384
+            image: 'system-images;android-36;google_apis_ps16k;x86_64'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: peerloom-android-${{ github.sha }}
+          path: dist/android/
+      - name: 下载后先验证完整产物清单与哈希
+        run: |
+          python3 bindings/android/scripts/verify-checksums.py dist/android
+          (cd dist/android && sha256sum --strict --check SHA256SUMS)
+          python3 bindings/android/scripts/verify-artifacts.py dist/android/library-release.aar dist/android/sample-debug.apk dist/android/library-debug-androidTest.apk
+      - name: 安装官方模拟器与固定API镜像
+        run: |
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'emulator' '${{ matrix.image }}'
+          test -e /dev/kvm
+          python3 bindings/android/scripts/kvm-access.py prepare
+          grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*37\.2\.12$' "$ANDROID_HOME/emulator/source.properties"
+          grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*7$' "$ANDROID_HOME/system-images/android-36/${{ matrix.page == 16384 && 'google_apis_ps16k' || 'google_apis' }}/x86_64/source.properties"
+          cat "$ANDROID_HOME/emulator/source.properties"
+          cat "$ANDROID_HOME/system-images/android-36/${{ matrix.page == 16384 && 'google_apis_ps16k' || 'google_apis' }}/x86_64/source.properties"
+      - name: CheckJNI、TLS、持久化重启与真实控制面通信
+        run: ./bindings/android/scripts/emulator.sh '${{ matrix.page }}' '${{ matrix.image }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: peerloom-android-tests-${{ matrix.page }}-${{ github.sha }}
+          path: dist/android-tests/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: 恢复本作业临时KVM用户ACL
+        if: always()
+        run: python3 bindings/android/scripts/kvm-access.py restore
+      - name: 清理本次测试秘密
+        if: always()
+        run: rm -rf .secrets

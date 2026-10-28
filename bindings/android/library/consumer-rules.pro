@@ -1,0 +1,3 @@
+-keep class io.peerloom.sdk.Native { *; }
+-keepclassmembers class io.peerloom.sdk.PeerloomSdk { private void onNativeEvent(long,int,long,long,int,byte[]); }
+-keep,includedescriptorclasses class org.rustls.platformverifier.** { *; }
