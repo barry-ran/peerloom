@@ -11,3 +11,6 @@ src/device-sdk/device-ffi/include/device_sdk.h -text
 bindings/android/gradle/wrapper/来源.json -text
 bindings/android/gradle/wrapper/许可证.txt -text
 LICENSE -text
+
+# SHA-bound original Maven POM and notice acceptance fixtures.
+scripts/testdata/maven-gap-proof/** -text

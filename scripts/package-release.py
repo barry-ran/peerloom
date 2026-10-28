@@ -18,6 +18,9 @@ import tomllib
 _gap_spec = importlib.util.spec_from_file_location('license_gap_policy', Path(__file__).with_name('license-gap-policy.py'))
 GAPS = importlib.util.module_from_spec(_gap_spec)
 _gap_spec.loader.exec_module(GAPS)
+_maven_spec = importlib.util.spec_from_file_location('maven_gap_policy', Path(__file__).with_name('maven-gap-policy.py'))
+MAVEN = importlib.util.module_from_spec(_maven_spec)
+_maven_spec.loader.exec_module(MAVEN)
 
 class PackageError(Exception):
     pass
@@ -125,19 +128,32 @@ def finish(root, output, platform, commit, sources, maven=None):
                 tree_copy(path, output / 'third-party/vendor' / vendor.name / path.name)
     delivery_status, documented_gaps = GAPS.classify(report)
     evidence = {'cargo_go': delivery_status}
+    maven_gaps = []
     if maven:
         check_evidence(maven)
         maven_report = json.loads((maven / 'report.json').read_text(encoding='utf-8'))
         if maven_report.get('evidence_status') not in ('incomplete', 'collected-not-legally-reviewed'):
             raise PackageError('MAVEN_EVIDENCE_STATUS_INVALID')
         tree_copy(maven, output / 'third-party/maven-configurations')
-        evidence['maven'] = maven_report['evidence_status']
+        def read_maven_bound(name):
+            if not re.fullmatch(r'(?:poms/[0-9a-f]{64}\.xml|licenses/[0-9a-f]{64}\.txt)', name):
+                raise PackageError('UNSAFE_MAVEN_EVIDENCE_PATH')
+            file = maven/name
+            if not file.is_file() or file.stat().st_size > 16*1024**2:
+                raise PackageError('MAVEN_EVIDENCE_MISSING_OR_TOO_LARGE')
+            return file.read_bytes()
+        try:
+            MAVEN.verify_bound_files(maven_report, read_maven_bound)
+        except ValueError as error:
+            raise PackageError('MAVEN_EVIDENCE_BINDING_FAILED') from error
+        evidence['maven'], maven_gaps = MAVEN.classify(maven_report)
     meta = {'format_version': 1, 'version': version, 'commit': commit, 'platform': platform,
             'build_profile': 'release', 'cargo_features': 'default',
             'cargo_lock_sha256': digest(root / 'src/device-sdk/Cargo.lock'),
             'evidence': evidence, 'release_evidence_complete': all(v == GAPS.COMPLETE for v in evidence.values()),
             'release_delivery_eligible': all(v in (GAPS.COMPLETE, GAPS.DOCUMENTED) for v in evidence.values()),
             'documented_gaps': documented_gaps,
+            'maven_documented_gaps': maven_gaps,
             'legal_review': 'not-performed', 'signed_distribution': False,
             'inventory_scope': 'Cargo lock and Go MVS all-platform candidates; Maven resolved configurations where present; not exact binary linkage inventory'}
     if platform == 'linux-x86_64':

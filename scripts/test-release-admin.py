@@ -21,7 +21,7 @@ SHA, MASTER, TREE = '1' * 40, '2' * 40, '3' * 40
 def sums(files):
     return ''.join(hashlib.sha256(v).hexdigest() + '  ' + n + '\n' for n, v in sorted(files.items())).encode()
 
-def package(platform='android'):
+def package(platform='windows-x86_64'):
     meta = {'format_version': 1, 'platform': platform, 'commit': SHA, 'version': '0.1.0',
             'build_profile': 'release', 'cargo_features': 'default', 'release_evidence_complete': True,
             'evidence': {'cargo_go': 'collected-not-legally-reviewed'}}
@@ -37,6 +37,8 @@ def package(platform='android'):
         files[prefix + 'SHA256SUMS'] = sums(proof)
     if platform == 'android':
         files.update({'library-release.aar': b'AAR fixture', 'include/device_sdk.h': b'header'})
+    if platform == 'windows-x86_64':
+        files.update({'lib/device_ffi.dll': b'DLL fixture', 'lib/device_ffi.dll.lib': b'import fixture', 'lib/device_ffi.lib': b'static fixture', 'include/device_sdk.h': b'header'})
     return files, meta
 
 def write_zip(path, files, checksum=True):
@@ -70,7 +72,7 @@ class PolicyTests(unittest.TestCase):
             path = Path(d) / 'package.zip'
             files, _ = package()
             write_zip(path, files)
-            self.assertEqual(P.verify_zip(path, 'android', SHA, '0.1.0')['size'], path.stat().st_size)
+            self.assertEqual(P.verify_zip(path, 'windows-x86_64', SHA, '0.1.0')['size'], path.stat().st_size)
 
     def test_unlisted_extra(self):
         with tempfile.TemporaryDirectory() as d:
@@ -80,7 +82,7 @@ class PolicyTests(unittest.TestCase):
             with zipfile.ZipFile(path, 'a') as z:
                 z.writestr('extra', b'x')
             with self.assertRaisesRegex(P.Rejected, 'COVERAGE'):
-                P.verify_zip(path, 'android', SHA, '0.1.0')
+                P.verify_zip(path, 'windows-x86_64', SHA, '0.1.0')
 
     def test_symlink_zip(self):
         with tempfile.TemporaryDirectory() as d:
@@ -91,17 +93,17 @@ class PolicyTests(unittest.TestCase):
             with zipfile.ZipFile(path, 'w') as z:
                 z.writestr(entry, 'target')
             with self.assertRaisesRegex(P.Rejected, 'SPECIAL'):
-                P.verify_zip(path, 'android', SHA, '0.1.0')
+                P.verify_zip(path, 'windows-x86_64', SHA, '0.1.0')
 
     def test_wrong_metadata(self):
         files, meta = package()
         for key, value in [('commit', MASTER), ('cargo_features', 'ci-diagnostics'), ('release_evidence_complete', False), ('platform', 'fake')]:
             changed = dict(meta, **{key: value})
             with self.subTest(key=key), self.assertRaises(P.Rejected):
-                P.metadata(json.dumps(changed).encode(), 'android', SHA, '0.1.0')
+                P.metadata(json.dumps(changed).encode(), 'windows-x86_64', SHA, '0.1.0')
 
     def test_missing_maven_evidence(self):
-        _, meta = package()
+        _, meta = package('android')
         del meta['evidence']['maven']
         with self.assertRaises(P.Rejected):
             P.metadata(json.dumps(meta).encode(), 'android', SHA, '0.1.0')
@@ -152,7 +154,7 @@ class DocumentedGapPackageTests(unittest.TestCase):
                   'issues':['LICENSE_TEXT_MISSING'],'files':[]}
         report = {'format_version':1,'evidence_status':'incomplete','issues':[],'packages':[record]}
         status, gaps = P.GAPS.classify(report)
-        meta.update(evidence={'cargo_go':status,'maven':P.GAPS.COMPLETE}, release_evidence_complete=False,
+        meta.update(evidence={'cargo_go':status}, release_evidence_complete=False,
                     release_delivery_eligible=True, documented_gaps=gaps)
         files['release-metadata.json'] = json.dumps(meta).encode()
         files['third-party/cargo-go-all-lock-candidates/report.json'] = json.dumps(report).encode()
@@ -161,13 +163,13 @@ class DocumentedGapPackageTests(unittest.TestCase):
     def verify(self, files):
         # Model a producer with internally consistent byte manifests so negative
         # cases reach the semantic gap/notice guard rather than stale hashes.
-        for prefix in ('third-party/cargo-go-all-lock-candidates/', 'third-party/maven-configurations/'):
+        for prefix in ('third-party/cargo-go-all-lock-candidates/',):
             nested = {name[len(prefix):]: value for name, value in files.items() if name.startswith(prefix) and name != prefix + 'SHA256SUMS'}
             files[prefix + 'SHA256SUMS'] = sums(nested)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'package.zip'
             write_zip(path, files)
-            return P.verify_zip(path, 'android', SHA, '0.1.0')
+            return P.verify_zip(path, 'windows-x86_64', SHA, '0.1.0')
 
     def test_exact_gap_delivery_is_not_evidence_complete(self):
         files, meta, _ = self.fixture()
@@ -200,6 +202,68 @@ class DocumentedGapPackageTests(unittest.TestCase):
         files['release-metadata.json'] = json.dumps(meta).encode()
         with self.assertRaisesRegex(P.Rejected, 'INCOMPLETE_EVIDENCE'):
             self.verify(files)
+
+class MavenDocumentedPackageTests(unittest.TestCase):
+    prefix = 'third-party/maven-configurations/'
+    def fixture(self):
+        files, meta = package('android')
+        files = {name:data for name,data in files.items() if not name.startswith(self.prefix)}
+        proof = Path(__file__).with_name('testdata')/'maven-gap-proof'
+        files.update({self.prefix+p.relative_to(proof).as_posix():p.read_bytes() for p in proof.rglob('*') if p.is_file()})
+        report = copy.deepcopy(P.MAVEN.PINS['expected_report'])
+        status,gaps = P.MAVEN.classify(report)
+        self.assertEqual(len(gaps),19)
+        meta.update(release_evidence_complete=False,release_delivery_eligible=True,documented_gaps=[],maven_documented_gaps=gaps)
+        meta['evidence']['maven']=status
+        files['release-metadata.json']=json.dumps(meta).encode()
+        files[self.prefix+'report.json']=json.dumps(report).encode()
+        files[self.prefix+'sbom.cdx.json']=b'{}'
+        return files,meta,report
+
+    def verify(self,files):
+        files[self.prefix+'SHA256SUMS']=sums({n[len(self.prefix):]:b for n,b in files.items() if n.startswith(self.prefix) and n!=self.prefix+'SHA256SUMS'})
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'package.zip';write_zip(path,files)
+            return P.verify_zip(path,'android',SHA,'0.1.0')
+
+    def test_exact_21_graph_19_gaps_and_actual_pom_notice_bytes(self):
+        files,meta,report=self.fixture()
+        self.assertEqual(report['evidence_status'],'incomplete')
+        self.assertFalse(meta['release_evidence_complete'])
+        self.verify(files)
+
+    def test_resealed_unknown_version_binary_issue_or_graph_rejected(self):
+        for change in ('version','binary','issue','package','edge','notice'):
+            files,meta,report=self.fixture();scope=report['scopes'][0];record=scope['packages'][0]
+            if change=='version':record['coordinate']+='-unknown'
+            elif change=='binary':record['artifacts'][0]['sha256']='a'*64
+            elif change=='issue':record['issues'].append('POM_MISSING')
+            elif change=='package':scope['packages'].pop()
+            elif change=='edge':scope['edges'].pop()
+            else:
+                record=next(p for s in report['scopes'] for p in s['packages'] if p['evidence'])
+                notice=record['evidence'].pop();files.pop(self.prefix+notice['file'])
+            files[self.prefix+'report.json']=json.dumps(report).encode()
+            with self.subTest(change=change),self.assertRaises(P.Rejected):self.verify(files)
+
+    def test_resealed_missing_or_changed_pom_or_notice_rejected(self):
+        for kind in ('poms/','licenses/'):
+            for action in ('delete','tamper'):
+                files,meta,report=self.fixture();name=next(n for n in files if n.startswith(self.prefix+kind))
+                if action=='delete':files.pop(name)
+                else:files[name]+=b'changed'
+                with self.subTest(kind=kind,action=action),self.assertRaises(P.Rejected):self.verify(files)
+
+    def test_metadata_cannot_hide_or_fabricate_gap_status(self):
+        for change in ('complete','eligible','gaps','status'):
+            files,meta,report=self.fixture()
+            if change=='complete':meta['release_evidence_complete']=True
+            elif change=='eligible':meta['release_delivery_eligible']=False
+            elif change=='gaps':meta['maven_documented_gaps']=[]
+            else:meta['evidence']['maven']=P.GAPS.COMPLETE
+            files['release-metadata.json']=json.dumps(meta).encode()
+            with self.subTest(change=change),self.assertRaises(P.Rejected):self.verify(files)
+
 
 class ApplePackageTests(unittest.TestCase):
     def fixture(self):
@@ -462,6 +526,19 @@ class ExtraBoundaryTests(unittest.TestCase):
             with patch('sys.argv', ['release-admin.py', '--execute']):
                 A.main()
 
+    def test_new_maven_policy_and_pin_are_trusted_checkout_inputs(self):
+        from unittest.mock import patch, Mock
+        env={'GITHUB_EVENT_NAME':'push','GITHUB_REPOSITORY':P.REPO,'GITHUB_REF':'refs/heads/master','GITHUB_SHA':MASTER,'GITHUB_EVENT_PATH':'/fixture/event.json'}
+        event={'repository':{'full_name':P.REPO},'ref':'refs/heads/master','before':SHA,'after':MASTER}
+        plan={'approved':True,'administration_sha':'event'}
+        reads=lambda path,*a,**kw:json.dumps(event if str(path)=='/fixture/event.json' else plan)
+        with patch.dict(A.os.environ,env,clear=True),patch.object(Path,'read_text',reads),patch.object(A.subprocess,'check_output',return_value=MASTER+'\n'),patch.object(A.subprocess,'run',return_value=Mock(returncode=1)) as changed,patch.object(A,'GitHub') as api,patch('sys.argv',['release-admin.py']),self.assertRaisesRegex(P.Rejected,'TRUSTED_FILES_MODIFIED'):
+            A.main()
+        paths=changed.call_args.args[0]
+        self.assertIn('scripts/maven-gap-policy.py',paths)
+        self.assertIn('release/maven-license-gaps.json',paths)
+        api.assert_not_called()
+
     def test_required_workflow_cannot_be_omitted(self):
         class API:
             def pages(self, endpoint, key):
@@ -545,7 +622,7 @@ class ExtraBoundaryTests(unittest.TestCase):
             files['SHA256SUMS'] = listed
             write_zip(path, files, checksum=False)
             with self.assertRaisesRegex(P.Rejected, 'COVERAGE'):
-                P.verify_zip(path, 'android', SHA, '0.1.0')
+                P.verify_zip(path, 'windows-x86_64', SHA, '0.1.0')
 
 if __name__ == '__main__':
     unittest.main()

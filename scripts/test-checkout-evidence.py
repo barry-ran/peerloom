@@ -11,6 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class CheckoutEvidenceTests(unittest.TestCase):
     def test_autocrlf_preserves_upstream_lf_crlf_and_mixed_bytes(self):
         fixtures = {
+            'scripts/testdata/maven-gap-proof/poms/fixture.xml': b'Original POM LF\n',
+            'scripts/testdata/maven-gap-proof/licenses/fixture.txt': b'Original license CRLF\r\nCopyright\r\n',
+            'scripts/testdata/maven-gap-proof/licenses/mixed.txt': b'Original mixed\r\nNotice\n',
             'third_party/license-evidence/manifest.json': b'{"fixture": true}\n',
             'third_party/rust/nix-0.31.3/crate/LICENSE': b'Original upstream CRLF\r\nCopyright\r\n',
             'third_party/rust/rtc-0.21.1/crate/LICENSE': b'Original mixed\r\nSecond line\n',

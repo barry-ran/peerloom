@@ -280,7 +280,7 @@ def main():
     plan, commit = context(os.environ, event, plan)
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     P.require(head == commit, 'CHECKOUT_NOT_TRUSTED_MASTER')
-    clean = subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', 'scripts/release-admin.py', 'scripts/release-policy.py', 'scripts/license-gap-policy.py', 'release/approved-plan.json', '.github/workflows/release-admin.yml'], cwd=root, capture_output=True)
+    clean = subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', 'scripts/release-admin.py', 'scripts/release-policy.py', 'scripts/license-gap-policy.py', 'scripts/maven-gap-policy.py', 'release/maven-license-gaps.json', 'release/approved-plan.json', '.github/workflows/release-admin.yml'], cwd=root, capture_output=True)
     P.require(clean.returncode == 0, 'TRUSTED_FILES_MODIFIED')
     api = GitHub()
     verify_plan_changed(api, event, commit)

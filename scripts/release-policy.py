@@ -13,6 +13,9 @@ import zipfile
 _gap_spec = importlib.util.spec_from_file_location('license_gap_policy', Path(__file__).with_name('license-gap-policy.py'))
 GAPS = importlib.util.module_from_spec(_gap_spec)
 _gap_spec.loader.exec_module(GAPS)
+_maven_spec = importlib.util.spec_from_file_location('maven_gap_policy', Path(__file__).with_name('maven-gap-policy.py'))
+MAVEN = importlib.util.module_from_spec(_maven_spec)
+_maven_spec.loader.exec_module(MAVEN)
 
 REPO = 'barry-ran/peerloom'
 WORKFLOWS = {
@@ -98,12 +101,13 @@ def metadata(data, platform, commit, version):
     evidence = value.get('evidence')
     require(isinstance(evidence, dict) and set(evidence) == keys and
             evidence['cargo_go'] in (GAPS.COMPLETE, GAPS.DOCUMENTED) and
-            (platform != 'android' or evidence['maven'] == GAPS.COMPLETE), 'INCOMPLETE_EVIDENCE')
+            (platform != 'android' or evidence['maven'] in (GAPS.COMPLETE, GAPS.DOCUMENTED)), 'INCOMPLETE_EVIDENCE')
     complete = all(status == GAPS.COMPLETE for status in evidence.values())
     require(value.get('release_evidence_complete') is complete, 'MISREPRESENTED_EVIDENCE_COMPLETENESS')
     if not complete:
         require(value.get('release_delivery_eligible') is True and isinstance(value.get('documented_gaps'), list)
-                and value['documented_gaps'], 'DOCUMENTED_GAPS_REQUIRED')
+                and isinstance(value.get('maven_documented_gaps', []), list)
+                and (value['documented_gaps'] or value.get('maven_documented_gaps')), 'DOCUMENTED_GAPS_REQUIRED')
     return value
 
 def verify_linux_tar(stream, outer_hashes, meta):
@@ -192,7 +196,17 @@ def verify_zip(filename, platform, commit, version):
                         meta['evidence']['cargo_go'] == status and meta.get('documented_gaps', []) == gaps,
                         'UNBOUND_OR_UNKNOWN_LICENSE_GAPS')
             else:
-                require(report.get('evidence_status') == GAPS.COMPLETE, 'INCOMPLETE_EVIDENCE')
+                status, gaps = MAVEN.classify(report)
+                def read_maven_bound(name):
+                    name = prefix + '/' + path_name(name)
+                    require(name in entries and entries[name].file_size <= MAX_JSON, 'MAVEN_EVIDENCE_MISSING_OR_TOO_LARGE')
+                    return archive.read(entries[name])
+                try:
+                    MAVEN.verify_bound_files(report, read_maven_bound)
+                except ValueError as error:
+                    raise Rejected('MAVEN_EVIDENCE_BINDING_FAILED') from error
+                require(status in (GAPS.COMPLETE, GAPS.DOCUMENTED) and meta['evidence']['maven'] == status
+                        and meta.get('maven_documented_gaps', []) == gaps, 'UNBOUND_OR_UNKNOWN_MAVEN_GAPS')
 
         if platform == 'linux-x86_64':
             payload = 'peerloom-linux-x86_64.tar.gz'

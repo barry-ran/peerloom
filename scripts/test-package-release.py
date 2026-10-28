@@ -111,6 +111,33 @@ class PackageTests(unittest.TestCase):
         self.assertEqual((self.output/'third-party/cargo-go-all-lock-candidates/report.json').read_bytes(), raw)
         self.assertEqual(meta['legal_review'], 'not-performed')
 
+    def maven_proof(self):
+        import shutil
+        destination=self.root/'maven-proof'
+        shutil.copytree(Path(__file__).with_name('testdata')/'maven-gap-proof',destination)
+        (destination/'report.json').write_text(json.dumps(m.MAVEN.PINS['expected_report']),encoding='utf-8')
+        (destination/'sbom.cdx.json').write_text('{}',encoding='utf-8')
+        self.seal_maven(destination)
+        return destination
+
+    def seal_maven(self,directory):
+        (directory/'SHA256SUMS').write_text(''.join(f'{m.digest(p)}  {p.relative_to(directory).as_posix()}\n' for p in sorted(directory.rglob('*')) if p.is_file() and p.name!='SHA256SUMS'),encoding='utf-8')
+
+    def test_android_exact_documented_gaps_preserve_raw_incomplete_report(self):
+        proof=self.maven_proof();raw=(proof/'report.json').read_bytes()
+        with patch.dict(m.os.environ,{},clear=True):
+            m.finish(self.root,self.output,'android','a'*40,[(self.library,'library-release.aar'),(self.root/'LICENSE','include/device_sdk.h')],proof)
+        meta=json.loads((self.output/'release-metadata.json').read_text(encoding='utf-8'))
+        self.assertFalse(meta['release_evidence_complete']);self.assertTrue(meta['release_delivery_eligible'])
+        self.assertEqual(meta['evidence']['maven'],m.MAVEN.DOCUMENTED)
+        self.assertEqual(len(meta['maven_documented_gaps']),19)
+        self.assertEqual((self.output/'third-party/maven-configurations/report.json').read_bytes(),raw)
+
+    def test_android_missing_bound_pom_is_rejected_even_after_reseal(self):
+        proof=self.maven_proof();next((proof/'poms').glob('*.xml')).unlink();self.seal_maven(proof)
+        with patch.dict(m.os.environ,{},clear=True),self.assertRaises(m.PackageError):
+            m.finish(self.root,self.output,'android','a'*40,[(self.library,'library-release.aar')],proof)
+
     def test_symlink_input_rejected(self):
         self.library.unlink(); self.library.symlink_to(self.root/'LICENSE')
         with self.assertRaisesRegex(m.PackageError, 'SYMLINK'): self.finish()
@@ -213,7 +240,7 @@ class WindowsEncodingTests(unittest.TestCase):
                 encoding = 'cp1252'
             return original_open(file, mode, buffering, encoding, *args, **kwargs)
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(PackageTests)
-        for filename in ('test-package-third-party.py', 'test-third-party.py',
+        for filename in ('test-maven-gap-policy.py', 'test-package-third-party.py', 'test-third-party.py',
                          'test-windows-service-script.py'):
             spec = importlib.util.spec_from_file_location('encoding_fixture_' + filename,
                                                         Path(__file__).with_name(filename))

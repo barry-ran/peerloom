@@ -474,6 +474,11 @@ def render(records, blobs, issues, locks, supplement_hash=None):
 
 
 def main():
+    # Keep CLI status/error output independent of Windows legacy console locale.
+    # Evidence files remain original bytes; no lossy stdout/stderr fallback.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='strict')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default="dist/third-party", help="仓库 dist 内的新目录；拒绝覆盖")
     parser.add_argument("--supplement-dir", help="显式上游提交补充证据目录，默认不使用")

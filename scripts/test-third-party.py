@@ -24,6 +24,26 @@ class ThirdPartyTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
+    def test_cli_status_and_failure_keep_strict_utf8_with_cp1252_streams(self):
+        from unittest.mock import patch
+        for mode in ('complete','incomplete','error'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                for name in ('src/device-sdk/Cargo.toml','src/device-sdk/Cargo.lock','src/device-server/go.mod','src/device-server/go.sum'):
+                    path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'fixed lock')
+                out_bytes,err_bytes=io.BytesIO(),io.BytesIO()
+                out=io.TextIOWrapper(out_bytes,encoding='cp1252',errors='strict')
+                err=io.TextIOWrapper(err_bytes,encoding='cp1252',errors='strict')
+                try:
+                    with patch.object(gen,'__file__',str(root/'scripts/generate-third-party.py')),patch.object(gen.sys,'argv',['generate-third-party.py']),patch.object(gen.sys,'stdout',out),patch.object(gen.sys,'stderr',err),patch.object(gen,'collect',return_value=([],{},[]),side_effect=gen.EvidenceError('FIXTURE_ERROR') if mode=='error' else None),patch.object(gen,'render',return_value=({'report.json':b'{}'},mode=='incomplete')):
+                        code=gen.main()
+                    out.flush();err.flush()
+                    self.assertEqual(code,0 if mode=='complete' else 2)
+                    self.assertIn('生成失败：FIXTURE_ERROR' if mode=='error' else '第三方包 0', (err_bytes if mode=='error' else out_bytes).getvalue().decode('utf-8'))
+                    self.assertEqual(out.errors,'strict');self.assertEqual(err.errors,'strict')
+                finally:
+                    out.detach();err.detach()
+
     def crate(self, extra=None, manifest=None):
         path = self.root / "sample.crate"
         entries = {"demo-1.2.3/Cargo.toml": manifest or b'[package]\nname="demo"\nversion="1.2.3"\nlicense="MIT OR Apache-2.0"\n',
