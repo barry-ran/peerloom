@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -15,14 +16,26 @@ type Handler struct {
 	check    func(context.Context) error
 	stopping atomic.Bool
 	requests atomic.Uint64
+	api      http.Handler
 }
 
-func New(check func(context.Context) error) *Handler { return &Handler{check: check} }
-func (h *Handler) Stop()                             { h.stopping.Store(true) }
+func New(check func(context.Context) error, api ...http.Handler) *Handler {
+	h := &Handler{check: check}
+	if len(api) > 0 {
+		h.api = api[0]
+	}
+	return h
+}
+func (h *Handler) Stop() { h.stopping.Store(true) }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.requests.Add(1)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if strings.HasPrefix(r.URL.Path, "/v1/") && h.api != nil {
+		// Shutdown stops accepting connections; existing API requests may drain.
+		h.api.ServeHTTP(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
 		problem(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED")
