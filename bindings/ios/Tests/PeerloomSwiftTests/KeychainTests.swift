@@ -21,12 +21,24 @@ final class KeychainTests: XCTestCase {
     private var password: String!
     private var keychainPath: String!
     private var service: String!
+    private var previousInteractionAllowed: Bool?
     #endif
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("peerloom-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         scope = IdentityScope(serverOrigin: "https://example.invalid/", applicationID: UUID().uuidString.lowercased())
         #if os(macOS)
+        // TEST FIXTURE ONLY: the legacy file-Keychain shim does not reliably honor
+        // per-query SecItem no-UI attributes (Chromium FB16959400). Preserve and
+        // restore this test process's legacy interaction policy; production DP is unchanged.
+        var interactionAllowed = DarwinBoolean(false)
+        guard SecKeychainGetUserInteractionAllowed(&interactionAllowed) == errSecSuccess else {
+            throw StoreError.unavailable
+        }
+        previousInteractionAllowed = interactionAllowed.boolValue
+        guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else {
+            throw StoreError.unavailable
+        }
         password = UUID().uuidString
         keychainPath = directory.appendingPathComponent("isolated.keychain-db").path
         service = "io.peerloom.validation." + UUID().uuidString
@@ -40,6 +52,11 @@ final class KeychainTests: XCTestCase {
     }
     override func tearDownWithError() throws {
         #if os(macOS)
+        defer {
+            if let previousInteractionAllowed {
+                XCTAssertEqual(SecKeychainSetUserInteractionAllowed(previousInteractionAllowed), errSecSuccess)
+            }
+        }
         if let keychain { XCTAssertEqual(SecKeychainDelete(keychain), errSecSuccess) }
         #endif
         if let directory { try FileManager.default.removeItem(at: directory) }
@@ -92,15 +109,25 @@ final class KeychainTests: XCTestCase {
     }
     #if os(macOS)
     func testLockedKeychainDoesNotBecomeEmptyOrPrompt() async throws {
+        func phase(_ name: String) {
+            // Fixed diagnostic labels only; never keychain path, password, scope or credential.
+            FileHandle.standardError.write(Data(("[locked fixture] " + name + "\n").utf8))
+        }
         let store = store!, scope = scope!, value = identity()
+        phase("save begin")
         _ = try await onWorker { try store.perform(StorageRequest(operation: .save, scope: scope, expectedRevision: 0, identity: value)) }
+        phase("save complete; lock begin")
         XCTAssertEqual(SecKeychainLock(keychain), errSecSuccess)
+        phase("lock complete; locked read begin")
         do { _ = try await onWorker { try store.perform(StorageRequest(operation: .load, scope: scope)) }; XCTFail("locked Keychain accepted") }
         catch { XCTAssertEqual(error as? StoreError, .unavailable) }
+        phase("locked read returned; unlock begin")
         let status = password.withCString { SecKeychainUnlock(keychain, UInt32(password.utf8.count), $0, true) }
         XCTAssertEqual(status, errSecSuccess)
+        phase("unlock complete; verify begin")
         let unchanged = try await onWorker { try store.perform(StorageRequest(operation: .load, scope: scope)) }
         XCTAssertEqual(unchanged, StorageReply(revision: 1, identity: value))
+        phase("verify complete")
     }
     func testCrossProcessCASUsingIsolatedKeychain() async throws {
         guard let binary = ProcessInfo.processInfo.environment["PEERLOOM_STORE_PROBE_BIN"] else {
