@@ -94,7 +94,7 @@ flowchart TB
 
 服务端当前受测平台为 **Linux amd64**。运行包不需要源码或 Go / Rust / Node 编译环境，管理后台已内嵌；宿主仍需 Docker Engine、Docker Compose、Python 3.10+ 和基础镜像下载网络。**这不是完整离线镜像包，TURN 仍需独立部署。** 四类 SDK 包均不含服务端程序、数据库迁移或部署工具。
 
-部署时使用外层 ZIP 中保留 Unix 可执行位的安装载荷，并从**包内 `deploy/README.md`**开始。仓库对应模板为[服务端运行包说明](deploy/server/README.md)，生产网络、TLS、备份与升级要求见[部署指南](docs/部署指南.md)。不要把下面的源码开发命令当作运行包安装步骤。
+部署时使用外层 ZIP 中保留 Unix 可执行位的安装载荷，并从包内的 `deploy/README.md` 开始。仓库对应模板为[服务端运行包说明](deploy/server/README.md)，生产网络、TLS、备份与升级要求见[部署指南](docs/部署指南.md)。不要把下面的源码开发命令当作运行包安装步骤。
 
 ## 开始使用
 
@@ -113,7 +113,7 @@ docker compose -f deploy/compose.yaml up -d --wait device-server gateway
 curl --fail http://127.0.0.1:18080/readyz
 ```
 
-这会启动本机控制面，不会创建租户或管理员，也不会启动 TURN。管理后台默认关闭且无默认账号；继续按**包内 `deploy/README.md`**创建租户及管理员、配置精确管理 Origin 和 HTTPS/WSS。默认仅回环监听，不要直接将明文端口开放公网。升级不得覆盖既有秘密或数据库卷。
+这会启动本机控制面，不会创建租户或管理员，也不会启动 TURN。管理后台默认关闭且无默认账号；继续按包内的 `deploy/README.md` 创建租户及管理员、配置精确管理 Origin 和 HTTPS/WSS。默认仅回环监听，不要直接将明文端口开放公网。升级不得覆盖既有秘密或数据库卷。
 
 ### 我想接入 SDK
 
