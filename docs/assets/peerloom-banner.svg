@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">Peerloom · 连接设备，构建你的应用</title>
+  <desc id="desc">深蓝色背景上，青绿色与蓝色连线连接原生应用节点，代表经过授权的设备互联。</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101e36"/><stop offset="1" stop-color="#0b1425"/></linearGradient>
+    <linearGradient id="thread" x2="1" y2="0"><stop stop-color="#51e2c2"/><stop offset="1" stop-color="#829fff"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#386f85" stop-opacity=".30"/><stop offset="1" stop-color="#386f85" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect x="1" y="1" width="1198" height="358" rx="24" fill="url(#bg)" stroke="#33445e"/>
+  <ellipse cx="918" cy="180" rx="310" ry="180" fill="url(#glow)"/>
+  <g fill="none" stroke="#253b56" stroke-width="1">
+    <path d="M680 40v280m80-280v280m80-280v280m80-280v280m80-280v280m80-280v280M640 60h500M640 140h500M640 220h500M640 300h500"/>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <rect x="60" y="54" width="132" height="27" rx="13.5" fill="#173c42" stroke="#2d6a66"/>
+    <circle cx="76" cy="67.5" r="3" fill="#67e5c4"/>
+    <text x="87" y="72" font-size="11" font-weight="700" letter-spacing="1.5" fill="#a4f2de">PEER TO PEER</text>
+    <text x="56" y="166" font-size="76" font-weight="700" letter-spacing="-3" fill="#f1f6ff">Peerloom</text>
+    <text x="60" y="215" font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="26" font-weight="500" letter-spacing="2" fill="#d7e3f6">连接设备，构建你的应用</text>
+    <text x="61" y="277" font-size="13" letter-spacing="2" fill="#91a9c5">NATIVE SDK</text>
+    <circle cx="168" cy="272" r="2" fill="#51e2c2"/>
+    <text x="184" y="277" font-size="13" letter-spacing="2" fill="#91a9c5">WEBRTC</text>
+    <circle cx="271" cy="272" r="2" fill="#51e2c2"/>
+    <text x="287" y="277" font-size="13" letter-spacing="2" fill="#91a9c5">GO CONTROL PLANE</text>
+  </g>
+  <g fill="none" stroke-linecap="round">
+    <path d="M734 104C817 104 820 256 912 256S998 104 1070 104" stroke="#284859" stroke-width="15"/>
+    <path d="M734 256C817 256 820 104 912 104S998 256 1070 256" stroke="#263d62" stroke-width="15"/>
+    <path d="M734 104C817 104 820 256 912 256S998 104 1070 104" stroke="url(#thread)" stroke-width="3"/>
+    <path d="M734 256C817 256 820 104 912 104S998 256 1070 256" stroke="url(#thread)" stroke-width="3"/>
+    <path d="M734 104L734 256M1070 104L1070 256" stroke="#6581a3" stroke-width="1.5" stroke-dasharray="4 7"/>
+  </g>
+  <g fill="#13283e" stroke="#7fb3be" stroke-width="1.5">
+    <rect x="711" y="81" width="46" height="46" rx="13"/>
+    <rect x="711" y="233" width="46" height="46" rx="13"/>
+    <rect x="1047" y="81" width="46" height="46" rx="13"/>
+    <rect x="1047" y="233" width="46" height="46" rx="13"/>
+  </g>
+  <g fill="none" stroke="#b5eedf" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="723" y="95" width="22" height="14" rx="2"/><path d="M729 114h10m-5-5v5"/>
+    <rect x="727" y="245" width="14" height="22" rx="3"/><path d="M732 263h4"/>
+    <rect x="1063" y="93" width="14" height="22" rx="3"/><path d="M1068 111h4"/>
+    <rect x="1059" y="247" width="22" height="14" rx="2"/><path d="M1065 266h10m-5-5v5"/>
+  </g>
+  <circle cx="912" cy="104" r="7" fill="#829fff" stroke="#152b43" stroke-width="4"/>
+  <circle cx="912" cy="256" r="7" fill="#51e2c2" stroke="#152b43" stroke-width="4"/>
+</svg>
