@@ -518,10 +518,11 @@ impl Instance {
                 }
                 let read: Read = serde_json::from_slice(input).map_err(|_| INVALID)?;
                 reply_bytes = read.max_bytes;
-                if ops
-                    .values()
-                    .any(|op| op.read == Some((connection, channel)))
-                {
+                // Terminal reads retain their byte credit through the callback borrow, but
+                // no longer own the read-admission fence. A callback may submit the next read.
+                if ops.values().any(|op| {
+                    op.read == Some((connection, channel)) && op.phase.load(Ordering::Acquire) != 3
+                }) {
                     return Err(BUSY);
                 }
                 if !(1..=65536).contains(&read.max_bytes) {
@@ -885,6 +886,81 @@ mod reset_tests {
         drop(events);
         drop(instance);
         assert_eq!(budget.snapshot(), (total, 0, 0));
+    }
+    #[test]
+    fn terminal_read_allows_reentry_without_releasing_borrowed_credit() {
+        for status in [OK, CANCELLED, UNKNOWN] {
+            let (instance, commands, callbacks) = setup();
+            let instance = Arc::new(instance);
+            let (connection, channel) = {
+                let mut handles = instance.handles.lock().unwrap();
+                let allocate = || next_id().map_err(|_| HandleError::Allocator);
+                let connection = handles.add_connection(Authority::Test, allocate).unwrap();
+                let channel = handles
+                    .add_channel(
+                        connection,
+                        ChannelKind::ReliableStream,
+                        Authority::Test,
+                        allocate,
+                    )
+                    .unwrap();
+                (connection, channel)
+            };
+            let read = || instance.submit_channel(2, connection, channel, br#"{"max_bytes":4096}"#);
+            let first = read().unwrap();
+            assert_eq!(read(), Err(BUSY));
+            let operation = commands.try_recv().unwrap();
+            if status == CANCELLED {
+                operation.phase.store(2, Ordering::Release);
+                // Cancellation alone does not retire native work or its admission fence.
+                assert_eq!(read(), Err(BUSY));
+                assert!(CompletionGuard::start(instance.clone(), operation).is_none());
+            } else {
+                let guard = CompletionGuard::start(instance.clone(), operation).unwrap();
+                assert_eq!(read(), Err(BUSY));
+                if status == OK {
+                    let mut guard = guard;
+                    let mut payload = guard.take_read_buffer();
+                    payload.truncate(3);
+                    payload.copy_from_slice(&[1, 2, 3]);
+                    guard.finish(OK, payload, None);
+                } else {
+                    drop(guard); // Abort/panic terminal is UNKNOWN, not a fictitious cancellation.
+                }
+            }
+            let event = callbacks.try_recv().unwrap();
+            assert_eq!((event.request, event.status), (first, status));
+            let borrowed_used = instance.budget.snapshot().1;
+            assert!(instance.operations.lock().unwrap().get(&first).is_some());
+            // Synchronous callback reentry, before the borrowed event/payload is released.
+            let second = read().unwrap();
+            assert_ne!(first, second);
+            assert_eq!(instance.operations.lock().unwrap().len(), 2);
+            let both_used = instance.budget.snapshot().1;
+            assert!(both_used > borrowed_used);
+            if status == OK {
+                assert_eq!(event.payload, [1, 2, 3]);
+            }
+            assert_eq!(read(), Err(BUSY));
+            instance.release_credit(event);
+            assert!(instance.budget.snapshot().1 < both_used);
+            assert!(!instance.operations.lock().unwrap().get(&first).is_some());
+            assert!(instance.operations.lock().unwrap().get(&second).is_some());
+            assert_eq!(read(), Err(BUSY)); // Old credit cleanup never clears the new read.
+            instance.stop();
+            assert_eq!(read(), Err(CLOSED));
+            instance.finish(commands.try_recv().unwrap(), CLOSED, Vec::new());
+            let event = callbacks.try_recv().unwrap();
+            assert_eq!((event.request, event.status), (second, CLOSED));
+            instance.release_credit(event);
+            assert!(callbacks.try_recv().is_err()); // Exactly one terminal per request.
+            assert!(instance.operations.lock().unwrap().is_empty());
+            let budget = instance.budget.clone();
+            drop(instance);
+            drop(commands);
+            drop(callbacks);
+            assert_eq!(budget.snapshot().1, 0);
+        }
     }
     #[test]
     fn five_hundred_read_permits_survive_shrink_and_data_exhaustion() {
