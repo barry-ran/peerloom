@@ -319,7 +319,7 @@ final class NativeCoreTests: XCTestCase {
         transient = nil
         for _ in 0..<100 {
             if weakCore == nil { break }
-            try await Task.sleep(for: .milliseconds(10))
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTAssertNil(weakCore, "completed shared close task retained its core")
     }
