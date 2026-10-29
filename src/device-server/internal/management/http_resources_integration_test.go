@@ -58,7 +58,7 @@ func TestHTTPPartialPatchAndPostCommitNotification(t *testing.T) {
 		t.Fatalf("application patch status=%d", response.Code)
 	}
 	var change ApplicationChange
-	if err := json.Unmarshal(response.Body.Bytes(), &change); err != nil || !change.Application.Enabled || change.Application.MaxConnections != 8 {
+	if err := json.Unmarshal(response.Body.Bytes(), &change); err != nil || !change.Application.Enabled || change.Application.MaxConnections != -1 {
 		t.Fatalf("application patch replaced omitted defaults: %+v %v", change, err)
 	}
 	session, err := pair.auth.Request(f.ctx, pair.actors[0], pair.actors[1].ID, "00000000-0000-0000-0000-000000000007")

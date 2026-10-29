@@ -145,13 +145,17 @@ async fn policy_close_stops_instead_of_stealing_fence_back() {
     server.await.unwrap();
 }
 #[tokio::test]
-async fn capacity_above_bounded_multiconnection_limit_is_rejected() {
-    let (_listener, mut config, store) = setup().await;
-    config.max_connections = 33;
-    assert!(matches!(
-        DeviceSdk::load(config, store).await,
-        Err(SdkError::InvalidConfiguration)
-    ));
+async fn unlimited_and_large_positive_capacity_do_not_preallocate_by_count() {
+    for count in [0, 500, usize::MAX] {
+        let (listener, mut config, store) = setup().await;
+        config.max_connections = count;
+        let server = tokio::spawn(async move {
+            serve_self(&listener).await;
+        });
+        let sdk = DeviceSdk::load(config, store).await.unwrap();
+        sdk.close().await;
+        server.await.unwrap();
+    }
 }
 #[tokio::test]
 async fn lost_request_response_does_not_leave_permanent_busy() {
@@ -192,7 +196,8 @@ fn pending(session: &str, seq: u64) -> serde_json::Value {
 }
 #[tokio::test]
 async fn busy_rejection_does_not_echo_terminated_forever() {
-    let (listener, config, store) = setup().await;
+    let (listener, mut config, store) = setup().await;
+    config.max_connections = 1;
     let a = uuid::Uuid::new_v4().to_string();
     let b = uuid::Uuid::new_v4().to_string();
     let server_a = a.clone();
@@ -204,13 +209,23 @@ async fn busy_rejection_does_not_echo_terminated_forever() {
             .send(Message::Text(pending(&server_a, 1).to_string().into()))
             .await
             .unwrap();
+        let request: serde_json::Value =
+            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(request["type"], "sync.request");
+        let mut snapshot = pending(&server_a, 2);
+        snapshot["type"] = json!("sync.snapshot");
+        snapshot["request_id"] = request["id"].clone();
         socket
-            .send(Message::Text(pending(&b, 2).to_string().into()))
+            .send(Message::Text(snapshot.to_string().into()))
+            .await
+            .unwrap();
+        socket
+            .send(Message::Text(pending(&b, 3).to_string().into()))
             .await
             .unwrap();
         let rejected = socket.next().await.unwrap().unwrap();
-        assert!(rejected.to_text().unwrap().contains("session.reject"));
-        let mut closed = pending(&b, 3);
+        assert!(rejected.to_text().unwrap().contains("session.terminate"));
+        let mut closed = pending(&b, 4);
         closed["type"] = json!("session.terminated");
         closed["payload"]["state"] = json!("closed");
         socket

@@ -1,4 +1,7 @@
-//! Peerloom 传输无关的领域类型。尚不提供 REST/WSS 编解码或网络 SDK。
+/// Largest negotiation generation exactly representable by all JSON clients.
+pub const MAX_NEGOTIATION_GENERATION: u64 = 9_007_199_254_740_991;
+
+// Peerloom 传输无关的领域类型。
 
 /// 连接路径策略；自动模式允许直接连接及 TURN 兜底。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

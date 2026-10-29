@@ -1,0 +1,14 @@
+ALTER TABLE applications DROP CONSTRAINT applications_max_connections_check;
+ALTER TABLE applications ADD CONSTRAINT applications_max_connections_check CHECK (max_connections >= -1);
+ALTER TABLE applications ALTER COLUMN max_connections SET DEFAULT -1;
+ALTER TABLE devices DROP CONSTRAINT devices_max_connections_check;
+ALTER TABLE devices ADD CONSTRAINT devices_max_connections_check CHECK (max_connections >= -1);
+ALTER TABLE connection_grants DROP CONSTRAINT connection_grants_max_sessions_check;
+ALTER TABLE connection_grants ADD CONSTRAINT connection_grants_max_sessions_check CHECK (max_sessions = -1 OR max_sessions > 0);
+ALTER TABLE connection_grants ALTER COLUMN max_sessions SET DEFAULT -1;
+ALTER TABLE sessions DROP CONSTRAINT sessions_negotiation_generation_check;
+ALTER TABLE sessions ALTER COLUMN negotiation_generation TYPE bigint;
+ALTER TABLE sessions ADD CONSTRAINT sessions_negotiation_generation_check CHECK (negotiation_generation BETWEEN 1 AND 9007199254740991);
+ALTER TABLE relay_issuances DROP CONSTRAINT relay_issuances_negotiation_generation_check;
+ALTER TABLE relay_issuances ALTER COLUMN negotiation_generation TYPE bigint;
+ALTER TABLE relay_issuances ADD CONSTRAINT relay_issuances_negotiation_generation_check CHECK (negotiation_generation BETWEEN 1 AND 9007199254740991);

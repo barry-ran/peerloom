@@ -206,10 +206,23 @@ async fn slow_event_consumer_closes_instead_of_unbounded_queue() {
                 .await
                 .unwrap();
         }
-        let closed = tokio::time::timeout(Duration::from_secs(3), socket.next())
-            .await
-            .unwrap();
-        assert!(matches!(closed, Some(Ok(Message::Close(_)))));
+        let heartbeats = tokio::time::timeout(Duration::from_secs(4), async {
+            let mut heartbeats = 0;
+            loop {
+                match socket.next().await.unwrap().unwrap() {
+                    Message::Close(_) => break heartbeats,
+                    Message::Text(text) => {
+                        let event: Envelope = serde_json::from_str(&text).unwrap();
+                        assert_eq!(event.kind, "presence.heartbeat");
+                        heartbeats += 1;
+                    }
+                    _ => panic!("unexpected frame while bounded receiver is stalled"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(heartbeats >= 1);
         finished.send(()).unwrap();
     });
     let mut client = SignalClient::connect(&identity, &SecretString::new("dev_test".into()))
@@ -220,6 +233,66 @@ async fn slow_event_consumer_closes_instead_of_unbounded_queue() {
         assert_eq!(client.receive().await.unwrap().kind, "session.updated");
     }
     assert_eq!(client.receive().await.unwrap_err(), SignalError::Closed);
+    client.close().await;
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn full_incoming_queue_preserves_order_and_outgoing_command_progress() {
+    let (listener, identity) = listener().await;
+    let (sent, ready) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let hello: Envelope =
+            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        let mut message = ack(&hello);
+        socket
+            .send(Message::Text(message.to_string().into()))
+            .await
+            .unwrap();
+        message["type"] = json!("session.pending");
+        for seq in 1..=128 {
+            message["seq"] = json!(seq);
+            socket
+                .send(Message::Text(message.to_string().into()))
+                .await
+                .unwrap();
+        }
+        sent.send(()).unwrap();
+        let command: Envelope =
+            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(command.kind, "session.request");
+        assert!(matches!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Close(_)
+        ));
+    });
+    let mut client = SignalClient::connect(&identity, &SecretString::new("dev_test".into()))
+        .await
+        .unwrap();
+    ready.await.unwrap();
+    // Let the fixed 32-slot receiver fill without consuming it. A pending event
+    // must not block the same driver's independent outbound-command branch.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        client.send(
+            "session.request",
+            None,
+            json!({"target_device_id":uuid::Uuid::new_v4().to_string()}),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    for seq in 1..=128 {
+        let message = tokio::time::timeout(Duration::from_secs(1), client.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.seq, seq);
+    }
     client.close().await;
     task.await.unwrap();
 }

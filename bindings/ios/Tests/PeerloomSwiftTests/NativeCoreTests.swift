@@ -81,6 +81,22 @@ final class MockNative: NativeAPI, @unchecked Sendable {
     func storage(_ sdk: UInt64, request: UInt64, status: UInt32, data: Data) -> UInt32 { 0 }
 }
 final class NativeCoreTests: XCTestCase {
+    func testOptionalCapacityDefaultsAndLargeValuesEncodeWithoutClamping() throws {
+        var config = PeerloomConfiguration(origin: "https://localhost", applicationID: UUID().uuidString)
+        XCTAssertEqual(config.maxConnections, 0)
+        XCTAssertEqual(config.maxChannelsPerConnection, 0)
+        XCTAssertEqual(config.maxChannelCreationsPerConnection, 0)
+        for count in [0, 500] {
+            config.maxConnections = count
+            config.maxChannelsPerConnection = count
+            config.maxChannelCreationsPerConnection = count
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
+            XCTAssertEqual(json["max_connections"] as? Int, count)
+            XCTAssertEqual(json["max_channels_per_connection"] as? Int, count)
+            XCTAssertEqual(json["max_channel_creations_per_connection"] as? Int, count)
+        }
+    }
+
     func testRetainedEventRechecksAtSynchronousConsumption() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
         try core.create(Data())

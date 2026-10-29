@@ -90,10 +90,13 @@ uint64_t dp_capabilities(void);
  * {"abi_version":1,"origin":"https://...","application_id":"UUID",
  *  "storage":"external"|"memory","development_loopback":false,"auto_reconnect":true}
  * HTTPS/WSS required except explicit dev IP-literal loopback. Memory is not durable.
- * Max16 instances. Optional max_connections=1..32 (default1),
- * max_channels_per_connection=1..32 active channels including the default reliable
- * message channel (default1); max_channel_creations_per_connection=active..128
- * is the separate lifetime DCEP creation budget (default8), not refunded on close.
+ * No fixed SDK-instance ceiling. Optional max_connections,
+ * max_channels_per_connection (including the default reliable message channel), and
+ * max_channel_creations_per_connection default to 0: no application count cap.
+ * Positive values impose explicit limits; if both channel limits are positive,
+ * the active limit must not exceed the lifetime creation budget (not refunded on close).
+ * Protocol stream-ID limits, resource exhaustion, bounded queues and the separate
+ * 32 admitted-operation credits still apply. Unlimited does not preallocate capacity.
  * Inputs copied before return; non-null pointers must be valid/aligned as appropriate.
  * Immediate error => output0, no asynchronous completion. No callbacks on create failure.
  * On success, callback code must remain loaded until release succeeds.

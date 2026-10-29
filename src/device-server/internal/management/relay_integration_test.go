@@ -74,7 +74,11 @@ func TestRelayDurableReuseLimitsAndRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := relay.NewService(f.pool, issuer, pair.auth, relay.DefaultLimits())
+	counted := relay.DefaultLimits()
+	counted.TenantPerMinute = 1024
+	counted.DevicePerMinute = 128
+	counted.SessionPerMinute = 16
+	service, err := relay.NewService(f.pool, issuer, pair.auth, counted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +122,7 @@ func TestRelayDurableReuseLimitsAndRevocation(t *testing.T) {
 	if receipts != 1 || charged != 3 || audits != 1 {
 		t.Fatalf("receipt/quota/audit: %d/%d/%d", receipts, charged, audits)
 	}
-	restarted, err := relay.NewService(f.pool, issuer, pair.auth, relay.DefaultLimits())
+	restarted, err := relay.NewService(f.pool, issuer, pair.auth, counted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,5 +353,36 @@ func TestRelayExpiryDuringIssuanceRollsBackAllWrites(t *testing.T) {
 				t.Fatalf("expired transaction left receipt/quota/audit records: %d %v", records, err)
 			}
 		})
+	}
+}
+
+func TestRelayUnlimitedDefaultsDoNotChargeQuotaWindows(t *testing.T) {
+	f := setup(t)
+	issuer := setupRelay(t, f)
+	pair := makePair(t, f)
+	session, err := pair.auth.Request(f.ctx, pair.actors[0], pair.actors[1].ID, "00000000-0000-0000-0000-000000000092")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.service.CreateRelayNode(f.ctx, f.principal, relayInput(), "relay-unlimited"); err != nil {
+		t.Fatal(err)
+	}
+	service, err := relay.NewService(f.pool, issuer, pair.auth, relay.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := service.IssueForSession(f.ctx, pair.actors[0], session.ID)
+	if err != nil || len(issued.ICEServers) != 1 {
+		t.Fatalf("unlimited issuance: %v", err)
+	}
+	var windows, receipts int
+	if err = f.pool.QueryRow(f.ctx, "SELECT count(*) FROM relay_issuance_windows").Scan(&windows); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.pool.QueryRow(f.ctx, "SELECT count(*) FROM relay_issuances").Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if windows != 0 || receipts != 1 {
+		t.Fatalf("quota disabled must retain issuance receipt: windows=%d receipts=%d", windows, receipts)
 	}
 }

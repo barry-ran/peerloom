@@ -7,6 +7,8 @@ python3 scripts/test-dev-secrets.py
 python3 scripts/test-compose-script.py
 python3 scripts/test-control-recovery-script.py
 python3 scripts/test-lifecycle-script.py
+python3 scripts/test-capacity-controller.py
+python3 scripts/test-capacity-ci.py
 python3 scripts/test-multiconnection-fixture.py
 python3 scripts/test-managed-relay-script.py
 python3 scripts/test-managed-relay-helper.py

@@ -91,7 +91,9 @@ class ContractTests(unittest.TestCase):
         connected = dict(offer, type='session.connected', payload={})
         del connected['negotiation_generation']
         check.validate(connected)  # Legacy omission means generation one, not current.
-        self.assertFalse(check.is_valid(dict(offer, negotiation_generation=33)))
+        check.validate(dict(offer, negotiation_generation=33))
+        check.validate(dict(offer, negotiation_generation=9007199254740991))
+        self.assertFalse(check.is_valid(dict(offer, negotiation_generation=9007199254740992)))
         self.assertFalse(check.is_valid(dict(connected, type='session.reconnecting')))
         cases = [dict(hello, fencing_token='f' * 16), dict(offer, seq=-1),
                  dict(offer, v=2), dict(offer, type='unknown'),
@@ -215,16 +217,16 @@ class ContractTests(unittest.TestCase):
         device = self.management_validator('ManagementDevicePatch')
         app = self.management_validator('ManagementApplicationPatch')
         for value in ({'connectable': False}, {'max_connections': 0},
-                      {'max_connections': None}, {'metadata': {}}, {'tags': {'role': 'sensor'}}):
+                      {'max_connections': -1}, {'max_connections': 1025}, {'max_connections': None}, {'metadata': {}}, {'tags': {'role': 'sensor'}}):
             device.validate(value)
         for value in ({}, {'status': 'active'}, {'tenant_id': UUID},
                       {'connectable': None}, {'metadata': {'nested': {}}},
-                      {'max_connections': -1}, {'max_connections': 1025}):
+                      {'max_connections': -2}, {'max_connections': 2147483648}):
             self.assertFalse(device.is_valid(value))
-        for value in ({'enabled': False}, {'max_connections': 0}, {'name': '新名称'}, {'registration_mode': 'direct'}, {'registration_mode': 'grant'}, {'registration_mode': None, 'enabled': True}):
+        for value in ({'enabled': False}, {'max_connections': -1}, {'max_connections': 1025}, {'max_connections': 0}, {'name': '新名称'}, {'registration_mode': 'direct'}, {'registration_mode': 'grant'}, {'registration_mode': None, 'enabled': True}):
             app.validate(value)
         for value in ({}, {'enabled': None}, {'registration_mode': 'both'}, {'registration_mode': None},
-                      {'name': ''}, {'max_connections': 1025}):
+                      {'name': ''}, {'max_connections': -2}, {'max_connections': 2147483648}):
             self.assertFalse(app.is_valid(value))
 
     def test_management_grant_and_properties_bounds(self):
@@ -244,7 +246,9 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(grant.is_valid(dict(absolute, expires_in_seconds=60)))
         self.assertFalse(grant.is_valid(dict(absolute, expires_at='not-time')))
         self.assertFalse(grant.is_valid({key: value for key, value in absolute.items() if key != 'expires_at'}))
-        for value in (dict(valid, expires_in_seconds=0), dict(valid, max_sessions=1025),
+        for cap in (-1, 0, 1025, 2147483647):
+            grant.validate(dict(valid, max_sessions=cap))
+        for value in (dict(valid, expires_in_seconds=0), dict(valid, max_sessions=-2), dict(valid, max_sessions=2147483648),
                       dict(valid, expiry_action='ignore'), dict(valid, tenant_id=UUID)):
             self.assertFalse(grant.is_valid(value))
         properties = self.management_validator('ManagementProperties')
@@ -300,7 +304,9 @@ class ContractTests(unittest.TestCase):
         response = self.management_validator('SessionICEServers')
         response.validate({'session_id': UUID, 'negotiation_generation': 1, 'ice_servers': []})
         response.validate({'session_id': UUID, 'negotiation_generation': 2, 'ice_servers': []})
-        for generation in (0, 33):
+        for generation in (33, 9007199254740991):
+            response.validate({'session_id': UUID, 'negotiation_generation': generation, 'ice_servers': []})
+        for generation in (0, 9007199254740992):
             self.assertFalse(response.is_valid({'session_id': UUID, 'negotiation_generation': generation, 'ice_servers': []}))
 
 

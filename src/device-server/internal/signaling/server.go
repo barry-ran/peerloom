@@ -33,6 +33,7 @@ type peer struct {
 	conn   *websocket.Conn
 	out    chan Envelope
 	cancel context.CancelFunc
+	done   <-chan struct{}
 }
 type Server struct {
 	closing     sync.WaitGroup
@@ -45,11 +46,13 @@ type Server struct {
 	mu          sync.Mutex
 	peers       map[string]*peer
 	stopped     bool
-	slots       chan struct{}
+	options     Options
+	admitted    int
 }
 
 func New(auth Authenticator, store presence.Store, dispatch Dispatch) *Server {
-	return &Server{auth: auth, presence: store, dispatch: dispatch, peers: make(map[string]*peer), connections: make(map[*websocket.Conn]context.CancelFunc), slots: make(chan struct{}, 256)}
+	server, _ := NewWithOptions(auth, store, dispatch, Options{})
+	return server
 }
 func peerKey(d identity.Device) string { return d.TenantID + ":" + d.ID }
 func uuid() string {
@@ -68,13 +71,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "native signaling endpoint", http.StatusBadRequest)
 		return
 	}
-	select {
-	case s.slots <- struct{}{}:
-		defer func() { <-s.slots }()
-	default:
-		http.Error(w, "capacity unavailable", 503)
+	s.mu.Lock()
+	if s.options.MaxConnections > 0 && s.admitted >= s.options.MaxConnections {
+		s.mu.Unlock()
+		http.Error(w, "capacity unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	s.admitted++
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.admitted--; s.mu.Unlock() }()
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if token == r.Header.Get("Authorization") || !strings.HasPrefix(token, "dev_") {
 		http.Error(w, "unauthorized", 401)
@@ -155,7 +160,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer releaseCancel()
 		_ = s.presence.Release(releaseCtx, device.TenantID, device.ID, lease)
 	}()
-	p := &peer{token: token, device: device, lease: lease, conn: conn, out: make(chan Envelope, 32), cancel: cancel}
+	p := &peer{token: token, device: device, lease: lease, conn: conn, out: make(chan Envelope, 32), cancel: cancel, done: ctx.Done()}
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
@@ -214,7 +219,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			count = 0
 		}
 		count++
-		if count > 60 {
+		if s.options.FramesPerSecond > 0 && count > s.options.FramesPerSecond {
 			conn.Close(websocket.StatusPolicyViolation, "rate exceeded")
 			return
 		}
@@ -324,10 +329,14 @@ func (s *Server) deliver(tenant, device string, e Envelope) bool {
 	if p == nil {
 		return false
 	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
 	select {
 	case p.out <- e:
 		return true
-	default:
+	case <-p.done:
+		return false
+	case <-timer.C:
 		p.cancel()
 		p.conn.CloseNow()
 		return false

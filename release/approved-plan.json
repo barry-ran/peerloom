@@ -1,35 +1,7 @@
 {
   "format_version": 1,
   "repository": "barry-ran/peerloom",
-  "approved": true,
+  "approved": false,
   "administration_sha": "event",
-  "operation": "release",
-  "release_sha": "489294528319223e4f38a5ec80a2d0192783988e",
-  "tag": "v0.1.1",
-  "prerelease": false,
-  "final_scope_accepted": true,
-  "artifacts": {
-    "server-linux-amd64": {
-      "id": 12869218972,
-      "sha256": "6e61ea8a21336acf63a72f58c56123e242a6a38ba1dc33f568f3cc4721032224"
-    },
-    "linux-x86_64": {
-      "id": 12869433430,
-      "sha256": "259200351d6368bacab51b1fd547efc52d9e89be655116bde2d0573636655b06"
-    },
-    "windows-x86_64": {
-      "id": 12869496975,
-      "sha256": "1ee63e5c8849e28b176d3d97b19ffd8f167d42f9235a5c029a0dea65cae5eeaa"
-    },
-    "android": {
-      "id": 12869520717,
-      "sha256": "73dec5e2b05884709d9fb0c83c447c3e3f7152176968523252977f812216f634"
-    },
-    "apple": {
-      "id": 12870691856,
-      "sha256": "dc65d612082eca02bfd7078ae2c2367b9a79b27e303828d30059f876a663a173"
-    }
-  },
-  "notes": "标签指向本次受审发布管理提交，包含更新后的 README 与发布流程；以下五个安装包仍构建自已验证源码 `489294528319223e4f38a5ec80a2d0192783988e`，未重新构建或改写包内来源。标签源码与产物源码仅存在受审文档及发布管理差异。\n\n# Peerloom v0.1.1\n\n本版本将服务端部署与客户端 SDK 独立打包，保留 v0.1.0 原资产，不覆盖旧版本。设备注册、租户授权、三类通道、平台存储及管理功能保持原接口。\n\n## 选择下载包\n\n- **部署服务端：** `peerloom-server-v0.1.1-linux-amd64.zip`。内含 5 个 Linux amd64 程序、9 对数据库迁移、运行时 Dockerfile/Compose、TLS 网关、私密初始化脚本及部署说明。使用其中保留可执行位的 `peerloom-server-linux-amd64.tar.gz`，从包内 `deploy/README.md` 开始。\n- **集成客户端：** `peerloom-sdk-v0.1.1-linux-x86_64.zip`、`peerloom-sdk-v0.1.1-windows-x86_64.zip`、`peerloom-sdk-v0.1.1-android.zip`、`peerloom-sdk-v0.1.1-apple.zip`。SDK 不再夹带服务端程序、SQL 或部署配置；Apple 包仍含三变体五架构 XCFramework。\n\n各包带源码提交/版本元数据、完整校验和及第三方证据。服务端安装不需要项目源码、Go、Rust 或 Node；宿主仍须准备 Linux amd64、Docker Engine、Docker Compose、Python 3，并联网拉取固定官方镜像。本包不是离线镜像全集，TURN 仍是明确的外部服务依赖。\n\n## 部署与验证边界\n\n- 默认只监听回环地址，无默认管理员；须显式创建租户/管理员并配置 TLS。初始化拒绝覆盖已有秘密；TLS 原私钥不改权限，只生成新私有目录内的只读挂载副本。\n- 服务端仅包验收覆盖真实 9 版迁移、HTTPS 管理登录/CSRF、认证 WSS、非 root 单文件秘密只读、宿主其他 UID 拒读及受控出站 TLS 正负验证。受控网络测试不代表所有公网 Webhook/NAT 场景。\n- 自动分支删除已移除；工作流保留日常测试、构建和受审发布。\n- macOS 使用隔离 DEBUG 文件 Keychain，iOS Simulator 验证真实 DP Keychain 服务链；生产签名/entitlement 宿主和物理设备未全面验证。产物未签名，unsigned device 构建不等于真机验收。\n- Web SDK 仍延期；不提供屏幕采集、编码、输入注入或业务协议。公网部署、长期后台/休眠切网、生产容量、证书运维、RPO/RTO 仍需目标环境验收，不提供生产 SLA。\n- 原创代码为 MIT；保留第三方声明、版本、SBOM、已收集原文及明确的 4 项 Cargo/19 项 Maven 许可文本缺项。原报告仍 incomplete，尚未经法务审核，不能视为权利清关。\n\n发布源码：[`489294528319223e4f38a5ec80a2d0192783988e`](https://github.com/barry-ran/peerloom/tree/489294528319223e4f38a5ec80a2d0192783988e)。同一源码的 Linux、Windows、Android、Apple 原生门禁及管理后台门禁逐项核验，五份实际 ZIP 分别验证完整性、源码绑定与产品边界。\n\n说明见[服务端运行包](https://github.com/barry-ran/peerloom/blob/489294528319223e4f38a5ec80a2d0192783988e/deploy/server/README.md)、[部署指南](https://github.com/barry-ran/peerloom/blob/489294528319223e4f38a5ec80a2d0192783988e/docs/部署指南.md)、[用户使用说明](https://github.com/barry-ran/peerloom/blob/489294528319223e4f38a5ec80a2d0192783988e/docs/用户使用说明.md)。校验和用于字节完整性，不替代可信来源或生产代码签名。\n",
-  "tag_sha": "event"
+  "operation": "release"
 }

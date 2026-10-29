@@ -438,6 +438,18 @@ class GatesTests(unittest.TestCase):
             with self.assertRaises(P.Rejected):
                 P.verify_run(run, jobs[:-1], workflow, SHA)
 
+    def test_capacity_job_is_mandatory_for_product_release(self):
+        run, jobs = self.run_fixture('ci.yml')
+        self.assertEqual(P.WORKFLOWS['ci.yml'], {'verify', 'capacity-500'})
+        P.verify_run(run, jobs, 'ci.yml', SHA)
+        for conclusion in ('missing', 'failure', 'skipped'):
+            changed = [dict(job) for job in jobs if job['name'] != 'capacity-500']
+            if conclusion != 'missing':
+                changed.append({'name': 'capacity-500', 'status': 'completed',
+                                'conclusion': conclusion, 'steps': [{'conclusion': conclusion}]})
+            with self.subTest(conclusion=conclusion), self.assertRaises(P.Rejected):
+                P.verify_run(run, changed, 'ci.yml', SHA)
+
     def test_wrong_head_event_repo_status(self):
         run, jobs = self.run_fixture()
         for key, value in [('head_sha', MASTER), ('event', 'pull_request'), ('conclusion', 'failure'), ('head_repository', {'full_name': 'fork/repo'})]:

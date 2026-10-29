@@ -1,7 +1,9 @@
 package management
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -15,7 +17,28 @@ type ConnectionGrantInput struct {
 	ExpiresInSeconds *int       `json:"expires_in_seconds,omitempty"`
 	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
 	ExpiryAction     string     `json:"expiry_action"`
-	MaxSessions      int        `json:"max_sessions"`
+	MaxSessions      *int       `json:"max_sessions"`
+}
+
+// UnmarshalJSON distinguishes omission (the new unlimited default) from explicit
+// null. Null is not an integer policy and must not silently widen an old grant.
+func (input *ConnectionGrantInput) UnmarshalJSON(data []byte) error {
+	type plain ConnectionGrantInput
+	var decoded plain
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if raw, present := fields["max_sessions"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("max_sessions must be an integer")
+	}
+	*input = ConnectionGrantInput(decoded)
+	return nil
 }
 
 type ConnectionGrant struct {
@@ -59,10 +82,15 @@ func normalizeGrant(input ConnectionGrantInput) (ConnectionGrantInput, error) {
 	if input.ExpiryAction != "terminate" && input.ExpiryAction != "no_new_connections" {
 		return input, fail("INVALID_EXPIRY_ACTION", 422)
 	}
-	if input.MaxSessions == 0 {
-		input.MaxSessions = 1
+	if input.MaxSessions == nil {
+		unlimited := -1
+		input.MaxSessions = &unlimited
+	} else if *input.MaxSessions == 0 {
+		// Preserve the historical explicit-zero alias; omission is now unlimited.
+		one := 1
+		input.MaxSessions = &one
 	}
-	if input.MaxSessions < 1 || input.MaxSessions > 1024 {
+	if *input.MaxSessions < -1 || *input.MaxSessions > 2147483647 {
 		return input, fail("INVALID_CONNECTION_LIMIT", 422)
 	}
 	return input, nil

@@ -13,6 +13,54 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class LifecycleTest {
     @Test
+    fun twentyConcurrentInstancesReleaseAllNativeClients() {
+        val executor = Executors.newSingleThreadExecutor()
+        val clients = mutableListOf<PeerloomSdk>()
+        val baseline = Native.liveClients()
+        try {
+            repeat(20) {
+                val config = JSONObject().put("origin", "http://127.0.0.1:1")
+                    .put("application_id", UUID.randomUUID().toString())
+                    .put("development_loopback", true)
+                clients += PeerloomSdk.create(ApplicationProvider.getApplicationContext(), config, executor) { }
+                    .get(20, TimeUnit.SECONDS)
+            }
+            assertEquals(baseline + 20, Native.liveClients())
+        } finally {
+            try {
+                val closing = clients.map { it.close() }
+                closing.forEach { it.get(20, TimeUnit.SECONDS) }
+                assertEquals(baseline, Native.liveClients())
+            } finally {
+                executor.shutdownNow()
+            }
+        }
+    }
+
+    @Test
+    fun optionalCapacityAcceptsOmittedZeroAndFiveHundred() {
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            for (count in listOf<Int?>(null, 0, 500)) {
+                val config = JSONObject()
+                    .put("origin", "http://127.0.0.1:1")
+                    .put("application_id", UUID.randomUUID().toString())
+                    .put("development_loopback", true)
+                if (count != null) {
+                    config.put("max_connections", count)
+                        .put("max_channels_per_connection", count)
+                        .put("max_channel_creations_per_connection", count)
+                }
+                val sdk = PeerloomSdk.create(ApplicationProvider.getApplicationContext(), config, executor) { }
+                    .get(20, TimeUnit.SECONDS)
+                sdk.close().get(20, TimeUnit.SECONDS)
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun pausedThenRejectingExecutorDoesNotStrandClose() {
         val first = java.util.concurrent.ArrayBlockingQueue<Runnable>(1)
         val accepted = java.util.concurrent.atomic.AtomicBoolean(false)

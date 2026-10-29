@@ -120,7 +120,7 @@ func (s *Service) GetDevice(ctx context.Context, p Principal, id string) (Device
 // UpdateDevice applies only supplied mutable public properties. A null
 // max_connections restores application inheritance; status/identity are immutable.
 func (s *Service) UpdateDevice(ctx context.Context, p Principal, id string, input DeviceUpdate, key string) (Device, error) {
-	if !uuidPattern.MatchString(id) || (input.DisplayName != nil && (utf8.RuneCountInString(*input.DisplayName) > 128 || strings.ContainsRune(*input.DisplayName, 0))) || (input.Metadata != nil && !validProperties(*input.Metadata)) || (input.Tags != nil && !validProperties(*input.Tags)) || (input.MaxConnections.Value != nil && (*input.MaxConnections.Value < 0 || *input.MaxConnections.Value > 1024)) {
+	if !uuidPattern.MatchString(id) || (input.DisplayName != nil && (utf8.RuneCountInString(*input.DisplayName) > 128 || strings.ContainsRune(*input.DisplayName, 0))) || (input.Metadata != nil && !validProperties(*input.Metadata)) || (input.Tags != nil && !validProperties(*input.Tags)) || (input.MaxConnections.Value != nil && (*input.MaxConnections.Value < -1 || *input.MaxConnections.Value > 2147483647)) {
 		return Device{}, fail("INVALID_DEVICE_PROPERTIES", 422)
 	}
 	if input.DisplayName == nil && input.Metadata == nil && input.Tags == nil && input.Connectable == nil && !input.MaxConnections.Set {

@@ -2,14 +2,12 @@
 //! budget as authorizing/connecting/ready/recovering sessions. No WSS or task is
 //! created here; one identity actor owns this map and all transport generations.
 use std::collections::{BTreeMap, BTreeSet};
-const LIFETIME_SESSIONS: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Reservation(u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MapError {
-    InvalidCapacity,
     InvalidIdentifier,
     Full,
     UnknownReservation,
@@ -36,9 +34,6 @@ pub(super) struct SessionMap<T> {
 
 impl<T> SessionMap<T> {
     pub(super) fn new(capacity: usize) -> Result<Self, MapError> {
-        if !(1..=1024).contains(&capacity) {
-            return Err(MapError::InvalidCapacity);
-        }
         Ok(Self {
             capacity,
             next_reservation: 0,
@@ -66,9 +61,7 @@ impl<T> SessionMap<T> {
     fn admission(&self) -> Result<(), MapError> {
         if self.closed {
             Err(MapError::Closed)
-        } else if self.len() >= self.capacity
-            || self.seen.len() + self.pending.len() >= LIFETIME_SESSIONS
-        {
+        } else if self.capacity != 0 && self.len() >= self.capacity {
             Err(MapError::Full)
         } else {
             Ok(())
@@ -151,6 +144,7 @@ impl<T> SessionMap<T> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn insert_incoming(&mut self, session_id: String, value: T) -> Result<(), MapError> {
         Self::identifier(&session_id)?;
         if self.closed {
@@ -162,6 +156,23 @@ impl<T> SessionMap<T> {
         self.admission()?;
         self.seen.insert(session_id.clone());
         self.sessions.insert(session_id, value);
+        Ok(())
+    }
+
+    pub(super) fn insert_retiring_or_pending(
+        &mut self,
+        id: String,
+        value: T,
+    ) -> Result<(), MapError> {
+        Self::identifier(&id)?;
+        if self.closed {
+            return Err(MapError::Closed);
+        }
+        if self.seen.contains(&id) {
+            return Err(MapError::DuplicateSession);
+        }
+        self.seen.insert(id.clone());
+        self.sessions.insert(id, value);
         Ok(())
     }
 
@@ -192,10 +203,6 @@ impl<T> SessionMap<T> {
             .collect()
     }
 
-    pub(super) fn has_seen(&self, id: &str) -> bool {
-        self.seen.contains(id)
-    }
-
     pub(super) fn get(&self, id: &str) -> Option<&T> {
         self.sessions.get(id)
     }
@@ -203,6 +210,7 @@ impl<T> SessionMap<T> {
         self.sessions.get_mut(id)
     }
     pub(super) fn remove(&mut self, id: &str) -> Option<T> {
+        self.seen.remove(id);
         self.sessions.remove(id)
     }
     pub(super) fn iter(&self) -> impl Iterator<Item = (&str, &T)> {
@@ -220,6 +228,7 @@ impl<T> SessionMap<T> {
         self.closed = true;
     }
     pub(super) fn drain_sessions(&mut self) -> impl Iterator<Item = T> {
+        self.seen.clear();
         std::mem::take(&mut self.sessions).into_values()
     }
 }
@@ -229,26 +238,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn closed_session_never_readmitted_and_lifetime_budget_is_bounded() {
-        let mut map = SessionMap::new(2).unwrap();
-        map.insert_incoming("first".into(), 1).unwrap();
-        map.remove("first");
-        assert!(map.has_seen("first"));
-        assert_eq!(
-            map.insert_incoming("first".into(), 2),
-            Err(MapError::DuplicateSession)
-        );
-        for n in 1..LIFETIME_SESSIONS {
-            let id = format!("session-{n}");
-            map.insert_incoming(id.clone(), n).unwrap();
-            if n != LIFETIME_SESSIONS - 1 {
-                map.remove(&id);
-            }
+    fn released_slots_have_no_lifetime_cap_and_zero_is_unlimited() {
+        let mut map = SessionMap::new(0).unwrap();
+        for n in 0..2000 {
+            map.insert_incoming(format!("s-{n}"), n).unwrap();
         }
-        assert_eq!(map.reserve_outgoing("new".into()), Err(MapError::Full));
-        assert_eq!(map.get("session-1023"), Some(&1023));
-        assert_eq!(map.insert_incoming("new".into(), 0), Err(MapError::Full));
-        assert!(map.has_seen("first"));
+        assert_eq!(map.len(), 2000);
+        for n in 0..2000 {
+            map.remove(&format!("s-{n}"));
+        }
+        assert!(map.seen.is_empty());
+        for n in 0..5000 {
+            let id = format!("new-{n}");
+            map.insert_incoming(id.clone(), n).unwrap();
+            map.remove(&id);
+        }
+        assert_eq!(map.len(), 0);
     }
 
     #[test]
@@ -400,15 +405,8 @@ mod tests {
     }
 
     #[test]
-    fn capacity_is_always_finite_nonzero() {
-        assert!(matches!(
-            SessionMap::<()>::new(0),
-            Err(MapError::InvalidCapacity)
-        ));
-        assert!(matches!(
-            SessionMap::<()>::new(1025),
-            Err(MapError::InvalidCapacity)
-        ));
-        assert!(SessionMap::<()>::new(1024).is_ok());
+    fn configured_capacity_does_not_allocate_or_have_an_artificial_ceiling() {
+        assert_eq!(SessionMap::<()>::new(0).unwrap().len(), 0);
+        assert_eq!(SessionMap::<()>::new(usize::MAX).unwrap().len(), 0);
     }
 }

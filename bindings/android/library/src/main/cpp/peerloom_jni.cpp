@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Peerloom contributors. SPDX-License-Identifier: MIT
 #include "device_sdk.h"
-#include <array>
+#include <algorithm>
+#include <limits>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -20,7 +21,7 @@ struct Client {
     std::condition_variable ready;
 };
 std::mutex clients_mutex;
-std::array<std::shared_ptr<Client>, 16> clients;
+std::vector<std::shared_ptr<Client>> clients;
 uint64_t next_context = 1;
 std::shared_ptr<Client> by_context(uint64_t id) {
     std::lock_guard<std::mutex> guard(clients_mutex);
@@ -43,11 +44,7 @@ std::shared_ptr<Client> by_sdk(uint64_t id) {
 void forget(const std::shared_ptr<Client> &client, JNIEnv *env) {
     {
         std::lock_guard<std::mutex> guard(clients_mutex);
-        for (auto &slot : clients) {
-            if (slot == client) {
-                slot.reset();
-            }
-        }
+        clients.erase(std::remove(clients.begin(), clients.end(), client), clients.end());
     }
     if (client->receiver) {
         env->DeleteGlobalRef(client->receiver);
@@ -219,14 +216,10 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_io_peerloom_sdk_Native_create(JNIEn
         {
             std::lock_guard<std::mutex> guard(clients_mutex);
             if (next_context != UINT64_MAX) {
-                for (auto &slot : clients) {
-                    if (!slot) {
-                        client->context = next_context++;
-                        slot = client;
-                        reserved = true;
-                        break;
-                    }
-                }
+                client->context = next_context++;
+                // Allocation failure is caught before any Rust SDK or callback exists.
+                clients.push_back(client);
+                reserved = true;
             }
         }
         if (!reserved) {
@@ -334,11 +327,7 @@ extern "C" JNIEXPORT jint JNICALL Java_io_peerloom_sdk_Native_connectionValid(JN
 }
 extern "C" JNIEXPORT jint JNICALL Java_io_peerloom_sdk_Native_liveClients(JNIEnv *, jclass) {
     std::lock_guard<std::mutex> guard(clients_mutex);
-    jint count = 0;
-    for (const auto &client : clients) {
-        if (client) {
-            ++count;
-        }
-    }
-    return count;
+    // Diagnostic count only: never overflow jint or impose an admission ceiling.
+    return static_cast<jint>(std::min(clients.size(),
+        static_cast<size_t>(std::numeric_limits<jint>::max())));
 }

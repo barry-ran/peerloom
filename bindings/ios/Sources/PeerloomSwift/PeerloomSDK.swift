@@ -6,9 +6,10 @@ public struct PeerloomConfiguration: Encodable, Sendable {
     public let applicationID: String
     public var developmentLoopback = false
     public var autoReconnect = true
-    public var maxConnections = 1
-    public var maxChannelsPerConnection = 1
-    public var maxChannelCreationsPerConnection = 8
+    /// Zero removes the application count cap; queues and protocol limits remain bounded.
+    public var maxConnections = 0
+    public var maxChannelsPerConnection = 0
+    public var maxChannelCreationsPerConnection = 0
     private let abiVersion = 1
     private let storage = "external"
     enum CodingKeys: String, CodingKey {

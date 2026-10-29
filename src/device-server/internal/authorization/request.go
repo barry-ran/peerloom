@@ -63,6 +63,9 @@ func (s *Service) Request(ctx context.Context, actor identity.Device, targetID, 
 		return Session{}, failure("TARGET_OFFLINE", 409)
 	}
 	for _, device := range []peer{from, to} {
+		if device.limit == -1 {
+			continue
+		}
 		var count int
 		if err = tx.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE tenant_id=$1 AND state<>'closed'
 AND source_lease_expires_at>clock_timestamp() AND target_lease_expires_at>clock_timestamp()
@@ -98,6 +101,10 @@ ORDER BY expires_at DESC,id FOR UPDATE`, actor.TenantID, actor.ID, targetID)
 	}
 	var selected grant
 	for _, candidate := range candidates {
+		if candidate.max == -1 {
+			selected = candidate
+			break
+		}
 		var count int
 		if err = tx.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE tenant_id=$1 AND grant_id=$2 AND state<>'closed'
 AND source_lease_expires_at>clock_timestamp() AND target_lease_expires_at>clock_timestamp()`, actor.TenantID, candidate.id).Scan(&count); err != nil {

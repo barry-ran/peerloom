@@ -24,10 +24,10 @@ func normalizeApplication(input ApplicationInput) (ApplicationInput, error) {
 		return input, fail("REGISTRATION_MODE_UNSUPPORTED", 422)
 	}
 	if input.MaxConnections == nil {
-		value := 8
+		value := -1
 		input.MaxConnections = &value
 	}
-	if *input.MaxConnections < 0 || *input.MaxConnections > 1024 {
+	if *input.MaxConnections < -1 || *input.MaxConnections > 2147483647 {
 		return input, fail("INVALID_CONNECTION_LIMIT", 422)
 	}
 	return input, nil

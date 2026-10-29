@@ -120,7 +120,11 @@ impl ActiveChannels {
     fn reserve(self: &Arc<Self>) -> Result<ActivePermit, SdkError> {
         self.used
             .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                (used < self.limit).then_some(used + 1)
+                if self.limit != 0 && used >= self.limit {
+                    None
+                } else {
+                    used.checked_add(1)
+                }
             })
             .map_err(|_| SdkError::Busy)?;
         Ok(ActivePermit(self.clone()))
@@ -357,8 +361,8 @@ pub(super) async fn run(
     else {
         unreachable!()
     };
-    let (channels, mut opens) = mpsc::channel::<OpenRequest>(active_limit);
-    let (incoming, received) = mpsc::channel(active_limit);
+    let (channels, mut opens) = mpsc::channel::<OpenRequest>(32);
+    let (incoming, received) = mpsc::channel(32);
     events
         .send(Internal::Ready(
             id.clone(),

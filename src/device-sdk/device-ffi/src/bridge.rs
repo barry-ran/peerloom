@@ -23,18 +23,12 @@ pub struct Config {
     pub development_loopback: bool,
     #[serde(default = "yes")]
     pub auto_reconnect: bool,
-    #[serde(default = "one")]
+    #[serde(default)]
     pub max_connections: usize,
-    #[serde(default = "one")]
+    #[serde(default)]
     pub max_channels_per_connection: usize,
-    #[serde(default = "eight")]
+    #[serde(default)]
     pub max_channel_creations_per_connection: usize,
-}
-fn eight() -> usize {
-    8
-}
-fn one() -> usize {
-    1
 }
 fn yes() -> bool {
     true
@@ -43,10 +37,9 @@ impl Config {
     pub fn validate(&self) -> bool {
         self.abi_version == 1
             && matches!(self.storage.as_str(), "memory" | "external")
-            && (1..=32).contains(&self.max_connections)
-            && (1..=32).contains(&self.max_channels_per_connection)
-            && (self.max_channels_per_connection..=128)
-                .contains(&self.max_channel_creations_per_connection)
+            && (self.max_channels_per_connection == 0
+                || self.max_channel_creations_per_connection == 0
+                || self.max_channels_per_connection <= self.max_channel_creations_per_connection)
             && self.origin.len() <= 2048
             && self.application_id.len() <= 36
     }
@@ -483,15 +476,32 @@ mod tests {
         }
     }
     #[test]
-    fn ffi_creation_budget_matches_core_limit() {
-        let mut config: Config = serde_json::from_str(r#"{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory","max_channels_per_connection":32,"max_channel_creations_per_connection":128}"#).unwrap();
+    fn ffi_optional_count_caps_match_core_semantics() {
+        let mut config: Config = serde_json::from_str(r#"{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"}"#).unwrap();
         assert!(config.validate());
-        assert_eq!(config.sdk().transport.max_channels, 128);
-        config.max_channel_creations_per_connection = 129;
-        assert!(!config.validate());
+        assert_eq!(
+            (
+                config.max_connections,
+                config.max_channels_per_connection,
+                config.max_channel_creations_per_connection
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(config.sdk().max_connections, 0);
+        for count in [33, 129, 500, usize::MAX] {
+            config.max_connections = count;
+            config.max_channels_per_connection = count;
+            config.max_channel_creations_per_connection = count;
+            assert!(config.validate());
+            assert_eq!(config.sdk().transport.max_channels, count);
+        }
         config.max_channel_creations_per_connection = 31;
+        config.max_channels_per_connection = 32;
         assert!(!config.validate());
-        config.max_channel_creations_per_connection = 32;
+        config.max_channel_creations_per_connection = 0;
+        assert!(config.validate());
+        config.max_channels_per_connection = 0;
+        config.max_channel_creations_per_connection = 1;
         assert!(config.validate());
     }
 }

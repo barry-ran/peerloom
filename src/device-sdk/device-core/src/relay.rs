@@ -1,5 +1,6 @@
-//! 已授权会话的托管 TURN 配置。只获取 gen1 初始配置，不承诺 ICE restart。
+//! 已授权会话各协商代的托管 TURN 配置；新代重建 transport，不冒充原地 ICE restart。
 use crate::identity::{IdentityClient, IdentityError};
+use device_protocol::MAX_NEGOTIATION_GENERATION;
 use device_storage::SecretString;
 use device_transport_webrtc::RTCIceServer;
 use reqwest::Method;
@@ -24,7 +25,7 @@ struct WireServer {
 #[serde(deny_unknown_fields)]
 struct WireResponse {
     session_id: String,
-    negotiation_generation: u32,
+    negotiation_generation: u64,
     ice_servers: Vec<WireServer>,
 }
 
@@ -67,8 +68,8 @@ fn parse_generation(
     let wire: WireResponse =
         serde_json::from_slice(data).map_err(|_| IdentityError::InvalidResponse)?;
     if wire.session_id != session_id
-        || u64::from(wire.negotiation_generation) != generation
-        || !(1..=32).contains(&generation)
+        || wire.negotiation_generation != generation
+        || !(1..=MAX_NEGOTIATION_GENERATION).contains(&generation)
         || wire.ice_servers.len() > 4
     {
         return Err(IdentityError::InvalidResponse);
@@ -169,7 +170,7 @@ impl IdentityClient {
         credential: &SecretString,
         generation: u64,
     ) -> Result<ManagedIceServers, IdentityError> {
-        if !(1..=32).contains(&generation) {
+        if !(1..=MAX_NEGOTIATION_GENERATION).contains(&generation) {
             return Err(IdentityError::InvalidRequest);
         }
         let token = credential.expose();
@@ -255,5 +256,24 @@ mod tests {
                 .servers
                 .is_empty()
         );
+    }
+    #[test]
+    fn negotiation_generations_above_u32_retain_json_safe_protocol_bound() {
+        let now = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
+        for generation in [33, u64::from(u32::MAX) + 1, MAX_NEGOTIATION_GENERATION] {
+            let mut value = response(now);
+            value["negotiation_generation"] = json!(generation);
+            assert!(
+                parse_generation(&serde_json::to_vec(&value).unwrap(), ID, generation, now).is_ok()
+            );
+        }
+        for generation in [0, MAX_NEGOTIATION_GENERATION + 1, u64::MAX] {
+            let mut value = response(now);
+            value["negotiation_generation"] = json!(generation);
+            assert!(
+                parse_generation(&serde_json::to_vec(&value).unwrap(), ID, generation, now)
+                    .is_err()
+            );
+        }
     }
 }

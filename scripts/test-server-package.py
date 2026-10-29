@@ -255,12 +255,12 @@ def execute(payload, client=None):
                             'if (printf forbidden >> "$f") 2>/dev/null; then exit 1; fi; '
                             'test "$before" = "$(cksum "$f")"; done')
                 oneoff(service, ['-ec', 'test "$(id -u)" != 0; ' + check + '; ' + readonly], entrypoint='sh')
-            stage = 'database and schema 9'
+            stage = 'database and schema 10'
             run(compose + ['up', '-d', '--wait', 'postgres', 'redis'])
             oneoff('migrate', [])
             versions = run(compose + ['exec', '-T', 'postgres', 'psql', '-U', 'peerloom', '-d', 'peerloom',
                            '-Atc', 'SELECT string_agg(version::text,\',\' ORDER BY version) FROM schema_migrations'], capture=True)
-            if versions.strip() != b'1,2,3,4,5,6,7,8,9':
+            if versions.strip() != b'1,2,3,4,5,6,7,8,9,10':
                 raise Failure('migration versions mismatch')
             stage = 'explicit isolated fixture accounts'
             pair = json.loads(oneoff('device-server', ['--development', '--pair'], entrypoint='device-bootstrap', capture=True))
@@ -314,7 +314,7 @@ def execute(payload, client=None):
                     cleanup_errors.append('image')
             if cleanup_errors:
                 raise Failure('owned fixture cleanup failed')
-    print('实际 server tar：无源码 runtime、9版迁移、HTTPS admin 登录/CSRF、认证 WSS heartbeat 通过。')
+    print('实际 server tar：无源码 runtime、10版迁移、HTTPS admin 登录/CSRF、认证 WSS heartbeat 通过。')
 
 
 def main():

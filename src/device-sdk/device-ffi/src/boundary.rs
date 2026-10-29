@@ -91,9 +91,7 @@ pub unsafe extern "C" fn dp_sdk_create(
             return Err(UNSUPPORTED);
         }
         let mut registry = registry().lock().map_err(|_| INTERNAL)?;
-        if registry.len() >= 16 {
-            return Err(FULL);
-        }
+        registry.try_reserve(1).map_err(|_| FULL)?;
         let id = next_id()?;
         let (commands, receiver) = tokio::sync::mpsc::channel(32);
         let (events, event_rx) = std::sync::mpsc::sync_channel(97);
@@ -380,4 +378,48 @@ pub unsafe extern "C" fn dp_channel_submit(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    extern "C" fn callback(_: u64, _: *const DpEvent) {}
+
+    #[test]
+    fn more_than_sixteen_instances_can_quiesce_and_release() {
+        struct Owned(Vec<u64>);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                for &sdk in &self.0 {
+                    let mut request = 0;
+                    // SAFETY: local aligned output remains writable throughout the call.
+                    unsafe {
+                        dp_sdk_shutdown(sdk, &mut request);
+                    }
+                }
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !self.0.is_empty() && Instant::now() < deadline {
+                    self.0.retain(|&sdk| dp_sdk_release(sdk) != OK);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(self.0.is_empty(), "all owned instances must release");
+            }
+        }
+        let config = br#"{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"}"#;
+        let mut owned = Owned(Vec::new());
+        for _ in 0..20 {
+            let mut sdk = 0;
+            // SAFETY: config and output are valid for the call; callback is static.
+            let result = unsafe {
+                dp_sdk_create(config.as_ptr(), config.len(), Some(callback), 0, &mut sdk)
+            };
+            assert_eq!(result, OK);
+            owned.0.push(sdk);
+        }
+        let ids = owned.0.clone();
+        drop(owned);
+        assert!(ids.into_iter().all(|sdk| dp_sdk_state(sdk) == 3));
+    }
 }

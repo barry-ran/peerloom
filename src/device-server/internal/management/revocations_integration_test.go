@@ -51,7 +51,7 @@ func makePair(t *testing.T, f fixture) devicePair {
 		result.credentials = append(result.credentials, credential)
 		result.actors = append(result.actors, actor)
 	}
-	result.grant, err = f.service.CreateConnectionGrant(f.ctx, f.principal, ConnectionGrantInput{SourceDeviceID: result.actors[0].ID, TargetDeviceID: result.actors[1].ID, ExpiresInSeconds: ptr(300), MaxSessions: 10}, "pair-connection-grant")
+	result.grant, err = f.service.CreateConnectionGrant(f.ctx, f.principal, ConnectionGrantInput{SourceDeviceID: result.actors[0].ID, TargetDeviceID: result.actors[1].ID, ExpiresInSeconds: ptr(300), MaxSessions: ptr(10)}, "pair-connection-grant")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -122,7 +122,8 @@ struct Command {
     envelope: Envelope,
     completion: oneshot::Sender<Result<(), SignalError>>,
 }
-/// 发送与事件队列均为32。事件接收者停滞时断开，不能静默丢弃会话事件。
+/// 发送与事件队列均为32，另保留至多1个待交付事件。事件满时暂停读帧，
+/// 仍处理发送/心跳/关闭；不丢会话事件，持续停滞最终受心跳期限约束。
 /// Drop 中止后台任务；需要握手退出时必须 await close()。
 pub struct SignalClient {
     commands: mpsc::Sender<Command>,
@@ -256,7 +257,7 @@ impl SignalClient {
         payload: Value,
         generation: u64,
     ) -> Result<String, SignalError> {
-        if !(1..=32).contains(&generation) {
+        if !(1..=MAX_SEQ).contains(&generation) {
             return Err(SignalError::InvalidMessage);
         }
         if !matches!(
@@ -389,13 +390,28 @@ async fn drive(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     interval.tick().await;
     let mut deadline = tokio::time::Instant::now() + Duration::from_secs(ttl);
+    let mut pending_event = None;
     loop {
         let mut outgoing = tokio::select! {
             _=&mut stop=>return Ok(()),
             _=tokio::time::sleep_until(deadline)=>return Err(SignalError::Timeout),
             _=interval.tick()=>Some((Envelope::new("presence.heartbeat",json!({}))?,None)),
             command=commands.recv()=>{let command=command.ok_or(SignalError::Closed)?;Some((command.envelope,Some(command.completion)))},
-            incoming=read(socket)=>{let incoming=incoming?;if incoming.seq!=next_in || incoming.connection_generation!=ack.connection_generation || incoming.fencing_token!=ack.fencing_token {return Err(SignalError::InvalidMessage);}next_in=next_in.checked_add(1).filter(|n|*n<=MAX_SEQ).ok_or(SignalError::InvalidMessage)?;deadline=tokio::time::Instant::now()+Duration::from_secs(ttl);if incoming.kind!="presence.ack" {events.try_send(Ok(incoming)).map_err(|_|SignalError::QueueFull)?;}None}
+            permit = events.reserve(), if pending_event.is_some() => {
+                permit.map_err(|_| SignalError::Closed)?.send(Ok(pending_event.take().expect("pending event")));
+                None
+            },
+            incoming = read(socket), if pending_event.is_none() => {
+                let incoming = incoming?;
+                if incoming.seq != next_in || incoming.connection_generation != ack.connection_generation
+                    || incoming.fencing_token != ack.fencing_token {
+                    return Err(SignalError::InvalidMessage);
+                }
+                next_in = next_in.checked_add(1).filter(|n| *n <= MAX_SEQ).ok_or(SignalError::InvalidMessage)?;
+                deadline = tokio::time::Instant::now() + Duration::from_secs(ttl);
+                if incoming.kind != "presence.ack" { pending_event = Some(incoming); }
+                None
+            }
         };
         if let Some((ref mut envelope, completion)) = outgoing.take() {
             envelope.seq = next_out;

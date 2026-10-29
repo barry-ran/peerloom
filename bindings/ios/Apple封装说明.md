@@ -4,7 +4,7 @@
 
 本目录提供 iOS 15+/macOS 12+ 的 Swift 源码封装、Keychain 存储、XCTest、独立 XCFramework 构建与验证入口。**[精确提交 `cf3c50a1a7b213b39eac12c24898d56037f8d89a` 的 Apple job](https://github.com/barry-ran/peerloom/actions/runs/40752590811/job/123043607293) 已完整通过；正式交付仍以同一提交全部必需门禁与实际 Release 资产为准。** 实际包含五 slice XCFramework、macOS XCTest 14 项、Rust TLS 2 项、iOS Simulator XCTest 12 项、unsigned device build、独立真实 Go 服务链及最终打包；新提交仍须满足自己的完整门禁。macOS 使用下文的隔离 DEBUG 文件 Keychain，iOS 使用 Xcode 生成的 Simulator 应用宿主，不能据此宣称生产签名 DP Keychain 宿主或真机已验证。主分支不能仅凭 Linux 检查通过开放新的平台能力。
 
-封装只消费 `src/device-sdk/device-ffi/include/device_sdk.h`，不复制 Rust 内部布局或维护第二套手写 C 声明。生成的 XCFramework 复制这份规范头，并校验 SHA-256 一致；Swift package 链接其 `CPeerloom` 模块。已实现多连接、可靠消息/低延迟消息/字节流的 typed 通道与 reset 包装；默认 1 个会话、1 个活动通道，可各配置至 32，累计通道创建预算默认 8、最高 128。typed 通道与暂停执行器安全回归已包含在上述精确提交的原生门禁中，后续变更仍需重新验收。硬件标识、独立 Agent、业务界面不在此封装内。
+封装只消费 `src/device-sdk/device-ffi/include/device_sdk.h`，不复制 Rust 内部布局或维护第二套手写 C 声明。生成的 XCFramework 复制这份规范头，并校验 SHA-256 一致；Swift package 链接其 `CPeerloom` 模块。已实现多连接、可靠消息/低延迟消息/字节流的 typed 通道与 reset 包装；三个数量配置默认 0（不限人工数量），正数可选；SCTP、硬件/系统资源及操作队列背压仍有限。已发布 v0.1.1 包保持其旧容量行为；各版本证据与交付门禁见[开发与验收](../../docs/开发与验收.md)。typed 通道与暂停执行器安全回归已包含在上述精确提交的原生门禁中，后续变更仍需重新验收。硬件标识、独立 Agent、业务界面不在此封装内。
 
 Swift package 要求 Swift 6.0 或更高编译器，保持 Swift 5 语言模式及 iOS 15/macOS 12 最低系统；不依赖仅新系统才有的 AsyncIterator 隔离协议 witness。固定 Xcode 16.4 提供相应编译器，最低系统声明不等于已在每个旧系统版本实测。
 

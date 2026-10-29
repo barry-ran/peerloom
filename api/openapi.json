@@ -5127,9 +5127,10 @@
           },
           "max_connections": {
             "type": "integer",
-            "minimum": 0,
-            "maximum": 1024,
-            "default": 8
+            "minimum": -1,
+            "maximum": 2147483647,
+            "default": -1,
+            "description": "-1 表示不限；0 明确禁止新连接；正整数为并发上限。设备 null 继承应用策略。"
           }
         },
         "required": [
@@ -5167,8 +5168,8 @@
             "anyOf": [
               {
                 "type": "integer",
-                "minimum": 0,
-                "maximum": 1024
+                "minimum": -1,
+                "maximum": 2147483647
               },
               {
                 "type": "null"
@@ -5296,7 +5297,9 @@
           },
           "max_connections": {
             "type": "integer",
-            "minimum": 0
+            "minimum": -1,
+            "maximum": 2147483647,
+            "description": "-1 表示不限；0 明确禁止新连接；正整数为并发上限。设备 null 继承应用策略。"
           },
           "enabled": {
             "type": "boolean"
@@ -5368,8 +5371,8 @@
             "anyOf": [
               {
                 "type": "integer",
-                "minimum": 0,
-                "maximum": 1024
+                "minimum": -1,
+                "maximum": 2147483647
               },
               {
                 "type": "null"
@@ -5483,7 +5486,8 @@
             "anyOf": [
               {
                 "type": "integer",
-                "minimum": 0
+                "minimum": -1,
+                "maximum": 2147483647
               },
               {
                 "type": "null"
@@ -5597,10 +5601,10 @@
           },
           "max_sessions": {
             "type": "integer",
-            "minimum": 0,
-            "maximum": 1024,
-            "default": 1,
-            "description": "省略或0使用1。"
+            "minimum": -1,
+            "maximum": 2147483647,
+            "default": -1,
+            "description": "省略或-1表示不限；明确0保留历史别名1；正整数为并发上限。"
           },
           "expires_at": {
             "type": "string",
@@ -5668,7 +5672,9 @@
           },
           "max_sessions": {
             "type": "integer",
-            "minimum": 1
+            "minimum": -1,
+            "maximum": 2147483647,
+            "description": "省略或-1表示不限；明确0保留历史别名1；正整数为并发上限。"
           },
           "revoked_at": {
             "anyOf": [
@@ -5848,7 +5854,7 @@
           "negotiation_generation": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 32
+            "maximum": 9007199254740991
           }
         },
         "required": [
@@ -6298,7 +6304,7 @@
           "negotiation_generation": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 32
+            "maximum": 9007199254740991
           },
           "ice_servers": {
             "type": "array",

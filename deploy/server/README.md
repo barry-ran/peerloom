@@ -5,7 +5,7 @@
 ## 包含什么、仍需什么
 
 - `bin/`：`device-server`、`device-migrate`、`device-bootstrap`、`device-admin`、`device-admin-user`，均为 Linux amd64 预编译程序。管理后台 HTML/CSS/JavaScript 内嵌在 `device-server`。
-- `infra/migrations/`：版本 1–9 的 9 对 up/down SQL。
+- `infra/migrations/`：版本 1–10 的 10 对 up/down SQL。
 - `deploy/`：仅复制预编译程序的运行时 Dockerfile、Compose、TLS 覆盖、网关配置及秘密初始化脚本。
 - `docs/部署指南.md`、版本元数据、许可证据与完整校验清单。
 

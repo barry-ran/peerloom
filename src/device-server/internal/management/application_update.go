@@ -26,7 +26,7 @@ func (s *Service) UpdateApplication(ctx context.Context, p Principal, id string,
 	if input.RegistrationMode != nil && *input.RegistrationMode != "grant" && *input.RegistrationMode != "direct" {
 		return ApplicationChange{}, fail("REGISTRATION_MODE_UNSUPPORTED", 422)
 	}
-	if !uuidPattern.MatchString(id) || (input.Name != nil && !validText(*input.Name, 128)) || (input.MaxConnections != nil && (*input.MaxConnections < 0 || *input.MaxConnections > 1024)) {
+	if !uuidPattern.MatchString(id) || (input.Name != nil && !validText(*input.Name, 128)) || (input.MaxConnections != nil && (*input.MaxConnections < -1 || *input.MaxConnections > 2147483647)) {
 		return ApplicationChange{}, fail("INVALID_APPLICATION_PROPERTIES", 422)
 	}
 	if input.Name == nil && input.RequireTargetApproval == nil && input.MaxConnections == nil && input.Enabled == nil && input.RegistrationMode == nil {

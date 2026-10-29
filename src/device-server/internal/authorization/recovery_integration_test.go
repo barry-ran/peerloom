@@ -62,8 +62,13 @@ func TestRecoveryGenerationCASAndFencing(t *testing.T) {
 	}
 	_, err = f.service.RecoverGeneration(f.ctx, f.peers[0], value.ID, first, 2)
 	code(t, err, "NEGOTIATION_RATE_LIMIT")
-	f.exec(t, "UPDATE sessions SET negotiation_generation=32 WHERE id=$1", value.ID)
-	_, err = f.service.RecoverGeneration(f.ctx, f.peers[0], value.ID, first, 32)
+	f.exec(t, "UPDATE sessions SET negotiation_generation=32,negotiation_started_at=clock_timestamp()-interval '2 seconds' WHERE id=$1", value.ID)
+	beyond, recoverErr := f.service.RecoverGeneration(f.ctx, f.peers[0], value.ID, first, 32)
+	if recoverErr != nil || beyond.NegotiationGeneration != 33 {
+		t.Fatalf("recovery beyond old cap: %v", recoverErr)
+	}
+	f.exec(t, "UPDATE sessions SET negotiation_generation=$2 WHERE id=$1", value.ID, MaxNegotiationGeneration)
+	_, err = f.service.RecoverGeneration(f.ctx, f.peers[0], value.ID, first, MaxNegotiationGeneration)
 	code(t, err, "NEGOTIATION_LIMIT")
 }
 

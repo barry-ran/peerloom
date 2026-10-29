@@ -97,6 +97,9 @@ private constructor(
 
         /**
          * Configure origin/application_id; storage is always Android Keystore-backed external.
+         * Omitted or zero max_connections/max_channels_per_connection/
+         * max_channel_creations_per_connection removes the optional application count cap.
+         * Positive values retain explicit caps; protocol limits and bounded queues still apply.
          * Caller-supplied executor receives at most one queued drain task; data queue is bounded32.
          */
         fun create(

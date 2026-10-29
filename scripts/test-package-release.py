@@ -116,7 +116,7 @@ class PackageTests(unittest.TestCase):
         with tarfile.open(self.output/meta['installation_payload'],'r:gz') as archive:
             names=set(archive.getnames())
             self.assertTrue({f'bin/{x}' for x in m.SERVER_BINARIES} <= names)
-            self.assertEqual(len([x for x in names if x.startswith('infra/migrations/')]),18)
+            self.assertEqual(len([x for x in names if x.startswith('infra/migrations/')]),20)
             self.assertIn('deploy/Dockerfile.dockerignore',names)
             self.assertIn('deploy/README.md',names)
             self.assertIn('docs/部署指南.md',names)

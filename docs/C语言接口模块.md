@@ -13,12 +13,13 @@
 | 自动 WSS 重连、轮换后重新认证 | 沿用 Rust facade；重连本身不延长旧授权 |
 | 存储 | 显式 `memory` 或宿主异步 `external` CAS；无默认明文落盘 |
 | 安全整数句柄、有界回调、取消、关闭 | 已实现并运行真实 C 生命周期与服务集成测试 |
-| 显式身份 reset | 已增加能力位、确认 DeviceID、CAS tombstone 与未知结果恢复；本地真实服务专项已通过，最新候选 CI 待验收 |
+| 显式身份 reset | 支持能力位、确认 DeviceID、CAS tombstone 与未知结果恢复；验证证据见开发与验收 |
 | 字节流、低延迟、多连接、多通道 | 已接入父子句柄和独立有界 worker；真实三设备、两连接、三类通道测试通过 |
 | 数据传输失败后恢复 | Core 已实现重建 PeerConnection/Channel 的恢复路径，新增组合仍须精确 CI；不宣称原地 ICE restart |
 | Android JNI、Swift、Windows 封装及五端安全存储 | 沿用各平台 create/TLS/存储边界；本次新增接口须各平台精确 CI。Apple 签名生产 Keychain 与真机仍有独立验收条件 |
 
-`dp_capabilities()` 按位返回可靠消息、异步 CAS、显式内存存储、reset，以及新增多连接、typed channel、可靠字节流、低延迟消息能力；位定义只以规范头为准，不能把总和值当 ABI 版本。默认仍一连接、一条默认可靠消息通道；`max_connections` 为 1..32，`max_channels_per_connection` 为 1..32（包含默认通道）。独立的 `max_channel_creations_per_connection` 为 active 限额..128，默认 8，关闭不返还累计 DCEP 预算。进程最多 16 实例，工程限额不是吞吐 SLA。
+`dp_capabilities()` 按位返回可靠消息、异步 CAS、显式内存存储、reset，以及新增多连接、typed channel、可靠字节流、低延迟消息能力；位定义只以规范头为准，不能把总和值当 ABI 版本。当前源码的连接与通道默认人工限额已取消（已发布 v0.1.1 资产不变）：`max_connections`、`max_channels_per_connection`（包含默认可靠消息通道）、`max_channel_creations_per_connection` 省略或为 `0` 表示不设对应人工上限；正数保留显式限额。只有两个通道限额均为正数时才要求 active ≤ creation；关闭不返还显式累计 DCEP 预算。进程不再固定最多 16 个实例，句柄表按实际接纳量增长，分配失败拒绝接纳，不按配置值预分配。SCTP stream-ID、系统内存/线程资源与独立有界队列仍有限；“不限数量”不是无限物理容量或吞吐 SLA。每实例仍最多 32 个待完成操作，宿主应持续消费 callback 并分批提交，不将背压信用误当连接总数限制。
+
 
 ## 线程与所有权
 

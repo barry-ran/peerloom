@@ -11,7 +11,8 @@ pub use channels::{
     SdkMessageSender, SdkStreamReader, SdkStreamWriter, SendDisposition,
 };
 use session_map::SessionMap;
-const MAX_CONNECTIONS: usize = 32;
+// Fixed queue memory budgets are independent of configured connection counts.
+const CONTROL_QUEUE_CAPACITY: usize = 256;
 use crate::{
     identity::{
         IdempotencyKey, IdentityClient, IdentityError, IdentitySession, RegistrationRequest,
@@ -19,7 +20,7 @@ use crate::{
     lease::LeaseGuard,
     signaling::{Envelope, SignalClient, SignalError},
 };
-use device_protocol::{ChannelMode, ConnectionPolicy};
+use device_protocol::{ChannelMode, ConnectionPolicy, MAX_NEGOTIATION_GENERATION};
 use device_storage::{IdentityStore, SecretString, StoredIdentity};
 use device_transport_webrtc::{
     CandidateKind, MessageChannel, PeerTransport, SessionDescription, TransportConfig,
@@ -61,8 +62,8 @@ impl SdkConfig {
             development_loopback: false,
             transport: TransportConfig::default(),
             managed_relays: true,
-            max_connections: 1,
-            max_channels_per_connection: 1,
+            max_connections: 0,
+            max_channels_per_connection: 0,
             auto_reconnect: true,
             outbound_max_bytes: 4 * 1024 * 1024,
             outbound_max_messages: 1024,
@@ -270,10 +271,9 @@ impl DeviceSdk {
         config: &SdkConfig,
         store: Arc<dyn IdentityStore>,
     ) -> Result<IdentitySession, SdkError> {
-        if !(1..=MAX_CONNECTIONS).contains(&config.max_connections)
-            || !(1..=32).contains(&config.max_channels_per_connection)
-            || config.max_channels_per_connection > config.transport.max_channels
-            || config.transport.max_channels > 128
+        if (config.max_channels_per_connection != 0
+            && config.transport.max_channels != 0
+            && config.max_channels_per_connection > config.transport.max_channels)
             || !(1..=64 * 1024 * 1024).contains(&config.outbound_max_bytes)
             || !(1..=65536).contains(&config.outbound_max_messages)
         {
@@ -304,7 +304,7 @@ impl DeviceSdk {
         }
         let device_id = stored.device_id.clone();
         let (commands, command_rx) = mpsc::channel(32);
-        let (events_tx, events) = mpsc::channel(config.max_connections * 4 + 8);
+        let (events_tx, events) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
         let (stop, stop_rx) = oneshot::channel();
         let sdk_commands = commands.clone();
         let actor = Actor::new(config, identity, stored, sdk_commands, events_tx);
@@ -430,6 +430,12 @@ impl Drop for Worker {
         }
     }
 }
+struct PendingAuthority {
+    deadline: Option<Instant>,
+    request: Option<String>,
+    requested_at: Option<Instant>,
+    offer: Option<Envelope>,
+}
 struct Session {
     id: String,
     initial_request_id: Option<String>,
@@ -438,12 +444,15 @@ struct Session {
     guard: LeaseGuard,
     gate: Arc<Gate>,
     worker: Option<Worker>,
+    authority: Option<PendingAuthority>,
+    closing: bool,
     renew_at: Instant,
     ready: bool,
     generation: u64,
     recovery_at: Option<Instant>,
     recovery_attempt: u32,
     sync_pending: bool,
+    sync_requested: bool,
     requests: std::collections::VecDeque<(String, u64)>,
 }
 type RefreshOutcome = (Result<(), IdentityError>, Option<StoredIdentity>);
@@ -464,10 +473,11 @@ struct Actor {
     commands: mpsc::Sender<Command>,
     events: mpsc::Sender<SdkEvent>,
     signal: Option<SignalClient>,
-    rejected_sessions: std::collections::VecDeque<String>,
     dial: Option<JoinHandle<Result<SignalClient, SignalError>>>,
     retry_at: Instant,
     attempt: u32,
+    control_cursor: Option<String>,
+    control_remaining: usize,
     sessions: SessionMap<Session>,
     internal_tx: mpsc::Sender<Internal>,
     internal_rx: mpsc::Receiver<Internal>,
@@ -480,7 +490,7 @@ impl Actor {
         commands: mpsc::Sender<Command>,
         events: mpsc::Sender<SdkEvent>,
     ) -> Self {
-        let (internal_tx, internal_rx) = mpsc::channel(config.max_connections * 4 + 8);
+        let (internal_tx, internal_rx) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
         let dirty = identity.needs_persistence();
         if dirty {
             let _ = events.try_send(SdkEvent::IdentityPersistencePending);
@@ -488,6 +498,8 @@ impl Actor {
         Self {
             outbound: OutboundBudget::new(config.outbound_max_bytes, config.outbound_max_messages)
                 .expect("validated outbound budget"),
+            control_cursor: None,
+            control_remaining: 0,
             sessions: SessionMap::new(config.max_connections)
                 .expect("validated connection capacity"),
             config,
@@ -509,7 +521,6 @@ impl Actor {
             commands,
             events,
             signal: None,
-            rejected_sessions: std::collections::VecDeque::new(),
             dial: None,
             retry_at: Instant::now(),
             attempt: 0,
@@ -526,7 +537,6 @@ impl Actor {
         let result: Result<(), SdkError> = async {
             loop {
                 tokio::select! {
-                    biased;
                     _ = &mut stop => return Ok(()),
                     _ = tick.tick() => self.tick().await?,
                     dial = async {
@@ -567,6 +577,13 @@ impl Actor {
                     event = self.internal_rx.recv() => {
                         if let Some(event) = event { self.internal(event).await?; }
                     }
+                    _ = async {
+                        if self.control_remaining > 0 {
+                            tokio::task::yield_now().await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => self.maintenance_batch(false).await?,
                 }
             }
         }
@@ -610,24 +627,16 @@ impl Actor {
         self.online_since = Some(Instant::now());
         self.signal = Some(signal);
         self.emit(SdkEvent::Online)?;
-        let ids: Vec<String> = self
-            .sessions
-            .iter_mut()
-            .map(|(id, session)| {
-                session.sync_pending = true;
-                id.to_owned()
-            })
-            .collect();
-        for id in ids {
-            match self.send("sync.request", Some(&id), json!({})).await {
-                Ok(_) => {}
-                Err(SdkError::Signal(error)) => {
-                    self.disconnected(error).await?;
-                    break;
-                }
-                Err(error) => return Err(error),
+        for (_, session) in self.sessions.iter_mut() {
+            if let Some(authority) = session.authority.as_mut() {
+                authority.request = None;
+                authority.requested_at = None;
             }
+            session.renew_at = Instant::now();
+            session.sync_pending = true;
+            session.sync_requested = false;
         }
+        self.control_remaining = self.sessions.len();
         Ok(())
     }
 
@@ -788,11 +797,50 @@ impl Actor {
                 SignalClient::connect(&client, &token).await
             }));
         }
-        let ids: Vec<String> = self.sessions.iter().map(|(id, _)| id.to_owned()).collect();
+        self.maintenance_batch(true).await
+    }
+
+    async fn maintenance_batch(&mut self, reset: bool) -> Result<(), SdkError> {
+        let now = Instant::now();
+        if reset {
+            self.control_remaining = self.sessions.len();
+        }
+        // A bounded amount of work per actor turn, with fair yielding while a sweep
+        // remains. This is not a rate/capacity limit: backlog runs without waiting
+        // for the next 100ms timer, and WSS/commands can progress between batches.
+        let mut ids: Vec<String> = self.sessions.iter().map(|(id, _)| id.to_owned()).collect();
+        let start = self
+            .control_cursor
+            .as_ref()
+            .map_or(0, |cursor| ids.partition_point(|id| id <= cursor));
+        if !ids.is_empty() {
+            let count = ids.len();
+            ids.rotate_left(start % count);
+        }
+        if ids.is_empty() {
+            self.control_remaining = 0;
+            return Ok(());
+        }
+        ids.truncate(self.control_remaining.min(8));
+        self.control_remaining = self.control_remaining.saturating_sub(ids.len());
         for id in ids {
+            self.control_cursor = Some(id.clone());
             let Some(session) = self.sessions.get(&id) else {
                 continue;
             };
+            if session.closing {
+                if self.signal.is_some() && now >= session.renew_at {
+                    let _ = self.send("session.terminate", Some(&id), json!({})).await;
+                    if let Some(session) = self.sessions.get_mut(&id) {
+                        session.renew_at = now + Duration::from_secs(1);
+                    }
+                }
+                continue;
+            }
+            if session.authority.is_some() {
+                self.request_authority(&id).await;
+                continue;
+            }
             let expired = session
                 .guard
                 .deadline()
@@ -811,8 +859,21 @@ impl Actor {
                 .await;
                 continue;
             }
-            let recovering =
-                !session.sync_pending && session.recovery_at.is_some_and(|at| now >= at);
+            if self.signal.is_some() && session.sync_pending && !session.sync_requested {
+                match self.send("sync.request", Some(&id), json!({})).await {
+                    Ok(_) => {
+                        if let Some(session) = self.sessions.get_mut(&id) {
+                            session.sync_requested = true;
+                        }
+                    }
+                    Err(SdkError::Signal(error)) => self.disconnected(error).await?,
+                    Err(_) => {}
+                }
+                continue;
+            }
+            let recovering = self.sessions.get(&id).is_some_and(|session| {
+                !session.sync_pending && session.recovery_at.is_some_and(|at| now >= at)
+            });
             if self.signal.is_some() && recovering {
                 match self
                     .send("session.reconnecting", Some(&id), json!({}))
@@ -899,11 +960,11 @@ impl Actor {
                 let _ = result.send(outcome);
             }
             Command::Respond(id, accept, result) => {
-                let outcome = if self
-                    .sessions
-                    .get(&id)
-                    .is_none_or(|session| session.target != self.stored.device_id)
-                {
+                let outcome = if self.sessions.get(&id).is_none_or(|session| {
+                    session.target != self.stored.device_id
+                        || session.closing
+                        || session.authority.is_some()
+                }) {
                     Err(SdkError::Closed)
                 } else {
                     if !accept {
@@ -952,7 +1013,62 @@ impl Actor {
         Ok(())
     }
 
+    fn refuse_authority(&mut self, id: &str, reason: SdkError) {
+        if self
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.authority.is_some() && !session.closing)
+        {
+            if let Some(session) = self.sessions.remove(id) {
+                session.gate.close();
+            }
+            let _ = self.emit(SdkEvent::ConnectionClosed {
+                session_id: id.to_owned(),
+                reason,
+            });
+        }
+    }
+    async fn request_authority(&mut self, id: &str) {
+        let now = Instant::now();
+        let Some(authority) = self.sessions.get_mut(id).and_then(|s| s.authority.as_mut()) else {
+            return;
+        };
+        if authority.deadline.is_some_and(|deadline| now >= deadline) {
+            self.refuse_authority(id, SdkError::Transport(TransportError::Timeout));
+            return;
+        }
+        if self.signal.is_none()
+            || authority.request.is_some()
+            || authority
+                .requested_at
+                .is_some_and(|at| now.duration_since(at) < Duration::from_secs(1))
+        {
+            return;
+        }
+        let in_flight = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.authority.as_ref().is_some_and(|a| a.request.is_some()))
+            .count();
+        if in_flight >= 32 {
+            return;
+        }
+        let budget = self.config.transport.operation_timeout;
+        if let Some(authority) = self.sessions.get_mut(id).and_then(|s| s.authority.as_mut()) {
+            // Start the bounded verification budget only when this slot gets
+            // its first send turn, never while waiting behind the 32 in-flight requests.
+            authority.deadline.get_or_insert_with(|| now + budget);
+            authority.requested_at = Some(now);
+        }
+        if let Ok(request) = self.send("sync.request", Some(id), json!({})).await
+            && let Some(authority) = self.sessions.get_mut(id).and_then(|s| s.authority.as_mut())
+        {
+            authority.request = Some(request);
+            authority.requested_at = Some(now);
+        }
+    }
     async fn message(&mut self, message: Envelope) -> Result<(), SdkError> {
+        let mut buffered_offer = None;
         if message.kind == "error" {
             let Some(request) = message.request_id.as_deref() else {
                 return Ok(());
@@ -961,6 +1077,32 @@ impl Actor {
                 .as_str()
                 .unwrap_or("REQUEST_DENIED")
                 .to_owned();
+            let authority_id = self.sessions.iter().find_map(|(id, session)| {
+                session
+                    .authority
+                    .as_ref()
+                    .filter(|a| a.request.as_deref() == Some(request))
+                    .map(|_| id.to_owned())
+            });
+            if let Some(id) = authority_id {
+                // Only documented backend availability/commit ambiguity may retry.
+                // All other replies permanently refuse this unadmitted notification;
+                // a future notification still has to obtain a new authoritative Get.
+                if !matches!(
+                    code.as_str(),
+                    "DATABASE_UNAVAILABLE" | "COMMIT_UNCERTAIN_RETRY_SAME_KEY"
+                ) {
+                    self.refuse_authority(&id, SdkError::Rejected("AUTHORITY_DENIED".into()));
+                } else if let Some(authority) = self
+                    .sessions
+                    .get_mut(&id)
+                    .and_then(|s| s.authority.as_mut())
+                {
+                    authority.request = None;
+                    authority.requested_at = Some(Instant::now());
+                }
+                return Ok(());
+            }
             if let Some(target_device_id) = self.sessions.pending_target(request).map(str::to_owned)
             {
                 self.sessions.reject_request(request);
@@ -991,6 +1133,27 @@ impl Actor {
             if sent_generation != current_generation {
                 return Ok(());
             }
+            if code == "SESSION_NOT_FOUND"
+                && self
+                    .sessions
+                    .get(&id)
+                    .is_some_and(|session| session.closing)
+            {
+                self.sessions.remove(&id);
+                return Ok(());
+            }
+            if self
+                .sessions
+                .get(&id)
+                .is_some_and(|session| session.closing)
+            {
+                if code == "AUTH_INVALID" {
+                    return Err(SdkError::Signal(SignalError::AuthorizationRejected));
+                }
+                if code == "INVALID_INPUT" {
+                    return Err(SdkError::Signal(SignalError::InvalidMessage));
+                }
+            }
             if recovering
                 && matches!(
                     code.as_str(),
@@ -1000,6 +1163,7 @@ impl Actor {
                 self.send("sync.request", Some(&id), json!({})).await?;
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.sync_pending = true;
+                    session.sync_requested = true;
                 }
             } else {
                 self.close_session(&id, SdkError::Rejected(code), false)
@@ -1029,22 +1193,96 @@ impl Actor {
             let generation = message.payload["negotiation_generation"]
                 .as_u64()
                 .unwrap_or(1);
-            if !(1..=32).contains(&generation) {
+            if !(1..=MAX_NEGOTIATION_GENERATION).contains(&generation) {
                 return Err(SdkError::Signal(SignalError::InvalidMessage));
             }
+            if message.payload["session_id"].as_str() != Some(id.as_str())
+                || LeaseGuard::new(id.clone(), source.clone(), target.clone()).is_err()
+            {
+                return Err(SdkError::Signal(SignalError::InvalidMessage));
+            }
+            // A server terminal is authoritative. Forgetting it is safe because
+            // every future unsolicited admission must obtain a fresh correlated Get.
+            if message.kind == "session.terminated" || message.payload["state"] == "closed" {
+                if let Some(session) = self.sessions.get(&id) {
+                    if session.source != source || session.target != target {
+                        return Err(SdkError::Signal(SignalError::InvalidMessage));
+                    }
+                    self.close_session(
+                        &id,
+                        SdkError::Rejected(
+                            message.payload["close_reason"]
+                                .as_str()
+                                .unwrap_or("SESSION_CLOSED")
+                                .into(),
+                        ),
+                        false,
+                    )
+                    .await;
+                    self.sessions.remove(&id);
+                }
+                return Ok(());
+            }
             let mut incoming = false;
-            if self.sessions.get(&id).is_none() {
-                if message.kind == "session.terminated"
-                    || message.payload["state"] == "closed"
-                    || self.rejected_sessions.contains(&id)
-                    || self.sessions.has_seen(&id)
+            if let Some(session) = self.sessions.get(&id) {
+                if session.source != source || session.target != target {
+                    return Err(SdkError::Signal(SignalError::InvalidMessage));
+                }
+                if session.closing {
+                    return Ok(());
+                }
+                if let Some(authority) = session.authority.as_ref() {
+                    if authority
+                        .deadline
+                        .is_some_and(|deadline| Instant::now() >= deadline)
+                    {
+                        self.refuse_authority(&id, SdkError::Transport(TransportError::Timeout));
+                        return Ok(());
+                    }
+                    if message.kind != "sync.snapshot"
+                        || message.request_id.as_ref() != authority.request.as_ref()
+                        || authority.request.is_none()
+                    {
+                        return Ok(());
+                    }
+                    let clock = self
+                        .signal
+                        .as_ref()
+                        .ok_or(SdkError::Offline)?
+                        .server_clock();
+                    let mut guard = LeaseGuard::new(id.clone(), source.clone(), target.clone())
+                        .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?;
+                    if guard.apply(&message, &clock, Instant::now()).is_err() {
+                        self.close_session(&id, SdkError::AuthorizationExpired, true)
+                            .await;
+                        return Ok(());
+                    }
+                    let session = self.sessions.get_mut(&id).expect("pending authority");
+                    buffered_offer = session
+                        .authority
+                        .take()
+                        .and_then(|a| a.offer)
+                        .filter(|offer| offer.negotiation_generation == Some(generation));
+                    session.guard = guard;
+                    incoming = true;
+                }
+            } else {
+                // Never treat unsolicited sync/high-generation updates as a new
+                // session. The only entry point is the server's initial notification.
+                if message.payload["lease_generation"].as_u64() != Some(1)
+                    || generation != 1
+                    || !matches!(
+                        (message.kind.as_str(), message.payload["state"].as_str()),
+                        ("session.pending", Some("authorizing"))
+                            | ("session.updated", Some("connecting"))
+                    )
                 {
                     return Ok(());
                 }
                 let request = message.request_id.as_deref();
-                if source == self.stored.device_id {
-                    let Some(expected) =
-                        request.and_then(|request| self.sessions.pending_target(request))
+                let outgoing = source == self.stored.device_id;
+                if outgoing {
+                    let Some(expected) = request.and_then(|r| self.sessions.pending_target(r))
                     else {
                         return Ok(());
                     };
@@ -1052,11 +1290,21 @@ impl Actor {
                         return Err(SdkError::Signal(SignalError::InvalidMessage));
                     }
                 }
-                let guard = LeaseGuard::new(id.clone(), source.clone(), target.clone())
+                let mut guard = LeaseGuard::new(id.clone(), source.clone(), target.clone())
                     .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?;
+                if outgoing {
+                    let clock = self
+                        .signal
+                        .as_ref()
+                        .ok_or(SdkError::Offline)?
+                        .server_clock();
+                    if guard.apply(&message, &clock, Instant::now()).is_err() {
+                        return Ok(());
+                    }
+                }
                 let session = Session {
                     id: id.clone(),
-                    initial_request_id: if source == self.stored.device_id {
+                    initial_request_id: if outgoing {
                         request.map(str::to_owned)
                     } else {
                         None
@@ -1069,43 +1317,50 @@ impl Actor {
                         ..Gate::default()
                     }),
                     worker: None,
+                    authority: if outgoing {
+                        None
+                    } else {
+                        Some(PendingAuthority {
+                            deadline: None,
+                            request: None,
+                            requested_at: None,
+                            offer: None,
+                        })
+                    },
+                    closing: false,
                     renew_at: Instant::now() + Duration::from_secs(10),
                     ready: false,
                     generation,
                     recovery_at: None,
                     recovery_attempt: 0,
                     sync_pending: false,
+                    sync_requested: false,
                     requests: std::collections::VecDeque::new(),
                 };
-                let inserted = if source == self.stored.device_id {
-                    self.sessions.promote(
-                        request.expect("correlated outgoing request"),
-                        &target,
-                        id.clone(),
-                        session,
-                    )
+                if outgoing {
+                    self.sessions
+                        .promote(
+                            request.expect("correlated request"),
+                            &target,
+                            id.clone(),
+                            session,
+                        )
+                        .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?;
                 } else {
-                    incoming = true;
-                    self.sessions.insert_incoming(id.clone(), session)
-                };
-                if inserted.is_err() {
-                    // Decline only this incoming session; never replace a live sibling.
-                    if incoming {
-                        if self.rejected_sessions.len() == 32 {
-                            self.rejected_sessions.pop_front();
-                        }
-                        self.rejected_sessions.push_back(id.clone());
-                        let kind = if message.payload["state"] == "authorizing" {
-                            "session.reject"
-                        } else {
-                            "session.terminate"
-                        };
-                        let _ = self
-                            .send_generation(kind, Some(&id), json!({}), generation)
-                            .await;
-                        return Ok(());
+                    // Retiring refusals retain only their original lightweight slot
+                    // until the server confirms close; no historical ID cache.
+                    let full = self.config.max_connections != 0
+                        && self.sessions.len() >= self.config.max_connections;
+                    self.sessions
+                        .insert_retiring_or_pending(id.clone(), session)
+                        .map_err(|_| SdkError::QueueFull)?;
+                    if full {
+                        self.close_session(&id, SdkError::Busy, true).await;
+                    } else {
+                        self.request_authority(&id).await;
+                        self.control_remaining = self.sessions.len();
                     }
-                    return Err(SdkError::Signal(SignalError::InvalidMessage));
+                    return Ok(());
                 }
             }
             let previous = self.sessions.get(&id).expect("admitted session").generation;
@@ -1147,6 +1402,7 @@ impl Actor {
             session.gate.update(session.guard.deadline());
             if message.kind == "sync.snapshot" {
                 session.sync_pending = false;
+                session.sync_requested = false;
             }
             let spawn = session.guard.is_authorized(Instant::now())
                 && session.source == self.stored.device_id
@@ -1168,6 +1424,30 @@ impl Actor {
             let Some(session) = self.sessions.get(id) else {
                 return Ok(());
             };
+            if session.closing {
+                return Ok(());
+            }
+            if session.authority.is_some() {
+                if message.kind == "session.offer"
+                    && session.target == self.stored.device_id
+                    && message
+                        .negotiation_generation
+                        .is_some_and(|g| (1..=MAX_NEGOTIATION_GENERATION).contains(&g))
+                    && message.payload["sdp"]
+                        .as_str()
+                        .is_some_and(|sdp| sdp.len() <= 64 * 1024)
+                {
+                    let authority = self
+                        .sessions
+                        .get_mut(id)
+                        .and_then(|s| s.authority.as_mut())
+                        .expect("pending authority");
+                    if authority.offer.is_none() {
+                        authority.offer = Some(message);
+                    }
+                }
+                return Ok(());
+            }
             if message
                 .negotiation_generation
                 .is_some_and(|generation| generation < session.generation)
@@ -1215,6 +1495,9 @@ impl Actor {
             if let Err(error) = result {
                 self.close_session(id, error, true).await;
             }
+        }
+        if let Some(offer) = buffered_offer {
+            Box::pin(self.message(offer)).await?;
         }
         Ok(())
     }
@@ -1317,7 +1600,7 @@ impl Actor {
                     if self.config.auto_reconnect
                         && recoverable_transport_error(&error)
                         && session.guard.is_authorized(Instant::now())
-                        && session.generation < 32
+                        && session.generation < MAX_NEGOTIATION_GENERATION
                     {
                         self.prepare_recovery(&id, error).await?;
                     } else {
@@ -1387,21 +1670,31 @@ impl Actor {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
+        if session.closing {
+            return;
+        }
+        let announced = session.authority.is_none();
+        session.closing = true;
         session.gate.close();
         session.guard.invalidate();
+        session.renew_at = Instant::now() + Duration::from_secs(1);
+        if let Some(authority) = session.authority.as_mut() {
+            authority.offer = None;
+            authority.request = None;
+        }
         let generation = session.generation;
         if notify {
             let _ = self
                 .send_generation("session.terminate", Some(id), json!({}), generation)
                 .await;
         }
-        // Keep the slot charged until its bounded worker teardown finishes.
         self.stop_generation(id).await;
-        self.sessions.remove(id);
-        let _ = self.emit(SdkEvent::ConnectionClosed {
-            session_id: id.to_owned(),
-            reason,
-        });
+        if announced {
+            let _ = self.emit(SdkEvent::ConnectionClosed {
+                session_id: id.to_owned(),
+                reason,
+            });
+        }
     }
     async fn close_all(&mut self) {
         self.outbound.close();

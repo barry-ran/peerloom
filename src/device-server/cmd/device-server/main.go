@@ -94,7 +94,14 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return errors.New("cannot initialize authorization service")
 	}
-	signalingServer := signaling.New(store, online, signaling.AuthorizationDispatch(sessions))
+	signalOptions, err := signaling.LoadOptions(os.Getenv)
+	if err != nil {
+		return err
+	}
+	signalingServer, err := signaling.NewWithOptions(store, online, signaling.AuthorizationDispatch(sessions), signalOptions)
+	if err != nil {
+		return err
+	}
 	defer signalingServer.Stop()
 	sweepCtx, sweepCancel := context.WithCancel(ctx)
 	sweepDone := make(chan struct{})

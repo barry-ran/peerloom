@@ -70,12 +70,6 @@ pub struct HandleRegistry<V: Validity> {
 }
 impl<V: Validity> HandleRegistry<V> {
     pub fn new(max_connections: usize, max_channels: usize) -> Result<Self, HandleError> {
-        if max_connections == 0
-            || max_channels == 0
-            || max_connections.checked_mul(max_channels).is_none()
-        {
-            return Err(HandleError::InvalidConfiguration);
-        }
         Ok(Self {
             connections: HashMap::new(),
             max_connections,
@@ -90,9 +84,12 @@ impl<V: Validity> HandleRegistry<V> {
         if !authorization.is_valid() {
             return Err(HandleError::Closed);
         }
-        if self.connections.len() >= self.max_connections {
+        if self.max_connections != 0 && self.connections.len() >= self.max_connections {
             return Err(HandleError::Full);
         }
+        self.connections
+            .try_reserve(1)
+            .map_err(|_| HandleError::Full)?;
         let id = allocate()?;
         if id == 0 || self.connections.contains_key(&id) {
             return Err(HandleError::Allocator);
@@ -135,9 +132,13 @@ impl<V: Validity> HandleRegistry<V> {
         if !entry.gate.is_valid() || !authorization.is_valid() {
             return Err(HandleError::Closed);
         }
-        if entry.channels.len() >= self.max_channels {
+        if self.max_channels != 0 && entry.channels.len() >= self.max_channels {
             return Err(HandleError::Full);
         }
+        entry
+            .channels
+            .try_reserve(1)
+            .map_err(|_| HandleError::Full)?;
         let id = allocate()?;
         if id == 0 || id == parent || entry.channels.contains_key(&id) {
             return Err(HandleError::Allocator);
@@ -282,6 +283,37 @@ mod tests {
         }
     }
     #[test]
+    fn unlimited_and_explicit_large_limits_grow_on_demand_and_fence_on_clear() {
+        for limit in [0, 500] {
+            let mut registry = HandleRegistry::new(limit, limit).unwrap();
+            assert_eq!(registry.connections.capacity(), 0);
+            let mut retained = Vec::new();
+            for id in 1..=500 {
+                registry.add_connection(Gate::new(), || Ok(id)).unwrap();
+                retained.push(registry.connection(id).unwrap());
+            }
+            for id in 501..=1000 {
+                registry
+                    .add_channel(1, ChannelKind::ReliableMessage, Gate::new(), || Ok(id))
+                    .unwrap();
+                retained.push(registry.channel(1, id).unwrap());
+            }
+            if limit != 0 {
+                assert_eq!(
+                    registry.add_connection(Gate::new(), || Ok(1001)),
+                    Err(HandleError::Full)
+                );
+                assert_eq!(
+                    registry.add_channel(1, ChannelKind::ReliableMessage, Gate::new(), || Ok(1002)),
+                    Err(HandleError::Full)
+                );
+            }
+            registry.clear();
+            assert!(retained.iter().all(|gate| !gate.is_valid()));
+            assert!(registry.connections.is_empty());
+        }
+    }
+    #[test]
     fn ownership_and_parent_close_fence_queued_child_clones() {
         let mut registry = HandleRegistry::new(2, 2).unwrap();
         let a = registry.add_connection(Gate::new(), || Ok(1)).unwrap();
@@ -369,8 +401,8 @@ mod tests {
     }
     #[test]
     fn no_historical_registry_growth_and_limits_are_checked() {
-        assert!(HandleRegistry::<Gate>::new(0, 1).is_err());
-        assert!(HandleRegistry::<Gate>::new(usize::MAX, 2).is_err());
+        assert!(HandleRegistry::<Gate>::new(0, 1).is_ok());
+        assert!(HandleRegistry::<Gate>::new(usize::MAX, 2).is_ok());
         let mut registry = HandleRegistry::new(1, 1).unwrap();
         for id in 1..1000 {
             let parent = registry.add_connection(Gate::new(), || Ok(id)).unwrap();

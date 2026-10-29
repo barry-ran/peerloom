@@ -56,7 +56,7 @@ func TestRegistryStrictParsingAndEnvironment(t *testing.T) {
 			t.Fatal("invalid registry accepted")
 		}
 	}
-	for _, env := range []map[string]string{{"RELAY_CREDENTIAL_TTL": "30s"}, {"RELAY_DEVELOPMENT_LOOPBACK": "perhaps"}, {"RELAY_DEVICE_ISSUES_PER_MINUTE": "0"}, {"RELAY_SESSION_ISSUES_PER_MINUTE": "invalid"}} {
+	for _, env := range []map[string]string{{"RELAY_CREDENTIAL_TTL": "30s"}, {"RELAY_DEVELOPMENT_LOOPBACK": "perhaps"}, {"RELAY_DEVICE_ISSUES_PER_MINUTE": "-1"}, {"RELAY_SESSION_ISSUES_PER_MINUTE": "invalid"}} {
 		if _, _, err = LoadFromEnvironment(func(key string) string { return env[key] }); err == nil {
 			t.Fatal("invalid environment accepted")
 		}

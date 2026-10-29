@@ -25,6 +25,8 @@
 !infra/migrations/000008_session_recovery.up.sql
 !infra/migrations/000009_webhook_delivery.down.sql
 !infra/migrations/000009_webhook_delivery.up.sql
+!infra/migrations/000010_optional_capacity.down.sql
+!infra/migrations/000010_optional_capacity.up.sql
 !deploy/
 !deploy/Dockerfile
 !deploy/Dockerfile.dockerignore

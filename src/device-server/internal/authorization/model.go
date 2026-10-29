@@ -29,7 +29,7 @@ func (o Options) validate() error {
 	return nil
 }
 
-const MaxNegotiationGeneration int64 = 32
+const MaxNegotiationGeneration int64 = 9007199254740991
 
 type Session struct {
 	NegotiationGeneration int64     `json:"negotiation_generation"`

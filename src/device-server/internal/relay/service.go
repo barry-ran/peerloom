@@ -27,10 +27,10 @@ type Limits struct {
 }
 
 func DefaultLimits() Limits {
-	return Limits{TenantPerMinute: 1024, DevicePerMinute: 128, SessionPerMinute: 16, RefreshMargin: 15 * time.Second}
+	return Limits{TenantPerMinute: 0, DevicePerMinute: 0, SessionPerMinute: 0, RefreshMargin: 15 * time.Second}
 }
 func (l Limits) validate(ttl time.Duration) error {
-	if l.TenantPerMinute < 1 || l.TenantPerMinute > 100000 || l.DevicePerMinute < 1 || l.DevicePerMinute > 10000 || l.SessionPerMinute < 1 || l.SessionPerMinute > 1000 || l.RefreshMargin < time.Second || l.RefreshMargin >= ttl/2 {
+	if l.TenantPerMinute < 0 || l.TenantPerMinute > 2147483647 || l.DevicePerMinute < 0 || l.DevicePerMinute > 2147483647 || l.SessionPerMinute < 0 || l.SessionPerMinute > 2147483647 || l.RefreshMargin < time.Second || l.RefreshMargin >= ttl/2 {
 		return ErrConfiguration
 	}
 	return nil
@@ -229,6 +229,9 @@ func (s *Service) charge(ctx context.Context, tx pgx.Tx, actor identity.Device, 
 		{"session", sessionID, s.limits.SessionPerMinute},
 	}
 	for _, counter := range counters {
+		if counter.limit == 0 {
+			continue
+		}
 		var issued int
 		err := tx.QueryRow(ctx, `INSERT INTO relay_issuance_windows(tenant_id,scope,subject_id,window_start,issued)
 VALUES($1,$2,$3,$4,1) ON CONFLICT(tenant_id,scope,subject_id,window_start) DO UPDATE

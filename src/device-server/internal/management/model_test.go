@@ -56,7 +56,7 @@ func TestGrantAndDeviceInputBounds(t *testing.T) {
 	ttl := 60
 	input := ConnectionGrantInput{SourceDeviceID: "00000000-0000-0000-0000-000000000001", TargetDeviceID: "00000000-0000-0000-0000-000000000002", ExpiresInSeconds: &ttl}
 	normalized, err := normalizeGrant(input)
-	if err != nil || normalized.MaxSessions != 1 || normalized.ExpiryAction != "terminate" {
+	if err != nil || normalized.MaxSessions == nil || *normalized.MaxSessions != -1 || normalized.ExpiryAction != "terminate" {
 		t.Fatalf("safe defaults: %+v %v", normalized, err)
 	}
 	input.TargetDeviceID = input.SourceDeviceID

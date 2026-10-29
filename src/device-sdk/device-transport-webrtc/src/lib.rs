@@ -73,7 +73,7 @@ impl Default for TransportConfig {
             bind_address: SocketAddr::from(([0, 0, 0, 0], 0)),
             include_loopback: false,
             enable_mdns: false,
-            max_channels: 8,
+            max_channels: 0,
             max_message_bytes: 64 * 1024,
             send_buffer_bytes: 1024 * 1024,
             max_sdp_bytes: 64 * 1024,
@@ -136,9 +136,7 @@ fn classify_backend(error: webrtc::error::Error) -> TransportError {
 
 impl TransportConfig {
     pub fn validate(&self) -> Result<(), TransportError> {
-        if self.max_channels == 0
-            || self.max_channels > 1024
-            || self.max_message_bytes == 0
+        if self.max_message_bytes == 0
             || self.max_message_bytes > 64 * 1024
             || self.send_buffer_bytes < self.max_message_bytes
             || self.send_buffer_bytes > u32::MAX as usize
@@ -279,7 +277,11 @@ struct Handler {
 fn reserve_channel(count: &AtomicUsize, max: usize) -> Result<(), TransportError> {
     count
         .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            (value < max).then_some(value + 1)
+            if max != 0 && value >= max {
+                None
+            } else {
+                value.checked_add(1)
+            }
         })
         .map(|_| ())
         .map_err(|_| TransportError::TooManyChannels)
@@ -397,7 +399,7 @@ impl PeerTransport {
         let (candidate_tx, candidate_rx) = watch::channel(());
         let (close_signal, _) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
-        let (incoming_tx, incoming_rx) = mpsc::channel(config.max_channels);
+        let (incoming_tx, incoming_rx) = mpsc::channel(32);
         let count = Arc::new(AtomicUsize::new(0));
         #[cfg(feature = "test-diagnostics")]
         let diagnostics = Arc::new(IncomingDiagnostics::default());
