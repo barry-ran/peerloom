@@ -143,7 +143,9 @@ class ServerSplitPolicyTests(unittest.TestCase):
         admin.fresh_master = lambda: None
         admin.gates = lambda *args: {}
         admin.ancestor = lambda *args: True
-        admin.validate()
+        from unittest.mock import patch
+        with patch.object(A, "verify_administration_scope"):
+            admin.validate()
         duplicate = copy.deepcopy(plan)
         duplicate['artifacts']['server-linux-amd64']['id'] = duplicate['artifacts']['linux-x86_64']['id']
         admin.plan = duplicate
@@ -499,6 +501,189 @@ class PushComparisonTests(unittest.TestCase):
         self.call(self.comparison(), {'before': SHA, 'after': MASTER,
                                       'compare': 'https://untrusted.invalid/collect'})
 
+class AdministrationScopeTests(unittest.TestCase):
+    def test_exact_documentation_and_plan_only(self):
+        for name in P.ADMINISTRATION_FILES:
+            P.verify_administration_files([{'filename': name, 'status': 'modified'}])
+
+    def test_product_and_execution_changes_rejected(self):
+        for name in ('src/device-sdk/Cargo.lock', 'src/device-server/main.go',
+                     '.github/workflows/native.yml', '.github/workflows/release-admin.yml',
+                     'scripts/release-admin.py', 'scripts/release-policy.py',
+                     'docs/unknown.md', 'release/other.json', 'README.md/../src/main.rs'):
+            with self.subTest(name=name), self.assertRaisesRegex(P.Rejected, 'SCOPE'):
+                P.verify_administration_files([
+                    {'filename': 'README.md', 'status': 'modified'},
+                    {'filename': name, 'status': 'modified'},
+                ])
+
+    def test_rename_delete_duplicate_truncation_fail_closed(self):
+        for files in (
+            [{'filename': 'README.md', 'status': 'removed'}],
+            [{'filename': 'README.md', 'status': 'modified', 'previous_filename': 'src/main.rs'}],
+            [{'filename': 'README.md', 'status': 'modified'}] * 2,
+            [{'filename': str(i), 'status': 'added'} for i in range(300)], [], [None],
+        ):
+            with self.subTest(files=files), self.assertRaises(P.Rejected):
+                P.verify_administration_files(files)
+
+    def test_complete_source_range_not_just_last_push(self):
+        from unittest.mock import Mock
+        value = PushComparisonTests().comparison()
+        value['files'].append({'filename': 'src/device-sdk/Cargo.lock', 'status': 'modified'})
+        api = Mock()
+        api.call.return_value = value
+        with self.assertRaisesRegex(P.Rejected, 'SCOPE'):
+            A.verify_administration_scope(api, SHA, MASTER)
+        api.call.assert_called_once_with('/repos/' + P.REPO + '/compare/' + SHA + '...' + MASTER + '?per_page=100&page=1')
+
+    def test_source_gates_remain_but_admin_gates_are_not_repeated(self):
+        from unittest.mock import Mock, patch
+        plan = {'approved': True, 'format_version': 1, 'repository': P.REPO,
+                'administration_sha': MASTER, 'operation': 'release', 'release_sha': SHA,
+                'tag': 'v0.1.1', 'prerelease': False, 'notes': 'notes', 'final_scope_accepted': True,
+                'artifacts': {name: {'id': number} for number, name in enumerate(P.PLATFORMS, 1)}}
+        admin = A.Admin(Mock(), plan, MASTER)
+        admin.fresh_master = Mock()
+        admin.ancestor = Mock(return_value=True)
+        admin.gates = Mock(return_value={'ci.yml': 123})
+        with patch.object(A, 'verify_administration_scope') as scope:
+            self.assertEqual(admin.validate(), {'ci.yml': 123})
+            scope.assert_called_once_with(admin.api, SHA, MASTER, 'v0.1.1')
+        admin.gates.assert_called_once_with(SHA)
+
+
+class ReviewedBootstrapTests(unittest.TestCase):
+    def setup_scope(self):
+        from unittest.mock import Mock
+        files = [
+            {'filename': 'release/approved-plan.json', 'status': 'modified'},
+            {'filename': A.EXECUTION_FILE, 'status': 'modified', 'sha': TREE},
+            {'filename': '.github/workflows/native.yml', 'status': 'modified', 'sha': MASTER},
+        ]
+        value = PushComparisonTests().comparison()
+        value['base_commit']['sha'] = A.BOOTSTRAP_SOURCE
+        value['merge_base_commit']['sha'] = A.BOOTSTRAP_SOURCE
+        value['files'] = files
+        api = Mock()
+        api.call.side_effect = [value, {'type': 'file', 'sha': SHA}]
+        blobs = {'.github/workflows/native.yml': {'before_blob': SHA, 'after_blob': MASTER}}
+        return api, value, blobs
+
+    def test_only_reviewed_exact_transition_bytes(self):
+        from unittest.mock import patch
+        api, _, blobs = self.setup_scope()
+        with patch.object(A, 'REVIEWED_BOOTSTRAP_BLOBS', blobs):
+            A.verify_administration_scope(api, A.BOOTSTRAP_SOURCE, TREE, A.BOOTSTRAP_TAG)
+        self.assertIn('?ref=' + A.BOOTSTRAP_SOURCE, api.call.call_args.args[0])
+
+    def test_wrong_source_tag_after_or_before_rejected(self):
+        from unittest.mock import patch
+        for kind in ('source', 'tag', 'after', 'before', 'extra', 'removed', 'rename', 'missing'):
+            api, value, blobs = self.setup_scope()
+            source, tag = A.BOOTSTRAP_SOURCE, A.BOOTSTRAP_TAG
+            previous = {'type': 'file', 'sha': SHA}
+            if kind == 'source':
+                source = SHA
+                value['base_commit']['sha'] = value['merge_base_commit']['sha'] = source
+            elif kind == 'tag':
+                tag = 'v0.1.2'
+            elif kind == 'after':
+                value['files'][-1]['sha'] = SHA
+            elif kind == 'before':
+                previous['sha'] = TREE
+            elif kind == 'extra':
+                value['files'].append({'filename': 'src/main.rs', 'status': 'added', 'sha': TREE})
+            elif kind == 'removed':
+                value['files'][-1]['status'] = 'removed'
+            elif kind == 'rename':
+                value['files'][-1]['previous_filename'] = 'other'
+            elif kind == 'missing':
+                value['files'].pop()
+            api.call.side_effect = [value, previous]
+            with self.subTest(kind=kind), patch.object(A, 'REVIEWED_BOOTSTRAP_BLOBS', blobs), self.assertRaises(P.Rejected):
+                A.verify_administration_scope(api, source, TREE, tag)
+
+
+class ReadOnlyCandidateTests(unittest.TestCase):
+    def event(self):
+        env = {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REPOSITORY': P.REPO,
+               'GITHUB_REF': 'refs/heads/feat/validation-release-packaging', 'GITHUB_SHA': MASTER}
+        event = {'repository': {'full_name': P.REPO}, 'ref': env['GITHUB_REF'],
+                 'before': SHA, 'after': MASTER}
+        return env, event, {'approved': True, 'administration_sha': 'event', 'operation': 'release'}
+
+    def test_only_fixed_packaging_push_is_accepted(self):
+        env, event, plan = self.event()
+        self.assertEqual(A.candidate_context(env, event, plan)[1], MASTER)
+        for key, value in [('GITHUB_REF', 'refs/heads/master'), ('GITHUB_REF', 'refs/heads/other'),
+                           ('GITHUB_EVENT_NAME', 'workflow_dispatch'), ('GITHUB_REPOSITORY', 'fork/repo')]:
+            with self.subTest(key=key, value=value), self.assertRaises(P.Rejected):
+                A.candidate_context(dict(env, **{key: value}), event, plan)
+        for delta in ({'after': SHA}, {'forced': True}, {'deleted': True}, {'created': True}):
+            with self.subTest(delta=delta), self.assertRaises(P.Rejected):
+                A.candidate_context(env, dict(event, **delta), plan)
+        with self.assertRaises(P.Rejected):
+            A.context(env, event, plan)
+
+    def test_candidate_cannot_execute_even_before_reading_plan(self):
+        from unittest.mock import patch
+        with patch.object(A.sys, 'argv', ['release-admin.py', '--validate-candidate', '--execute']), \
+             patch.object(A.Path, 'read_text') as read, self.assertRaisesRegex(P.Rejected, 'CANDIDATE_WRITE'):
+            A.main()
+        read.assert_not_called()
+
+    def test_candidate_validates_artifacts_without_publish_or_enabled_output(self):
+        from unittest.mock import Mock, patch
+        env, event, plan = self.event()
+        env['GITHUB_EVENT_PATH'] = '/unused-event'
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'output'
+            env['GITHUB_OUTPUT'] = str(output)
+            admin = Mock()
+            admin.validate.return_value = {'ci.yml': 1}
+            with patch.dict(A.os.environ, env, clear=True), \
+                 patch.object(A.sys, 'argv', ['release-admin.py', '--validate-candidate']), \
+                 patch.object(A.Path, 'read_text', side_effect=[json.dumps(plan), json.dumps(event)]), \
+                 patch.object(A.subprocess, 'check_output', return_value=MASTER), \
+                 patch.object(A.subprocess, 'run', return_value=Mock(returncode=0)), \
+                 patch.object(A, 'GitHub'), patch.object(A, 'Admin', return_value=admin), \
+                 patch.object(A, 'verify_plan_changed') as changed:
+                A.main()
+            admin.validate.assert_called_once()
+            admin.artifacts.assert_called_once()
+            admin.publish.assert_not_called()
+            changed.assert_not_called()
+            self.assertFalse(output.exists())
+
+    def test_candidate_fresh_ref_and_both_ancestry_links_are_enforced(self):
+        from unittest.mock import Mock, patch
+        for case in ('valid', 'moved', 'source_not_retained', 'master_not_ancestor'):
+            env, event, plan = self.event()
+            plan['release_sha'] = SHA
+            env['GITHUB_EVENT_PATH'] = '/unused-event'
+            api = Mock()
+            api.call.side_effect = [{'object': {'sha': TREE if case == 'moved' else MASTER}},
+                                    {'object': {'sha': SHA}}]
+            admin = Mock()
+            admin.ancestor.side_effect = [case != 'source_not_retained', case != 'master_not_ancestor']
+            admin.validate.side_effect = lambda: (admin.fresh_master() or {'ci.yml': 1})
+            with self.subTest(case=case), patch.dict(A.os.environ, env, clear=True), \
+                 patch.object(A.sys, 'argv', ['release-admin.py', '--validate-candidate']), \
+                 patch.object(A.Path, 'read_text', side_effect=[json.dumps(plan), json.dumps(event)]), \
+                 patch.object(A.subprocess, 'check_output', return_value=MASTER), \
+                 patch.object(A.subprocess, 'run', return_value=Mock(returncode=0)), \
+                 patch.object(A, 'GitHub', return_value=api), patch.object(A, 'Admin', return_value=admin):
+                if case == 'valid':
+                    A.main()
+                    admin.artifacts.assert_called_once()
+                else:
+                    with self.assertRaises(P.Rejected):
+                        A.main()
+                    admin.artifacts.assert_not_called()
+                admin.publish.assert_not_called()
+
+
 class ReleaseOnlyBoundaryTests(unittest.TestCase):
     def test_removed_branch_deletion_interfaces(self):
         self.assertFalse(hasattr(A.Admin, 'cleanup'))
@@ -630,12 +815,23 @@ class ExtraBoundaryTests(unittest.TestCase):
     def test_workflow_permission_isolation(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / '.github/workflows/release-admin.yml').read_text()
-        self.assertIn("on:\n  push:\n    branches: [master]\n    paths: ['release/approved-plan.json']\n", source)
+        self.assertIn("on:\n  push:\n    branches: [master, feat/validation-release-packaging]\n    paths:\n", source)
+        path_block = source.split('    paths:\n', 1)[1].split('permissions:', 1)[0]
+        self.assertEqual(set(line.strip().removeprefix('- ') for line in path_block.splitlines() if line.strip()), {
+            'release/approved-plan.json', 'scripts/release-admin.py', 'scripts/release-policy.py',
+            'scripts/test-release-admin.py', 'scripts/test-workflow-triggers.py',
+            '.github/workflows/release-admin.yml', '.github/workflows/ci.yml',
+            '.github/workflows/native.yml', '.github/workflows/android.yml', '.github/workflows/admin-web.yml',
+        })
         self.assertNotIn('pull_request', source)
         self.assertNotIn('workflow_dispatch', source)
         self.assertEqual(source.count('contents: write'), 1)
         read_job, write_job = source.split('  apply-approved-plan:', 1)
         self.assertNotIn('contents: write', read_job)
+        self.assertNotIn('--execute', read_job)
+        self.assertIn('--validate-candidate', read_job)
+        self.assertIn("needs.preflight.outputs.enabled == 'true'", write_job)
+        self.assertIn("github.ref == 'refs/heads/master'", write_job)
         self.assertIn('permissions:\n      contents: write\n      actions: read', write_job)
         self.assertEqual(source.count('persist-credentials: false'), 2)
         self.assertEqual(source.count('ref: ${{ github.sha }}'), 2)

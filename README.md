@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/barry-ran/peerloom/actions/workflows/ci.yml"><img src="https://github.com/barry-ran/peerloom/actions/workflows/ci.yml/badge.svg?branch=master" alt="基础检查与开发环境集成"></a>
+  <a href="https://github.com/barry-ran/peerloom/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/功能验证-查看运行-527bea" alt="功能验证：查看实际运行记录，不代表当前提交已通过"></a>
   <a href="https://github.com/barry-ran/peerloom/releases"><img src="https://img.shields.io/github/v/release/barry-ran/peerloom?color=527bea" alt="最新正式版本"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/原创代码-MIT-34b8a0" alt="原创代码：MIT"></a>
   <a href="docs/整体架构.md"><img src="https://img.shields.io/badge/核心-Rust%20%2B%20Go-527bea" alt="核心：Rust 与 Go"></a>
@@ -159,7 +159,7 @@ curl --fail http://127.0.0.1:18080/readyz
 | Web | 尚未提供 Web SDK | 浏览器管理后台不等于 Web SDK |
 
 > [!IMPORTANT]
-> 上述验证不等于生产就绪。生产签名宿主、实体设备、各类公网 NAT、长期运行与移动端后台行为尚未全面实测。移动端后台保活由操作系统及宿主应用决定。正式交付必须核对**同一提交**的完整必需 CI 与实际 Release 资产，详见[开发与验收](docs/开发与验收.md)。
+> 上述验证不等于生产就绪。生产签名宿主、实体设备、各类公网 NAT、长期运行与移动端后台行为尚未全面实测。移动端后台保活由操作系统及宿主应用决定。正式交付必须核对**同一发布源码提交**的完整必需 CI 与实际 Release 资产；纯文档不启动功能 CI，功能改动先在非 master 验证分支通过，再正常快进 master，不重复跑一套矩阵。纯发布计划复用已验证的精确源码产物，详见[开发与验收](docs/开发与验收.md)。
 
 ## 文档导航
 

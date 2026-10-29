@@ -19,6 +19,33 @@ spec = importlib.util.spec_from_file_location('policy', Path(__file__).with_name
 P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)
 
+# One reviewed transition; not a permanent workflow/script allowlist. The root reviewer
+# approves this execution file itself, including these constants, at its exact final hash.
+# This is the existing trusted-master-code boundary, NOT cryptographic self-attestation.
+BOOTSTRAP_SOURCE = '489294528319223e4f38a5ec80a2d0192783988e'
+BOOTSTRAP_TAG = 'v0.1.1'
+EXECUTION_FILE = 'scripts/release-admin.py'
+REVIEWED_BOOTSTRAP_BLOBS = {'.github/workflows/admin-web.yml': {'after_blob': 'd40bf6215a290591b70eed10d017ca271743ae2f',
+                                     'before_blob': '2aaea8702200604025c406b3894758c9567a625f'},
+ '.github/workflows/android.yml': {'after_blob': 'e3c94bcdfa515493f03f5bf6574c0995dcf1cadf',
+                                   'before_blob': '98863cf07a8631ecddd9dd5924175eddbd5be7da'},
+ '.github/workflows/ci.yml': {'after_blob': 'f4b3acac2f2b83297dd2a7a9350d8a26b2e033fb',
+                              'before_blob': 'f89e9a6658a5f6e8e7475549122a7cf8177dc840'},
+ '.github/workflows/native.yml': {'after_blob': '9680d45597f958bdb96efd55c4aa620109b75283',
+                                  'before_blob': 'bd7293e3526b7087bb382ca90af5d56226f8bbf5'},
+ '.github/workflows/release-admin.yml': {'after_blob': '637fe5be5913635194e74bf5c409f973d3e5911d',
+                                         'before_blob': '01d5ce8393f98a50d65da89206cc1bc6f6977297'},
+ 'docs/发布与分支清理模块.md': {'after_blob': 'b6423bc5218cb4f2c6e42b5423f36fce03a27836',
+                       'before_blob': 'd34cead23879b2215277330d3191bb848eab0712'},
+ 'docs/开发与验收.md': {'after_blob': '1a7016e1caf173b314ae172f117ac4f8418d35da',
+                   'before_blob': '72eb9acfff21a3da61c4648e74c461cfa5556022'},
+ 'scripts/release-policy.py': {'after_blob': '377fdbcbfdd1dbb165c8878aa7fa28d80857cd79',
+                               'before_blob': '47bd8640145af0ab2b44d3ce56c8f290e797acaf'},
+ 'scripts/test-release-admin.py': {'after_blob': 'bb742104bd4d206e1568725c9c4b20c7b9434b33',
+                                   'before_blob': '8d50e4dab2d81c7fb3dfafbe094e4703fc0bcebc'},
+ 'scripts/test-workflow-triggers.py': {'after_blob': '0d313f72f1e76b4afc57317c1f2eae299c399533',
+                                       'before_blob': None}}
+
 class Pending(P.Rejected):
     pass
 
@@ -122,7 +149,6 @@ class Admin:
         # administration_sha="event" in the stored file, resolved only by the trusted CLI below.
         P.require(plan.get('operation') == 'release' and 'branches' not in plan, 'RELEASE_OPERATION_REQUIRED')
         self.fresh_master()
-        self.gates(self.master)
         release_sha = P.sha(plan.get('release_sha'))
         P.require(release_sha != self.master and self.ancestor(release_sha, self.master), 'RELEASE_NOT_PREVIOUS_RETAINED_COMMIT')
         P.require(re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', plan.get('tag', '')), 'VERSION_TAG_REQUIRED')
@@ -133,6 +159,7 @@ class Admin:
         P.require(len(artifact_ids) == len(P.PLATFORMS) and
                   all(type(value) is int and value > 0 for value in artifact_ids) and
                   len(set(artifact_ids)) == len(artifact_ids), 'DISTINCT_PRODUCT_ARTIFACT_IDS_REQUIRED')
+        verify_administration_scope(self.api, release_sha, self.master, plan['tag'])
         return self.gates(release_sha)
 
     def artifacts(self, directory, runs):
@@ -231,13 +258,22 @@ def context(env, event, plan):
     plan = dict(plan, administration_sha=commit)
     return plan, commit
 
-def verify_plan_changed(api, event, commit):
-    # Actions deliberately omits added/removed/modified from commit payloads.
-    # Compare only the already-validated immutable before/after SHAs, not a URL
-    # supplied by the event. GitHub caps comparison files at 300: fail closed at
-    # that boundary rather than pretend the returned inventory is complete.
-    before = P.sha(event.get('before'))
-    commit = P.sha(commit)
+def candidate_context(env, event, plan):
+    P.require(env.get('GITHUB_EVENT_NAME') == 'push' and env.get('GITHUB_REPOSITORY') == P.REPO and
+              env.get('GITHUB_REF') == 'refs/heads/feat/validation-release-packaging' and
+              event.get('repository', {}).get('full_name') == P.REPO and
+              event.get('ref') == env.get('GITHUB_REF') and event.get('after') == env.get('GITHUB_SHA') and
+              not event.get('created') and not event.get('deleted') and not event.get('forced'), 'UNTRUSTED_CANDIDATE_EVENT')
+    # Reuse all plan/event binding checks without weakening master context().
+    master_env = dict(env, GITHUB_REF='refs/heads/master')
+    master_event = dict(event, ref='refs/heads/master')
+    return context(master_env, master_event, plan)
+
+
+def comparison_files(api, before, commit):
+    # GitHub comparison files are capped at 300, regardless of commit pagination.
+    # Refuse the boundary: an incomplete inventory never qualifies for publication.
+    before, commit = P.sha(before), P.sha(commit)
     P.require(before != '0' * 40 and before != commit, 'PUSH_RANGE_REQUIRED')
     value = api.call('/repos/' + P.REPO + '/compare/' + before + '...' + commit + '?per_page=100&page=1')
     P.require(value.get('base_commit', {}).get('sha') == before and
@@ -247,8 +283,39 @@ def verify_plan_changed(api, event, commit):
               value.get('total_commits') == value['ahead_by'], 'PUSH_NOT_FAST_FORWARD')
     files = value.get('files')
     P.require(isinstance(files, list) and 0 < len(files) < 300, 'COMPARE_FILE_LIST_UNPROVEN')
+    P.require(all(isinstance(item, dict) for item in files), 'COMPARE_FILE_LIST_INVALID')
     names = [item.get('filename') for item in files]
     P.require(all(isinstance(name, str) for name in names) and len(names) == len(set(names)), 'COMPARE_FILE_LIST_INVALID')
+    return files
+
+
+def verify_administration_scope(api, source, administration, tag=None):
+    # Check the ENTIRE source-to-administration tree difference, not just the last push.
+    files = comparison_files(api, source, administration)
+    if all(item.get('filename') in P.ADMINISTRATION_FILES for item in files):
+        P.verify_administration_files(files)
+        return
+    P.require(source == BOOTSTRAP_SOURCE and tag == BOOTSTRAP_TAG and
+              bool(REVIEWED_BOOTSTRAP_BLOBS), 'ADMINISTRATION_SCOPE_NOT_REVIEWED')
+    execution = [item for item in files if item.get('filename') == EXECUTION_FILE]
+    P.require(len(execution) == 1 and execution[0].get('status') == 'modified' and
+              'previous_filename' not in execution[0], 'REVIEWED_EXECUTION_FILE_REQUIRED')
+    # Current execution code was reviewed at the trusted master commit. The other
+    # transition files must match both independently reviewed before/after blobs.
+    remaining = [item for item in files if item.get('filename') != EXECUTION_FILE]
+    P.verify_administration_files(remaining, {'files': REVIEWED_BOOTSTRAP_BLOBS})
+    for name, entry in REVIEWED_BOOTSTRAP_BLOBS.items():
+        previous = api.call('/repos/' + P.REPO + '/contents/' + urllib.parse.quote(name, safe='/') +
+                            '?ref=' + source, missing=True)
+        if entry['before_blob'] is None:
+            P.require(previous is None, 'BOOTSTRAP_BEFORE_BLOB_MISMATCH')
+        else:
+            P.require(isinstance(previous, dict) and previous.get('type') == 'file' and
+                      previous.get('sha') == entry['before_blob'], 'BOOTSTRAP_BEFORE_BLOB_MISMATCH')
+
+
+def verify_plan_changed(api, event, commit):
+    files = comparison_files(api, event.get('before'), commit)
     changes = [item for item in files if item['filename'] == 'release/approved-plan.json']
     P.require(len(changes) == 1 and changes[0].get('status') in ('added', 'modified') and
               'previous_filename' not in changes[0], 'PLAN_NOT_CHANGED')
@@ -257,23 +324,36 @@ def verify_plan_changed(api, event, commit):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--validate-candidate', action='store_true')
     args = parser.parse_args()
+    P.require(not (args.execute and args.validate_candidate), 'CANDIDATE_WRITE_FORBIDDEN')
     root = Path(__file__).resolve().parents[1]
     plan = json.loads((root / 'release/approved-plan.json').read_text())
     if plan.get('approved') is not True:
-        if os.environ.get('GITHUB_OUTPUT'):
+        if not args.validate_candidate and os.environ.get('GITHUB_OUTPUT'):
             with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                 output.write('enabled=false\n')
         return
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-    plan, commit = context(os.environ, event, plan)
+    plan, commit = (candidate_context if args.validate_candidate else context)(os.environ, event, plan)
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     P.require(head == commit, 'CHECKOUT_NOT_TRUSTED_MASTER')
     clean = subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', 'scripts/release-admin.py', 'scripts/release-policy.py', 'scripts/license-gap-policy.py', 'scripts/maven-gap-policy.py', 'release/maven-license-gaps.json', 'release/approved-plan.json', '.github/workflows/release-admin.yml'], cwd=root, capture_output=True)
     P.require(clean.returncode == 0, 'TRUSTED_FILES_MODIFIED')
     api = GitHub()
-    verify_plan_changed(api, event, commit)
+    if not args.validate_candidate:
+        verify_plan_changed(api, event, commit)
     admin = Admin(api, plan, commit)
+    if args.validate_candidate:
+        # Read-only branch validation never impersonates or mutates master.
+        def fresh_candidate():
+            value = api.call('/repos/' + P.REPO + '/git/ref/heads/feat/validation-release-packaging')
+            P.require(value['object']['sha'] == commit, 'CANDIDATE_MOVED')
+            master = P.sha(api.call('/repos/' + P.REPO + '/git/ref/heads/master')['object']['sha'])
+            source = P.sha(plan.get('release_sha'))
+            P.require(admin.ancestor(source, master) and admin.ancestor(master, commit),
+                      'CANDIDATE_NOT_DESCENDANT_OF_RETAINED_MASTER')
+        admin.fresh_master = fresh_candidate
     deadline = time.monotonic() + 120 * 60
     while True:
         try:
@@ -286,7 +366,7 @@ def main():
         outputs = admin.artifacts(Path(directory), runs)
         if args.execute:
             admin.publish(outputs)
-    if not args.execute and os.environ.get('GITHUB_OUTPUT'):
+    if not args.execute and not args.validate_candidate and os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('enabled=true\n')
 

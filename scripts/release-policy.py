@@ -56,6 +56,35 @@ def require(value, message):
     if not value:
         raise Rejected(message)
 
+# Exact documentation/plan paths, never scripts/**, workflows/** or arbitrary Markdown.
+ADMINISTRATION_FILES = frozenset((
+    'README.md', 'docs/assets/peerloom-banner.svg', 'release/approved-plan.json',
+))
+
+
+def verify_administration_files(files, bootstrap=None):
+    require(isinstance(files, list) and 0 < len(files) < 300, 'COMPARE_FILE_LIST_UNPROVEN')
+    names = set()
+    for item in files:
+        require(isinstance(item, dict), 'COMPARE_FILE_LIST_INVALID')
+        name = item.get('filename')
+        require(isinstance(name, str) and name not in names, 'COMPARE_FILE_LIST_INVALID')
+        names.add(name)
+        require(item.get('status') in ('added', 'modified') and
+                'previous_filename' not in item, 'ADMINISTRATION_RENAME_OR_DELETE')
+        if name in ADMINISTRATION_FILES:
+            continue
+        require(bootstrap is not None, 'ADMINISTRATION_SCOPE_NOT_REVIEWED')
+        require(name in bootstrap['files'], 'ADMINISTRATION_SCOPE_NOT_REVIEWED')
+        entry = bootstrap['files'][name]
+        require(item.get('sha') == entry['after_blob'] and
+                item['status'] == ('added' if entry['before_blob'] is None else 'modified'),
+                'BOOTSTRAP_FILE_BLOB_MISMATCH')
+    if bootstrap is not None:
+        require(set(bootstrap['files']) == names - ADMINISTRATION_FILES,
+                'BOOTSTRAP_INVENTORY_MISMATCH')
+
+
 def release_asset_name(platform, tag):
     require(platform in PLATFORMS and isinstance(tag, str) and
             re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', tag), 'INVALID_ASSET_IDENTITY')

@@ -1,7 +1,18 @@
 name: Android 原生封装验证
 on:
   push:
-    branches: [master, 'feat/**']
+    # Functional changes are validated before the normal fast-forward to master.
+    branches-ignore: [master]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/*.md'
+      - 'docs/assets/peerloom-banner.svg'
+      - 'deploy/server/README.md'
+      - 'bindings/android/README.md'
+      - 'bindings/android/scripts/Maven证据说明.md'
+      - 'bindings/ios/Apple封装说明.md'
+      - 'release/approved-plan.json'
+  # Explicit full validation remains available, including on master.
   workflow_dispatch:
 permissions:
   contents: read
