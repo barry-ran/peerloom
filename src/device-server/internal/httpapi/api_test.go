@@ -17,6 +17,7 @@ type stubService struct {
 	err      error
 	calls    int
 	directIP string
+	device   identity.Device
 }
 
 func (s *stubService) Register(ctx context.Context, r identity.Registration, key string) (identity.Credential, error) {
@@ -32,7 +33,7 @@ func (s *stubService) RegisterDirect(ctx context.Context, r identity.Registratio
 }
 func (s *stubService) Authenticate(ctx context.Context, token string) (identity.Device, error) {
 	s.calls++
-	return identity.Device{}, s.err
+	return s.device, s.err
 }
 func (s *stubService) Refresh(ctx context.Context, token, key string) (identity.Credential, error) {
 	s.calls++
@@ -108,5 +109,41 @@ func TestDirectUsesTransportPeerNotForwardedHeaders(t *testing.T) {
 	New(service).ServeHTTP(httptest.NewRecorder(), request)
 	if service.directIP != "2001:db8::42" {
 		t.Fatal("untrusted forwarding headers affected direct rate-limit identity")
+	}
+}
+
+func TestDeviceSelfCredentialExpirySnapshotJSON(t *testing.T) {
+	service := &stubService{device: identity.Device{
+		ID:            "00000000-0000-4000-8000-000000000001",
+		TenantID:      "00000000-0000-4000-8000-000000000002",
+		ApplicationID: "00000000-0000-4000-8000-000000000003",
+		Platform:      "linux", Metadata: json.RawMessage(`{}`),
+		CredentialExpiresAt: "2026-10-29T12:00:00.123456Z",
+	}}
+	req := httptest.NewRequest("GET", "/v1/device-self", nil)
+	req.Header.Set("Authorization", "Bearer dev_private-test-value")
+	w := httptest.NewRecorder()
+	New(service).ServeHTTP(w, req)
+	if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("snapshot response not successful and private")
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body) != 6 {
+		t.Fatal("unexpected public identity fields")
+	}
+	for _, field := range []string{"device_id", "tenant_id", "application_id", "platform", "metadata", "credential_expires_at"} {
+		if _, ok := body[field]; !ok {
+			t.Fatalf("missing public field %s", field)
+		}
+	}
+	var expiry string
+	if err := json.Unmarshal(body["credential_expires_at"], &expiry); err != nil || expiry != service.device.CredentialExpiresAt {
+		t.Fatal("trusted expiry not preserved")
+	}
+	if strings.Contains(w.Body.String(), "private-test-value") {
+		t.Fatal("credential leaked in snapshot")
 	}
 }

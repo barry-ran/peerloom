@@ -325,3 +325,90 @@ func TestRefreshCannotRaceCredentialRevocation(t *testing.T) {
 		t.Fatal("revoked credential minted a successor")
 	}
 }
+
+// The returned expiry belongs to the authenticated credential row, not the
+// original registration response or another credential for the same device.
+func TestAuthenticatedCredentialExpirySnapshot(t *testing.T) {
+	store, pool, ctx, _ := identityFixture(t)
+	input := seedRegistration(t, ctx, pool)
+	old, err := store.Register(ctx, input, "expiry-snapshot-register")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(token string) Device {
+		t.Helper()
+		got, err := store.Authenticate(ctx, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var expected time.Time
+		if err := pool.QueryRow(ctx, "SELECT expires_at FROM device_credentials WHERE credential_hash=$1", digest(token)).Scan(&expected); err != nil {
+			t.Fatal(err)
+		}
+		if got.CredentialExpiresAt != expected.UTC().Format(time.RFC3339Nano) {
+			t.Fatal("expiry not bound to authenticated database row")
+		}
+		return got
+	}
+	before := check(old.DeviceCredential)
+	next, err := store.Refresh(ctx, old.DeviceCredential, "expiry-snapshot-refresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlap, current := check(old.DeviceCredential), check(next.DeviceCredential)
+	if overlap.ID != current.ID || overlap.TenantID != current.TenantID || overlap.ApplicationID != current.ApplicationID {
+		t.Fatal("rotation changed device scope")
+	}
+	if overlap.CredentialExpiresAt == before.CredentialExpiresAt || overlap.CredentialExpiresAt == current.CredentialExpiresAt {
+		t.Fatal("old credential did not advertise shortened overlap expiry")
+	}
+	otherInput := seedRegistration(t, ctx, pool)
+	other, err := store.Register(ctx, otherInput, "expiry-other-tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDevice := check(other.DeviceCredential)
+	if otherDevice.TenantID == current.TenantID || otherDevice.ApplicationID == current.ApplicationID || otherDevice.ID == current.ID {
+		t.Fatal("different tenant credentials aliased")
+	}
+	if _, err := pool.Exec(ctx, "UPDATE device_credentials SET revoked_at=clock_timestamp() WHERE credential_hash=$1", digest(next.DeviceCredential)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Authenticate(ctx, next.DeviceCredential)
+	requireCode(t, err, "AUTH_INVALID")
+	check(other.DeviceCredential)
+}
+
+func TestCredentialExpiryDoesNotWeakenAuthentication(t *testing.T) {
+	for _, scenario := range []string{"expired", "credential-revoked", "device-revoked", "application-disabled", "tenant-disabled"} {
+		t.Run(scenario, func(t *testing.T) {
+			store, pool, ctx, _ := identityFixture(t)
+			input := seedRegistration(t, ctx, pool)
+			credential, err := store.Register(ctx, input, "expiry-negative-register")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var statement string
+			switch scenario {
+			case "expired":
+				statement = "UPDATE device_credentials SET expires_at=clock_timestamp()-interval '1 second'"
+			case "credential-revoked":
+				statement = "UPDATE device_credentials SET revoked_at=clock_timestamp()"
+			case "device-revoked":
+				statement = "UPDATE devices SET status='revoked'"
+			case "application-disabled":
+				statement = "UPDATE applications SET enabled=false"
+			case "tenant-disabled":
+				statement = "UPDATE tenants SET status='suspended'"
+			}
+			if _, err := pool.Exec(ctx, statement); err != nil {
+				t.Fatal(err)
+			}
+			got, err := store.Authenticate(ctx, credential.DeviceCredential)
+			requireCode(t, err, "AUTH_INVALID")
+			if got.CredentialExpiresAt != "" || got.ID != "" {
+				t.Fatal("failed authentication leaked identity snapshot")
+			}
+		})
+	}
+}

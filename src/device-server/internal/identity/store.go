@@ -168,17 +168,19 @@ func authenticate(ctx context.Context, db queryer, token string) (Device, error)
 		return Device{}, Fail("AUTH_INVALID", 401)
 	}
 	var result Device
-	err := db.QueryRow(ctx, `SELECT d.id::text,d.tenant_id::text,d.application_id::text,d.platform,d.metadata
+	var expires time.Time
+	err := db.QueryRow(ctx, `SELECT d.id::text,d.tenant_id::text,d.application_id::text,d.platform,d.metadata,c.expires_at
 FROM device_credentials c JOIN devices d ON d.id=c.device_id AND d.tenant_id=c.tenant_id
 JOIN applications a ON a.id=d.application_id AND a.tenant_id=d.tenant_id JOIN tenants t ON t.id=d.tenant_id
 WHERE c.credential_hash=$1 AND c.revoked_at IS NULL AND c.expires_at>clock_timestamp()
-AND d.status='active' AND a.enabled AND t.status='active'`, digest(token)).Scan(&result.ID, &result.TenantID, &result.ApplicationID, &result.Platform, &result.Metadata)
+AND d.status='active' AND a.enabled AND t.status='active'`, digest(token)).Scan(&result.ID, &result.TenantID, &result.ApplicationID, &result.Platform, &result.Metadata, &expires)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Device{}, Fail("AUTH_INVALID", 401)
 	}
 	if err != nil {
 		return Device{}, Fail("DATABASE_UNAVAILABLE", 503)
 	}
+	result.CredentialExpiresAt = expires.UTC().Format(time.RFC3339Nano)
 	return result, nil
 }
 

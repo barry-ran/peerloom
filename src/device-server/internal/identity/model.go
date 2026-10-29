@@ -71,11 +71,12 @@ type Credential struct {
 }
 
 type Device struct {
-	ID            string          `json:"device_id"`
-	TenantID      string          `json:"tenant_id"`
-	ApplicationID string          `json:"application_id"`
-	Platform      string          `json:"platform"`
-	Metadata      json.RawMessage `json:"metadata"`
+	ID                  string          `json:"device_id"`
+	TenantID            string          `json:"tenant_id"`
+	ApplicationID       string          `json:"application_id"`
+	Platform            string          `json:"platform"`
+	Metadata            json.RawMessage `json:"metadata"`
+	CredentialExpiresAt string          `json:"credential_expires_at"`
 }
 
 type Error struct {

@@ -29,6 +29,19 @@ def validator(name):
 
 
 class ContractTests(unittest.TestCase):
+    def test_device_self_trusted_expiry_schema(self):
+        api = json.loads((ROOT / 'api/openapi.json').read_text())
+        device = api['components']['schemas']['Device']
+        self.assertIn('credential_expires_at', device['required'])
+        check = Draft202012Validator(device, format_checker=FORMATS)
+        value = {'device_id': UUID, 'tenant_id': UUID, 'application_id': UUID,
+                 'platform': 'linux', 'metadata': {}, 'credential_expires_at': '2026-10-29T12:00:00.123456Z'}
+        check.validate(value)
+        for expiry in ('not-a-date', '2026-10-29T12:00:00', None, 123):
+            self.assertFalse(check.is_valid(dict(value, credential_expires_at=expiry)))
+        del value['credential_expires_at']
+        self.assertFalse(check.is_valid(value))
+
     def test_registration_valid_platforms(self):
         check = validator('device-registration.schema.json')
         for platform in ('windows', 'macos', 'linux', 'android', 'ios', 'web'):

@@ -4995,7 +4995,8 @@
           "tenant_id",
           "application_id",
           "platform",
-          "metadata"
+          "metadata",
+          "credential_expires_at"
         ],
         "properties": {
           "device_id": {
@@ -5048,6 +5049,11 @@
                 }
               ]
             }
+          },
+          "credential_expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本次已认证设备凭证在数据库中的到期时间（UTC）。刷新重叠窗口返回旧凭证缩短后的期限，不是设备生命周期或客户端声明。该认证快照不能保证响应之后不会撤销；业务离线票据须另行处理撤销与逐请求重验。"
           }
         }
       },
