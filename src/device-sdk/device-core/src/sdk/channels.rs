@@ -82,6 +82,9 @@ impl ChannelGate {
                 _ = &mut local => {},
                 _ = &mut parent => {},
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {},
+                // Instant timers can pause in system sleep. Authorization itself is
+                // continuous; recheck after resume even with no transport activity.
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {},
             }
         }
     }
@@ -508,6 +511,18 @@ pub(super) fn test_connection() -> (Connection, Arc<Gate>, mpsc::Sender<Vec<u8>>
         gate,
         send,
     )
+}
+
+#[cfg(test)]
+fn test_continuous_grant(
+    parent: &Gate,
+    reader: impl Fn() -> Result<Duration, crate::continuous_clock::ClockError> + Send + Sync + 'static,
+) {
+    let clock = crate::continuous_clock::ContinuousClock::with_reader(reader);
+    *parent.continuous.lock().unwrap() = Some(crate::lease::ContinuousGrant::for_test(
+        clock,
+        Duration::from_secs(60),
+    ));
 }
 
 #[cfg(test)]

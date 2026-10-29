@@ -13,6 +13,7 @@ workspace = true
 test-diagnostics = ["device-transport-webrtc/test-diagnostics"]
 
 [dependencies]
+device-continuous-clock = { path = "../device-continuous-clock" }
 device-protocol = { path = "../device-protocol" }
 
 device-storage = { path = "../device-storage" }

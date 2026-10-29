@@ -597,13 +597,65 @@ class ReviewedBootstrapTests(unittest.TestCase):
             'scripts/test-workflow-triggers.py', '.github/workflows/ci.yml',
             '.github/workflows/native.yml', '.github/workflows/android.yml',
             '.github/workflows/admin-web.yml'})
-        root = Path(__file__).resolve().parents[1]
-        for name, entry in A.REVIEWED_BOOTSTRAP_BLOBS.items():
-            data = (root / name).read_bytes()
-            blob = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
-            self.assertEqual(entry['after_blob'], blob, name)
+        # 历史审核记录固定到 v0.1.3 管理提交 0b0d2962cd36338e1a92f3321c60d26ede1fdb51。
+        # 不与后续工作树比较，也不授予新版本复用历史豁免的权限。
+        expected = {
+            '.github/workflows/admin-web.yml': {
+                'before_blob': 'd40bf6215a290591b70eed10d017ca271743ae2f',
+                'after_blob': 'bf4322315b6b40e6fd6c0343ab6f6ddd30b3c5d5',
+            },
+            '.github/workflows/android.yml': {
+                'before_blob': 'e3c94bcdfa515493f03f5bf6574c0995dcf1cadf',
+                'after_blob': '37fe5630031ec6cca8fe38412703d020d3642f82',
+            },
+            '.github/workflows/ci.yml': {
+                'before_blob': 'd34a919877b3793cdc3aecd8236de67d79f28f08',
+                'after_blob': 'cae53369b209e223d6b5b2201838d3d81021b1ec',
+            },
+            '.github/workflows/native.yml': {
+                'before_blob': '9680d45597f958bdb96efd55c4aa620109b75283',
+                'after_blob': '4a14e8b01e0e652b1efcee28f623b2675ab01f8f',
+            },
+            '.github/workflows/release-admin.yml': {
+                'before_blob': '637fe5be5913635194e74bf5c409f973d3e5911d',
+                'after_blob': 'a1eb0ef4944aedd1f93c80a8ade123404fd6c5b9',
+            },
+            'scripts/test-release-admin.py': {
+                'before_blob': 'ebf16849622b523020e97ff786db2b6b64a34858',
+                'after_blob': '0ee4d5d762f483cd905a0470939c0dfbfa01255c',
+            },
+            'scripts/test-workflow-triggers.py': {
+                'before_blob': '0d313f72f1e76b4afc57317c1f2eae299c399533',
+                'after_blob': 'dfc6913d29c6ca264ab555c45d77e197d096e374',
+            },
+        }
+        self.assertEqual(A.REVIEWED_BOOTSTRAP_BLOBS, expected)
         self.assertEqual(P.ADMINISTRATION_FILES, {
             'README.md', 'docs/assets/peerloom-banner.svg', 'release/approved-plan.json'})
+
+    def test_real_historical_inventory_rejects_later_workflow_blob(self):
+        from unittest.mock import Mock
+        value = PushComparisonTests().comparison()
+        value['base_commit']['sha'] = A.BOOTSTRAP_SOURCE
+        value['merge_base_commit']['sha'] = A.BOOTSTRAP_SOURCE
+        value['files'] += [
+            {'filename': A.EXECUTION_FILE, 'status': 'modified', 'sha': TREE},
+            *({'filename': name, 'status': 'modified', 'sha': entry['after_blob']}
+              for name, entry in A.REVIEWED_BOOTSTRAP_BLOBS.items()),
+        ]
+        previous = [{'type': 'file', 'sha': entry['before_blob']}
+                    for entry in A.REVIEWED_BOOTSTRAP_BLOBS.values()]
+        api = Mock()
+        api.call.side_effect = [value, *previous]
+        A.verify_administration_scope(api, A.BOOTSTRAP_SOURCE, TREE, A.BOOTSTRAP_TAG)
+        changed = copy.deepcopy(value)
+        for entry in changed['files']:
+            if entry['filename'] == '.github/workflows/android.yml':
+                # 宿主关闭修复分支的真实新 blob 不能冒充 v0.1.3 历史审核字节。
+                entry['sha'] = '0b11409a3e7df4662b8712a4dd53d903b7740375'
+        api.call.side_effect = [changed, *previous]
+        with self.assertRaisesRegex(P.Rejected, 'BOOTSTRAP_FILE_BLOB_MISMATCH'):
+            A.verify_administration_scope(api, A.BOOTSTRAP_SOURCE, TREE, A.BOOTSTRAP_TAG)
 
     def test_wrong_source_tag_after_or_before_rejected(self):
         from unittest.mock import patch

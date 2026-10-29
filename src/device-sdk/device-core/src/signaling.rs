@@ -183,7 +183,8 @@ impl SignalClient {
             }
             _ => SignalError::Transport,
         })?;
-        let hello_started = std::time::Instant::now();
+        let hello_started =
+            crate::lease::HelloClockStart::capture().map_err(|_| SignalError::InvalidMessage)?;
         let hello = Envelope::new("hello", json!({}))?;
         write(&mut socket, &hello).await?;
         let ack = tokio::time::timeout(Duration::from_secs(10), read(&mut socket))
@@ -197,7 +198,7 @@ impl SignalClient {
         {
             return Err(SignalError::InvalidMessage);
         }
-        let clock = crate::lease::ServerClockBound::from_hello(&ack.sent_at, hello_started)
+        let clock = crate::lease::ServerClockBound::from_hello_started(&ack.sent_at, hello_started)
             .map_err(|_| SignalError::InvalidMessage)?;
         let heartbeat = ack
             .payload

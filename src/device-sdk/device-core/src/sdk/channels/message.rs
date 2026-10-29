@@ -479,4 +479,49 @@ mod tests {
         assert_eq!(budget.usage(), (0, 0));
         assert!(!sender.validity().is_valid());
     }
+    #[tokio::test]
+    async fn continuous_suspend_blocks_queued_messages_senders_and_validity() {
+        let budget = OutboundBudget::new(8, 1).unwrap();
+        let (mut channel, worker, parent) = fixture(OverflowPolicy::Fail, budget.clone());
+        let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let reading = ticks.clone();
+        test_continuous_grant(&parent, move || {
+            Ok(Duration::from_secs(reading.load(Ordering::SeqCst)))
+        });
+        let sender = channel.sender();
+        let sending = sender.send(b"queued");
+        pin_mut!(sending);
+        assert!(poll!(&mut sending).is_pending());
+        worker.receive.try_send(b"old".to_vec()).unwrap();
+        assert!(sender.validity().is_valid());
+        // Instant's scheduling deadline stays in the future, while sleep advances
+        // the independently injected authorization clock by two minutes.
+        ticks.store(120, Ordering::SeqCst);
+        assert!(Instant::now() < parent.deadline.lock().unwrap().unwrap());
+        assert!(!sender.validity().is_valid());
+        assert_eq!(channel.receive().await, Err(SdkError::AuthorizationExpired));
+        assert_eq!(
+            sender.send(b"new").await,
+            Err(SdkError::AuthorizationExpired)
+        );
+        assert_eq!(sending.await, Err(SdkError::AuthorizationExpired));
+        assert_eq!(budget.usage(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn continuous_expiry_is_rechecked_after_select_dequeues_message() {
+        let budget = OutboundBudget::new(8, 1).unwrap();
+        let (mut channel, worker, parent) = fixture(OverflowPolicy::Fail, budget);
+        worker.receive.try_send(b"old".to_vec()).unwrap();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        test_continuous_grant(&parent, move || {
+            // Entry and the invalidation select branch pass. Expire exactly on
+            // the final check after the ready message has been dequeued.
+            let read = reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Duration::from_secs(if read < 2 { 0 } else { 120 }))
+        });
+        assert_eq!(channel.receive().await, Err(SdkError::AuthorizationExpired));
+        assert!(channel.messages.is_empty());
+        assert!(Instant::now() < parent.deadline.lock().unwrap().unwrap());
+    }
 }
