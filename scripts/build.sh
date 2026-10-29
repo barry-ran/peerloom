@@ -5,7 +5,7 @@ python3 "$root/scripts/test-package-release.py"
 mkdir -p "$root/dist"
 (
   cd "$root/src/device-server"
-  for target in linux/amd64 linux/arm64 darwin/arm64 windows/amd64; do
+  for target in linux/amd64; do
     os="${target%/*}"
     arch="${target#*/}"
     suffix=""
@@ -51,3 +51,6 @@ python3 "$root/scripts/package-third-party.py" --include-build-notices
 
 # 包内 metadata 固定当前提交、项目版本与默认 feature；完整 SHA 覆盖第三方证据。
 python3 "$root/scripts/package-release.py" --platform linux-x86_64 --output "$root/dist/release/linux-x86_64"
+
+# 服务部署包独立交付，不把Go工具混入任何SDK包。
+python3 "$root/scripts/package-release.py" --platform server-linux-amd64 --output "$root/dist/release/server-linux-amd64"

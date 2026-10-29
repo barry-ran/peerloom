@@ -81,17 +81,33 @@ jobs:
         run: ./scripts/test-turn.sh
       - name: 构建可下载检查产物
         run: ./scripts/build.sh
+      - name: 服务端部署初始化与归档失效关闭测试
+        env:
+          PEERLOOM_NONOWNER_TEST: '1'
+        run: |
+          python3 scripts/test-server-deploy.py
+          python3 scripts/test-server-package-script.py
+      - name: 仅解服务端交付包的真实 TLS 管理与 WSS 验收
+        timeout-minutes: 8
+        run: python3 scripts/test-server-package.py --package dist/release/server-linux-amd64/peerloom-server-linux-amd64.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: peerloom-foundation-${{ github.sha }}
           path: dist/
           if-no-files-found: error
           retention-days: 14
-      - name: 保存 Linux release ABI 与明确的 Go 交叉构建包
+      - name: 保存独立 Linux SDK release ABI 包
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: peerloom-linux-release-${{ github.sha }}
           path: dist/release/linux-x86_64/
+          if-no-files-found: error
+          retention-days: 14
+      - name: 保存独立 Linux amd64 服务端部署包
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-server-linux-amd64-release-${{ github.sha }}
+          path: dist/release/server-linux-amd64/
           if-no-files-found: error
           retention-days: 14
       - name: 删除本次作业秘密

@@ -1,4 +1,4 @@
-name: 受审计划发布与任务分支清理
+name: 受审计划正式发布
 on:
   push:
     branches: [master]

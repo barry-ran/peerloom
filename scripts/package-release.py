@@ -147,8 +147,8 @@ def finish(root, output, platform, commit, sources, maven=None):
         except ValueError as error:
             raise PackageError('MAVEN_EVIDENCE_BINDING_FAILED') from error
         evidence['maven'], maven_gaps = MAVEN.classify(maven_report)
-    meta = {'format_version': 1, 'version': version, 'commit': commit, 'platform': platform,
-            'build_profile': 'release', 'cargo_features': 'default',
+    meta = {'format_version': 1, 'version': version, 'commit': commit, 'platform': platform, 'product': 'server' if platform == 'server-linux-amd64' else 'sdk',
+            'build_profile': 'release', 'cargo_features': 'not-applicable' if platform == 'server-linux-amd64' else 'default',
             'cargo_lock_sha256': digest(root / 'src/device-sdk/Cargo.lock'),
             'evidence': evidence, 'release_evidence_complete': all(v == GAPS.COMPLETE for v in evidence.values()),
             'release_delivery_eligible': all(v in (GAPS.COMPLETE, GAPS.DOCUMENTED) for v in evidence.values()),
@@ -156,10 +156,10 @@ def finish(root, output, platform, commit, sources, maven=None):
             'maven_documented_gaps': maven_gaps,
             'legal_review': 'not-performed', 'signed_distribution': False,
             'inventory_scope': 'Cargo lock and Go MVS all-platform candidates; Maven resolved configurations where present; not exact binary linkage inventory'}
-    if platform == 'linux-x86_64':
-        meta['installation_payload'] = 'peerloom-linux-x86_64.tar.gz'
+    if platform in ('linux-x86_64', 'server-linux-amd64'):
+        meta['installation_payload'] = 'peerloom-server-linux-amd64.tar.gz' if platform == 'server-linux-amd64' else 'peerloom-linux-x86_64.tar.gz'
         meta['executable_files'] = sorted(p.relative_to(output).as_posix() for p in output.rglob('*') if p.is_file() and p.stat().st_mode & 0o111)
-        (output / '安装说明.txt').write_text('GitHub Artifact 外层 ZIP 会丢失可执行位。请使用 peerloom-linux-x86_64.tar.gz 内的文件；解包后校验包内 SHA256SUMS。外层松散文件只供审阅，不作为可执行程序安装来源。\n', encoding='utf-8')
+        (output / '安装说明.txt').write_text(f'GitHub Artifact 外层 ZIP 会丢失可执行位。请使用 {meta["installation_payload"]} 内的文件；解包后校验包内 SHA256SUMS。外层松散文件只供审阅，不作为可执行程序安装来源。\n', encoding='utf-8')
     (output / 'release-metadata.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     entries = []
     for path in sorted(output.rglob('*')):
@@ -169,10 +169,10 @@ def finish(root, output, platform, commit, sources, maven=None):
                 raise PackageError('UNSAFE_PACKAGE_FILENAME')
             entries.append(f'{digest(path)}  {name}\n')
     (output / 'SHA256SUMS').write_text(''.join(entries), encoding='utf-8')
-    if platform == 'linux-x86_64':
+    if platform in ('linux-x86_64', 'server-linux-amd64'):
         # Actions ZIP normalizes file permissions. Preserve executable modes in
         # a self-contained, deterministic-metadata tar payload, not chmod advice.
-        payload = output / 'peerloom-linux-x86_64.tar.gz'
+        payload = output / meta['installation_payload']
         members = sorted(p for p in output.rglob('*') if p.is_file())
         with payload.open('xb') as raw:
             with gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as compressed:
@@ -187,7 +187,7 @@ def finish(root, output, platform, commit, sources, maven=None):
                             archive.addfile(info, stream)
         # Outer manifest covers the immutable tar and every loose proof. The
         # tar carries its own pre-tar complete checksum list, avoiding recursion.
-        for name in ('sdk', 'go-crossbuilds'):
+        for name in ('sdk', 'bin', 'infra', 'deploy', 'docs'):
             owned = output / name
             if owned.exists():
                 shutil.rmtree(owned)
@@ -201,9 +201,24 @@ def finish(root, output, platform, commit, sources, maven=None):
         message = 'INCOMPLETE: unknown or unbound evidence gaps block final Release'
     print('Release-profile package created; evidence ' + message)
 
+SERVER_BINARIES = ('device-server', 'device-migrate', 'device-bootstrap', 'device-admin', 'device-admin-user')
+
+def server_sources(root):
+    sources = [(root / 'dist/linux-amd64' / name, 'bin/' + name) for name in SERVER_BINARIES]
+    migrations = ('000001_initial.down.sql', '000001_initial.up.sql', '000002_identity_replay.down.sql', '000002_identity_replay.up.sql', '000003_session_authorization.down.sql', '000003_session_authorization.up.sql', '000004_tenant_management.down.sql', '000004_tenant_management.up.sql', '000005_managed_relay.down.sql', '000005_managed_relay.up.sql', '000006_browser_administration.down.sql', '000006_browser_administration.up.sql', '000007_direct_registration.down.sql', '000007_direct_registration.up.sql', '000008_session_recovery.down.sql', '000008_session_recovery.up.sql', '000009_webhook_delivery.down.sql', '000009_webhook_delivery.up.sql')
+    if {p.name for p in (root / 'infra/migrations').glob('*.sql')} != set(migrations):
+        raise PackageError('SERVER_MIGRATION_SET_REQUIRED')
+    sources += [(root / 'infra/migrations' / name, 'infra/migrations/' + name) for name in migrations]
+    deployment = ('Dockerfile', 'Dockerfile.dockerignore', 'compose.yaml', 'compose.tls.yaml',
+                  'gateway/nginx.conf', 'gateway/nginx-tls.conf', 'init-private.py', 'README.md')
+    sources += [(root / 'deploy/server' / name, 'deploy/' + name) for name in deployment]
+    sources.append((root / 'docs/部署指南.md', 'docs/部署指南.md'))
+    return sources
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--platform', choices=['windows-x86_64', 'apple', 'android', 'linux-x86_64'], required=True)
+    parser.add_argument('--platform', choices=['windows-x86_64', 'apple', 'android', 'linux-x86_64', 'server-linux-amd64'], required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--apple-package')
     args = parser.parse_args()
@@ -222,9 +237,10 @@ def main():
         sources += [(p, 'validation/' + p.name) for p in sorted(package.parent.iterdir()) if p.is_file() and p.suffix in ('.txt', '.json')]
     elif args.platform == 'android':
         sources = [(root / 'dist/android/library-release.aar', 'library-release.aar'), (root / 'src/device-sdk/device-ffi/include/device_sdk.h', 'include/device_sdk.h')]
+    elif args.platform == 'server-linux-amd64':
+        sources = server_sources(root)
     else:
         sources = [(root / 'dist/c-abi-linux-x86_64', 'sdk')]
-        sources += [(root / 'dist' / target, 'go-crossbuilds/' + target) for target in ['linux-amd64', 'linux-arm64', 'darwin-arm64', 'windows-amd64']]
     finish(root, Path(args.output), args.platform, commit, sources,
            root / 'dist/android/maven-evidence' if args.platform == 'android' else None)
 

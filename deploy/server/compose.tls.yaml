@@ -1,0 +1,17 @@
+# 用户提供证书/密钥；不申请证书，不默认发布公网。需要 Compose >= 2.24.4 的 !override。
+services:
+  device-server:
+    environment:
+      ADMIN_ORIGIN: "${TLS_ADMIN_ORIGIN:-}"
+      ADMIN_DEVELOPMENT_LOOPBACK: ""
+  gateway:
+    # Replace, not append: the HTTP development port must not remain published.
+    ports: !override ['127.0.0.1:18443:8443']
+    volumes:
+      - ./gateway/nginx-tls.conf:/etc/nginx/nginx.conf:ro
+    secrets: [tls_certificate, tls_private_key]
+secrets:
+  tls_certificate:
+    file: ../.tls/certificate.pem
+  tls_private_key:
+    file: ../.tls/private-key.pem

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""仅受审 master 计划可执行发布/精确租约清理；默认 preflight 只读。"""
+"""仅受审 master 计划可执行正式发布；默认 preflight 只读。"""
 import argparse
 import hashlib
 import importlib.util
@@ -25,6 +25,7 @@ class Pending(P.Rejected):
 class GitHub:
     def call(self, endpoint, method='GET', data=None, missing=False):
         P.require(endpoint.startswith('/repos/' + P.REPO + '/'), 'API_SCOPE')
+        P.require(method in ('GET', 'POST', 'PATCH'), 'RELEASE_API_METHOD_FORBIDDEN')
         command = ['gh', 'api', '--hostname', 'github.com', '--method', method, endpoint,
                    '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28']
         if data is not None:
@@ -97,8 +98,8 @@ class Admin:
         value = self.api.call(self.base + '/compare/' + P.sha(older) + '...' + P.sha(newer))
         return value['status'] in ('ahead', 'identical') and value['merge_base_commit']['sha'] == older
 
-    def gates(self, commit, full):
-        required = P.WORKFLOWS if full else {'ci.yml': P.WORKFLOWS['ci.yml']}
+    def gates(self, commit):
+        required = P.WORKFLOWS
         chosen = {}
         for workflow in required:
             runs = self.api.pages(self.base + '/actions/workflows/' + workflow + '/runs?head_sha=' + commit + '&event=push', 'workflow_runs')
@@ -119,24 +120,20 @@ class Admin:
         P.require(plan.get('administration_sha') == self.master, 'ADMINISTRATION_SHA_MISMATCH')
         # The administration commit is carried by the event; plans avoid impossible self-hashing via
         # administration_sha="event" in the stored file, resolved only by the trusted CLI below.
-        P.require(plan.get('operation') in ('release', 'cleanup'), 'UNKNOWN_OPERATION')
+        P.require(plan.get('operation') == 'release' and 'branches' not in plan, 'RELEASE_OPERATION_REQUIRED')
         self.fresh_master()
-        runs = self.gates(self.master, plan['operation'] == 'release')
-        if plan['operation'] == 'cleanup':
-            items = plan.get('branches')
-            P.require(isinstance(items, list) and 0 < len(items) <= len(P.TASK_BRANCHES), 'CLEANUP_PLAN_REQUIRED')
-            P.require(len({i.get('branch') for i in items}) == len(items), 'DUPLICATE_BRANCH')
-            for item in items:
-                P.validate_cleanup(item, self.master,
-                    lambda commit: self.api.call(self.base + '/git/commits/' + commit), self.ancestor)
-            return runs
+        self.gates(self.master)
         release_sha = P.sha(plan.get('release_sha'))
         P.require(release_sha != self.master and self.ancestor(release_sha, self.master), 'RELEASE_NOT_PREVIOUS_RETAINED_COMMIT')
         P.require(re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', plan.get('tag', '')), 'VERSION_TAG_REQUIRED')
         P.require(type(plan.get('prerelease')) is bool and isinstance(plan.get('notes'), str) and 0 < len(plan['notes']) <= 65536, 'RELEASE_DESCRIPTION_REQUIRED')
         P.require(plan.get('final_scope_accepted') is True, 'FINAL_SCOPE_NOT_ACCEPTED')
         P.require(set(plan.get('artifacts', {})) == set(P.PLATFORMS), 'ALL_PLATFORM_ARTIFACTS_REQUIRED')
-        return self.gates(release_sha, True)
+        artifact_ids = [item.get('id') for item in plan['artifacts'].values() if isinstance(item, dict)]
+        P.require(len(artifact_ids) == len(P.PLATFORMS) and
+                  all(type(value) is int and value > 0 for value in artifact_ids) and
+                  len(set(artifact_ids)) == len(artifact_ids), 'DISTINCT_PRODUCT_ARTIFACT_IDS_REQUIRED')
+        return self.gates(release_sha)
 
     def artifacts(self, directory, runs):
         outputs = {}
@@ -151,7 +148,7 @@ class Admin:
                       value.get('name') == P.ARTIFACT_PREFIX[platform] + commit and
                       value.get('digest') == 'sha256:' + digest and value.get('workflow_run', {}).get('head_sha') == commit and
                       value.get('workflow_run', {}).get('id') == runs[P.PLATFORMS[platform]], 'WRONG_ARTIFACT')
-            output = directory / f"peerloom-{self.plan['tag']}-{platform}.zip"
+            output = directory / P.release_asset_name(platform, self.plan['tag'])
             self.api.download(artifact_id, output)
             result = P.verify_zip(output, platform, commit, self.plan['tag'][1:])
             P.require(result['sha256'] == digest and result['size'] == value.get('size_in_bytes'), 'ARTIFACT_DOWNLOAD_MISMATCH')
@@ -209,17 +206,6 @@ class Admin:
         self.release_matches(self.api.call(self.base + f'/releases/{release_id}'), outputs, False, release_id)
         P.require(self.tag() is not None, 'TAG_DISAPPEARED')
 
-    def cleanup(self, execute):
-        for item in self.plan['branches']:
-            self.fresh_master()
-            branch, expected = P.validate_cleanup(item, self.master,
-                lambda commit: self.api.call(self.base + '/git/commits/' + commit), self.ancestor)
-            ref = self.api.call(self.base + '/git/ref/heads/' + branch, missing=True)
-            if ref is None:
-                continue
-            P.require(ref['object']['sha'] == expected, 'BRANCH_MOVED')
-            execute(P.deletion_command(branch, expected))
-            P.require(self.api.call(self.base + '/git/ref/heads/' + branch, missing=True) is None, 'BRANCH_DELETE_NOT_CONFIRMED')
 
 def context(env, event, plan):
     P.require(env.get('GITHUB_EVENT_NAME') == 'push' and env.get('GITHUB_REPOSITORY') == P.REPO and
@@ -231,18 +217,7 @@ def context(env, event, plan):
     P.require(before != '0' * 40 and before != commit, 'PUSH_RANGE_REQUIRED')
     P.require(plan.get('administration_sha') == 'event', 'PLAN_EVENT_BINDING_REQUIRED')
     allowed_event_paths = {('administration_sha',)}
-    branches = plan.get('branches')
-    bound_index = None
-    if isinstance(branches, list):
-        for index, item in enumerate(branches):
-            if isinstance(item, dict) and item.get('sha') == 'event':
-                P.require(plan.get('operation') == 'cleanup' and bound_index is None,
-                          'ONE_CLEANUP_EVENT_BRANCH_REQUIRED')
-                P.require(item.get('branch') in P.TASK_BRANCHES and item.get('inactive') is True
-                          and item.get('no_wip') is True and item.get('proof') == 'ancestor',
-                          'EVENT_BRANCH_NOT_APPROVED')
-                bound_index = index
-                allowed_event_paths.add(('branches', index, 'sha'))
+    P.require(plan.get('operation') == 'release' and 'branches' not in plan, 'RELEASE_OPERATION_REQUIRED')
     def check_event(value, path=()):
         if isinstance(value, dict):
             for key, child in value.items():
@@ -254,11 +229,6 @@ def context(env, event, plan):
             P.require(path in allowed_event_paths, 'EVENT_OUTSIDE_APPROVED_BINDING')
     check_event(plan)
     plan = dict(plan, administration_sha=commit)
-    if bound_index is not None:
-        # Never mutate the stored plan or consult dynamic HEAD. All subsequent
-        # retention, fresh-ref and exact deletion lease checks remain unchanged.
-        plan['branches'] = [dict(item, sha=commit) if index == bound_index else dict(item)
-                            for index, item in enumerate(branches)]
     return plan, commit
 
 def verify_plan_changed(api, event, commit):
@@ -283,15 +253,6 @@ def verify_plan_changed(api, event, commit):
     P.require(len(changes) == 1 and changes[0].get('status') in ('added', 'modified') and
               'previous_filename' not in changes[0], 'PLAN_NOT_CHANGED')
 
-
-def execute_delete(command):
-    with tempfile.TemporaryDirectory(prefix='peerloom-release-auth-') as directory:
-        helper = Path(directory) / 'askpass.py'
-        helper.write_text('#!/usr/bin/env python3\nimport os,sys\nprint("x-access-token" if "Username" in sys.argv[1] else os.environ["GH_TOKEN"])\n')
-        helper.chmod(0o700)
-        env = dict(os.environ, GIT_ASKPASS=str(helper), GIT_TERMINAL_PROMPT='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null')
-        result = subprocess.run(command, env=env, capture_output=True, timeout=120)
-        P.require(result.returncode == 0, 'EXACT_LEASE_DELETE_FAILED_NO_RETRY')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -322,12 +283,9 @@ def main():
             P.require(not args.execute and time.monotonic() < deadline, 'REQUIRED_WORKFLOW_NOT_TERMINAL')
             time.sleep(30)
     with tempfile.TemporaryDirectory(prefix='peerloom-verified-release-') as directory:
-        outputs = admin.artifacts(Path(directory), runs) if plan['operation'] == 'release' else None
+        outputs = admin.artifacts(Path(directory), runs)
         if args.execute:
-            if outputs is not None:
-                admin.publish(outputs)
-            else:
-                admin.cleanup(execute_delete)
+            admin.publish(outputs)
     if not args.execute and os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('enabled=true\n')

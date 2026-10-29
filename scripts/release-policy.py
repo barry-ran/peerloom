@@ -25,17 +25,24 @@ WORKFLOWS = {
     'admin-web.yml': {'PostgreSQL + Chromium 管理安全门禁'},
 }
 PLATFORMS = {'linux-x86_64': 'ci.yml', 'windows-x86_64': 'native.yml',
-             'apple': 'native.yml', 'android': 'android.yml'}
+             'apple': 'native.yml', 'android': 'android.yml', 'server-linux-amd64': 'ci.yml'}
 ARTIFACT_PREFIX = {'linux-x86_64': 'peerloom-linux-release-', 'windows-x86_64': 'peerloom-windows-release-',
-                   'apple': 'peerloom-apple-release-', 'android': 'peerloom-android-release-'}
-# Explicit task refs, never a prefix wildcard. Active refs still require a reviewed inactive proof.
-TASK_BRANCHES = frozenset('''feat/foundation feat/identity-transport validation/identity-transport
-feat/validation-identity-transport feat/validation-control-plane feat/validation-sdk-facade
-feat/validation-tenant-management feat/validation-native-ffi feat/validation-linux-storage
-feat/validation-managed-turn feat/validation-native-platforms feat/validation-admin-console
-feat/validation-platform-fixes feat/validation-apple-diagnostics feat/validation-apple-keychain
-feat/validation-android feat/validation-managed-ice feat/validation-android-stability
-feat/validation-multichannel feat/validation-release-packaging'''.split())
+                   'apple': 'peerloom-apple-release-', 'android': 'peerloom-android-release-',
+                   'server-linux-amd64': 'peerloom-server-linux-amd64-release-'}
+SERVER_COMMANDS = frozenset(('device-server', 'device-migrate', 'device-bootstrap', 'device-admin', 'device-admin-user'))
+SERVER_DEPLOY = frozenset('deploy/' + name for name in (
+    'Dockerfile', 'Dockerfile.dockerignore', 'compose.yaml', 'compose.tls.yaml',
+    'gateway/nginx.conf', 'gateway/nginx-tls.conf', 'init-private.py'))
+SERVER_SQL = frozenset('infra/migrations/' + name + '.' + direction + '.sql'
+                      for name in ('000001_initial', '000002_identity_replay', '000003_session_authorization',
+                                   '000004_tenant_management', '000005_managed_relay', '000006_browser_administration',
+                                   '000007_direct_registration', '000008_session_recovery', '000009_webhook_delivery')
+                      for direction in ('up', 'down'))
+SERVER_DOCS = frozenset(('docs/部署指南.md', 'deploy/README.md'))
+SERVER_BINARIES = frozenset('bin/' + name for name in SERVER_COMMANDS)
+LINUX_SDK_FILES = frozenset(('sdk/lib/libdevice_ffi.so', 'sdk/lib/libdevice_ffi.a', 'sdk/include/device_sdk.h', 'sdk/LICENSE', 'sdk/产物范围.txt'))
+INSTALL_PAYLOADS = {'linux-x86_64': 'peerloom-linux-x86_64.tar.gz',
+                    'server-linux-amd64': 'peerloom-server-linux-amd64.tar.gz'}
 MAX_FILES = 20000
 MAX_EXPANDED = 4 * 1024**3
 MAX_ARCHIVE = 1024**3
@@ -48,6 +55,13 @@ class Rejected(ValueError):
 def require(value, message):
     if not value:
         raise Rejected(message)
+
+def release_asset_name(platform, tag):
+    require(platform in PLATFORMS and isinstance(tag, str) and
+            re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', tag), 'INVALID_ASSET_IDENTITY')
+    if platform == 'server-linux-amd64':
+        return f'peerloom-server-{tag}-linux-amd64.zip'
+    return f'peerloom-sdk-{tag}-{platform}.zip'
 
 def sha(value):
     require(isinstance(value, str) and re.fullmatch('[0-9a-f]{40}', value), 'EXACT_SHA_REQUIRED')
@@ -96,7 +110,9 @@ def metadata(data, platform, commit, version):
     value = json.loads(data)
     require(value.get('format_version') == 1 and value.get('platform') == platform and
             value.get('commit') == commit and value.get('version') == version and
-            value.get('build_profile') == 'release' and value.get('cargo_features') == 'default', 'PACKAGE_IDENTITY_MISMATCH')
+            value.get('build_profile') == 'release' and
+            value.get('cargo_features') == ('not-applicable' if platform == 'server-linux-amd64' else 'default') and
+            value.get('product') == ('server' if platform == 'server-linux-amd64' else 'sdk'), 'PACKAGE_IDENTITY_MISMATCH')
     keys = {'cargo_go', 'maven'} if platform == 'android' else {'cargo_go'}
     evidence = value.get('evidence')
     require(isinstance(evidence, dict) and set(evidence) == keys and
@@ -138,16 +154,29 @@ def verify_linux_tar(stream, outer_hashes, meta):
     executable = meta.get('executable_files')
     require(isinstance(executable, list) and len(executable) == len(set(executable)), 'EXECUTABLE_LIST_REQUIRED')
     require(set(executable) == {n for n, m in modes.items() if m == 0o755}, 'EXECUTABLE_MODES_MISMATCH')
-    for target in ('linux-amd64', 'linux-arm64', 'darwin-arm64', 'windows-amd64'):
-        for command in ('device-server', 'device-migrate', 'device-bootstrap', 'device-admin', 'device-admin-user'):
-            name = f'go-crossbuilds/{target}/{command}' + ('.exe' if target.startswith('windows') else '')
-            require(name in hashes, 'GO_BINARY_MISSING')
-            if not target.startswith('windows'):
-                require(modes[name] == 0o755, 'GO_EXECUTABLE_MODE')
-    require({'sdk/lib/libdevice_ffi.so', 'sdk/lib/libdevice_ffi.a', 'sdk/include/device_sdk.h'} <= hashes.keys(), 'LINUX_ABI_MISSING')
+    platform = meta.get('platform')
+    require(platform in INSTALL_PAYLOADS, 'TAR_PLATFORM_REQUIRED')
+    if platform == 'server-linux-amd64':
+        required = SERVER_BINARIES | SERVER_DEPLOY | SERVER_SQL | SERVER_DOCS
+        require(required <= hashes.keys(), 'SERVER_DEPLOYMENT_FILE_MISSING')
+        require(set(executable) == SERVER_BINARIES | {'deploy/init-private.py'}, 'SERVER_EXECUTABLE_MODES')
+    else:
+        required = LINUX_SDK_FILES
+        require(required <= hashes.keys(), 'LINUX_ABI_MISSING')
+    common = {'LICENSE', 'release-metadata.json', '安装说明.txt'}
+    require(common <= hashes.keys(), 'INSTALL_PROOF_MISSING')
+    for name in hashes:
+        require(name in required | common or
+                name.startswith(('third-party/cargo-go-all-lock-candidates/', 'third-party/vendor/')),
+                'UNEXPECTED_INSTALL_FILE')
+    # No binary/config payload is allowed only inside the tar without a known role;
+    # all variable third-party proof files must also be independently verified outside it.
+    proof_names = {name for name in hashes if name.startswith('third-party/')}
+    require(proof_names == {name for name in outer_hashes if name.startswith('third-party/')}, 'TAR_PROOF_SET_MISMATCH')
     for name, digest in outer_hashes.items():
-        if name != 'peerloom-linux-x86_64.tar.gz':
+        if name != INSTALL_PAYLOADS[platform]:
             require(hashes.get(name) == digest, 'LOOSE_PROOF_DIFFERS_FROM_TAR')
+    require(set(outer_hashes) == common | proof_names | {INSTALL_PAYLOADS[platform]}, 'UNEXPECTED_OUTER_INSTALL_FILE')
     return hashes
 
 def verify_zip(filename, platform, commit, version):
@@ -208,10 +237,15 @@ def verify_zip(filename, platform, commit, version):
                 require(status in (GAPS.COMPLETE, GAPS.DOCUMENTED) and meta['evidence']['maven'] == status
                         and meta.get('maven_documented_gaps', []) == gaps, 'UNBOUND_OR_UNKNOWN_MAVEN_GAPS')
 
-        if platform == 'linux-x86_64':
-            payload = 'peerloom-linux-x86_64.tar.gz'
+        if platform != 'server-linux-amd64':
+            server_names = SERVER_COMMANDS | {name + '.exe' for name in SERVER_COMMANDS}
+            require(not any(n.startswith(('bin/', 'go-crossbuilds/', 'infra/', 'deploy/')) or
+                            (not n.startswith('third-party/') and n.rsplit('/', 1)[-1] in server_names)
+                            for n in entries), 'SDK_CONTAINS_SERVER_PAYLOAD')
+        if platform in INSTALL_PAYLOADS:
+            payload = INSTALL_PAYLOADS[platform]
             require(meta.get('installation_payload') == payload and payload in entries, 'LINUX_PAYLOAD_REQUIRED')
-            require(not any(n.startswith(('sdk/', 'go-crossbuilds/')) for n in entries), 'DUPLICATED_BINARY_PAYLOAD')
+            require(not any(n.startswith(('sdk/', 'go-crossbuilds/', 'bin/', 'infra/', 'deploy/', 'docs/')) for n in entries), 'DUPLICATED_BINARY_PAYLOAD')
             with archive.open(entries[payload]) as stream:
                 verify_linux_tar(stream, hashes, meta)
         else:
@@ -251,26 +285,3 @@ def verify_run(run, jobs, workflow, commit):
     for job in jobs:
         require(job.get('head_sha', commit) == commit and job.get('conclusion') == 'success' and job.get('status') == 'completed', 'FAILED_JOB')
         require(job.get('steps') and all(s.get('conclusion') == 'success' for s in job['steps']), 'SKIPPED_OR_FAILED_STEP')
-
-def validate_cleanup(item, master, get_commit, is_ancestor):
-    branch = item.get('branch')
-    require(branch in TASK_BRANCHES and item.get('inactive') is True and item.get('no_wip') is True, 'BRANCH_NOT_APPROVED')
-    original = sha(item.get('sha'))
-    if item.get('proof') == 'ancestor':
-        require(is_ancestor(original, master), 'BRANCH_NOT_RETAINED')
-    elif item.get('proof') == 'equivalent_tree':
-        retained = sha(item.get('retained_equivalent_commit'))
-        tree = sha(item.get('expected_tree'))
-        require(is_ancestor(retained, master), 'EQUIVALENT_COMMIT_NOT_RETAINED')
-        require(get_commit(original)['tree']['sha'] == get_commit(retained)['tree']['sha'] == tree, 'TREE_NOT_IDENTICAL')
-    else:
-        raise Rejected('UNKNOWN_RETENTION_PROOF')
-    return branch, original
-
-def deletion_command(branch, expected):
-    require(branch in TASK_BRANCHES, 'BRANCH_NOT_APPROVED')
-    sha(expected)
-    ref = 'refs/heads/' + branch
-    return ['git', '-c', 'credential.helper=', 'push', '--porcelain',
-            '--force-with-lease=' + ref + ':' + expected,
-            'https://github.com/' + REPO + '.git', ':' + ref]

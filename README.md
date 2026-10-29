@@ -17,7 +17,7 @@ Linux、Windows、Android 和 iOS Simulator 已分别执行真实授权通信服
 | [SDK 身份与信令](docs/SDK身份与信令模块.md) / [C 语言接口](docs/C语言接口模块.md) | 生命周期、存储、连接、typed 通道与异步调用 |
 | [管理服务](docs/管理服务模块.md) / [浏览器管理](docs/浏览器管理模块.md) | 可信后端 API、内置管理员登录与中英文管理后台 |
 | [Android 封装](docs/Android封装模块.md) / [Apple 封装](bindings/ios/Apple封装说明.md) | 原生集成与平台限制 |
-| [发布与分支清理](docs/发布与分支清理模块.md) | 产物核验、精确提交门控与受控发布计划 |
+| [发布模块](docs/发布与分支清理模块.md) | 产物核验、精确提交门控与受控发布计划 |
 
 ## 技术与能力
 
@@ -47,6 +47,24 @@ flowchart LR
 5. WSS 中断不立即关闭有效租约内的健康数据连接，但不延长授权。数据恢复采用重建连接，不是原地 ICE restart，也不承诺业务消息 exactly-once。
 6. `application_id` 和安装公钥不是秘密凭据；尚未定义持有证明的公钥不能用于认证或领取旧秘密。
 7. 队列与资源有界；异步取消不伪称远端事务回滚，shutdown 完成后才释放对象。系统存储不可用时失败关闭，不静默换身份。
+
+## 下载服务端还是 SDK
+
+已发布的 [v0.1.0](https://github.com/barry-ran/peerloom/releases/tag/v0.1.0) 保持不变。**v0.1.1 拆包是当前待验收、待发布的交付调整**，不能把下表或本地生成的文件当成已发布资产；下载前核对对应 Release、版本、源码提交与校验清单。
+
+| 你的用途 | v0.1.1 包类型 | 内容与边界 |
+|---|---|---|
+| 部署控制面及管理后台 | `peerloom-server-v0.1.1-linux-amd64.zip` | 5 个预编译 Go 程序、9 对迁移 SQL、运行时 Dockerfile/Compose/TLS 配置、私密初始化脚本和部署说明；只承诺 Linux amd64 服务端 |
+| Linux 客户端集成 | `peerloom-sdk-v0.1.1-linux-x86_64.zip` | Rust/C ABI 库、规范头文件及 SDK 材料；不再夹带 Go 服务端程序 |
+| Windows 客户端集成 | `peerloom-sdk-v0.1.1-windows-x86_64.zip` | DLL、导入库、静态库与头文件 |
+| macOS/iOS 客户端集成 | `peerloom-sdk-v0.1.1-apple.zip` | Swift Package 与五架构 XCFramework；不等于生产签名或真机验证 |
+| Android 客户端集成 | `peerloom-sdk-v0.1.1-android.zip` | AAR、接口及对应依赖证据 |
+
+服务端下载包不需要源码或 Go/Rust/Node 编译环境；宿主仍需 **Docker Engine、Docker Compose、Python 3**，并能拉取配置中固定摘要的基础镜像。它不是包含全部镜像的离线安装介质，也不自带已运营的 TURN 服务。管理后台静态资源已嵌入 Go 程序，不另启动 Node。
+
+四个 SDK 包不包含服务端二进制、数据库迁移或部署工具。第三方清单可保留共同的 Cargo/Go 全锁定候选扫描证据；这是明确披露的扫描范围，不等于每个 SDK 实际链接了所有依赖，也不改变许可缺项与未经法务审核状态。
+
+运行包以包内 `deploy/README.md` 为自足启动入口；仓库中的说明见[部署指南](docs/部署指南.md)。下面的 `make` 命令仅面向源码开发，不是下载包的安装步骤。
 
 ## 本地开发入口
 

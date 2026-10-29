@@ -85,6 +85,69 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(m.hashlib.sha256(archive.extractfile(name).read()).hexdigest(), expected)
             self.assertEqual(names, {member.name for member in members} - {'SHA256SUMS'})
 
+    def server_fixture(self):
+        import shutil
+        original = Path(__file__).resolve().parents[1]
+        shutil.copytree(original/'infra/migrations', self.root/'infra/migrations')
+        # Do not copy private configuration or actual runtime state.
+        for name in m.SERVER_BINARIES:
+            file=self.root/'dist/linux-amd64'/name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(b'precompiled-test-'+name.encode()); file.chmod(0o755)
+        for name in ('Dockerfile','Dockerfile.dockerignore','compose.yaml','compose.tls.yaml',
+                     'gateway/nginx.conf','gateway/nginx-tls.conf','init-private.py','README.md'):
+            file=self.root/'deploy/server'/name
+            file.parent.mkdir(parents=True,exist_ok=True)
+            file.write_text('owned deployment fixture',encoding='utf-8')
+            file.chmod(0o755 if name=='init-private.py' else 0o644)
+        file=self.root/'docs/部署指南.md';file.parent.mkdir();file.write_text('deployment',encoding='utf-8')
+
+    def finish_server(self):
+        with patch.dict(m.os.environ, {}, clear=True):
+            m.finish(self.root,self.output,'server-linux-amd64','a'*40,m.server_sources(self.root))
+
+    def test_server_is_separate_self_contained_payload(self):
+        self.server_fixture(); self.finish_server()
+        meta=json.loads((self.output/'release-metadata.json').read_text(encoding='utf-8'))
+        self.assertEqual(meta['product'],'server')
+        self.assertEqual(meta['cargo_features'],'not-applicable')
+        self.assertEqual(meta['installation_payload'],'peerloom-server-linux-amd64.tar.gz')
+        self.assertFalse(any((self.output/x).exists() for x in ('bin','deploy','infra','sdk','docs')))
+        with tarfile.open(self.output/meta['installation_payload'],'r:gz') as archive:
+            names=set(archive.getnames())
+            self.assertTrue({f'bin/{x}' for x in m.SERVER_BINARIES} <= names)
+            self.assertEqual(len([x for x in names if x.startswith('infra/migrations/')]),18)
+            self.assertIn('deploy/Dockerfile.dockerignore',names)
+            self.assertIn('deploy/README.md',names)
+            self.assertIn('docs/部署指南.md',names)
+            self.assertFalse(any(x.startswith(('sdk/','go-crossbuilds/','src/','.secrets/')) for x in names))
+            sums=archive.extractfile('SHA256SUMS').read().decode('utf-8').splitlines()
+            self.assertEqual({x.split('  ',1)[1] for x in sums},names-{'SHA256SUMS'})
+            for entry in sums:
+                expected,name=entry.split('  ',1)
+                self.assertEqual(m.hashlib.sha256(archive.extractfile(name).read()).hexdigest(),expected)
+
+    def test_server_missing_migration_rejected(self):
+        self.server_fixture()
+        next((self.root/'infra/migrations').glob('*.up.sql')).unlink()
+        with self.assertRaisesRegex(m.PackageError,'MIGRATION'):self.finish_server()
+
+    def test_server_missing_deployment_rejected(self):
+        self.server_fixture();(self.root/'deploy/server/Dockerfile.dockerignore').unlink()
+        with self.assertRaisesRegex(m.PackageError,'INPUT_MISSING'):self.finish_server()
+
+    def test_server_missing_binary_rejected(self):
+        self.server_fixture();(self.root/'dist/linux-amd64/device-admin-user').unlink()
+        with self.assertRaisesRegex(m.PackageError,'INPUT_MISSING'):self.finish_server()
+
+    def test_sdk_metadata_and_no_server_payload(self):
+        self.finish()
+        meta=json.loads((self.output/'release-metadata.json').read_text(encoding='utf-8'))
+        self.assertEqual(meta['product'],'sdk')
+        self.assertEqual(meta['cargo_features'],'default')
+        with tarfile.open(self.output/meta['installation_payload'],'r:gz') as archive:
+            self.assertFalse(any(x.startswith(('go-crossbuilds/','bin/','infra/','deploy/')) for x in archive.getnames()))
+
     def test_incomplete_is_not_release_eligible(self):
         self.evidence('incomplete'); self.finish()
         self.assertFalse(json.loads((self.output/'release-metadata.json').read_text(encoding='utf-8'))['release_evidence_complete'])

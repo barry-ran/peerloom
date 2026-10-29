@@ -22,8 +22,8 @@ def sums(files):
     return ''.join(hashlib.sha256(v).hexdigest() + '  ' + n + '\n' for n, v in sorted(files.items())).encode()
 
 def package(platform='windows-x86_64'):
-    meta = {'format_version': 1, 'platform': platform, 'commit': SHA, 'version': '0.1.0',
-            'build_profile': 'release', 'cargo_features': 'default', 'release_evidence_complete': True,
+    meta = {'format_version': 1, 'platform': platform, 'product': 'server' if platform == 'server-linux-amd64' else 'sdk', 'commit': SHA, 'version': '0.1.0',
+            'build_profile': 'release', 'cargo_features': 'not-applicable' if platform == 'server-linux-amd64' else 'default', 'release_evidence_complete': True,
             'evidence': {'cargo_go': 'collected-not-legally-reviewed'}}
     if platform == 'android':
         meta['evidence']['maven'] = 'collected-not-legally-reviewed'
@@ -47,6 +47,136 @@ def write_zip(path, files, checksum=True):
             archive.writestr(name, data)
         if checksum:
             archive.writestr('SHA256SUMS', sums(files))
+
+def installation_package(platform='server-linux-amd64', extra=None, omit=None, bad_mode=None, bad_binary=False):
+    files, meta = package(platform)
+    files['安装说明.txt'] = b'install the checked tar payload'
+    required = (P.SERVER_BINARIES | P.SERVER_DEPLOY | P.SERVER_SQL | P.SERVER_DOCS
+                if platform == 'server-linux-amd64' else P.LINUX_SDK_FILES)
+    installed = {name: b'fixture deployment or binary' for name in required}
+    installed.update(extra or {})
+    if omit:
+        installed.pop(omit, None)
+    executable = P.SERVER_BINARIES | {'deploy/init-private.py'} if platform == 'server-linux-amd64' else set()
+    meta['executable_files'] = sorted(executable)
+    meta['installation_payload'] = P.INSTALL_PAYLOADS[platform]
+    files['release-metadata.json'] = json.dumps(meta).encode()
+    members = dict(files, **installed)
+    members['SHA256SUMS'] = sums(members)
+    if bad_binary:
+        members['bin/device-server'] = b'tampered after checksum'
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode='w:gz') as out:
+        for name, data in members.items():
+            item = tarfile.TarInfo(name)
+            item.size = len(data)
+            item.mode = 0o755 if name in executable else 0o644
+            if name == bad_mode:
+                item.mode = 0o644
+            out.addfile(item, io.BytesIO(data))
+    files[meta['installation_payload']] = stream.getvalue()
+    return files, meta
+
+
+class ServerSplitPolicyTests(unittest.TestCase):
+    def verify(self, files, platform='server-linux-amd64'):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'package.zip'
+            write_zip(path, files)
+            return P.verify_zip(path, platform, SHA, '0.1.0')
+
+    def test_server_and_sdk_are_independent_complete_packages(self):
+        self.verify(installation_package()[0])
+        self.verify(installation_package('linux-x86_64')[0], 'linux-x86_64')
+        self.assertEqual(P.PLATFORMS['server-linux-amd64'], 'ci.yml')
+        self.assertEqual(len(P.PLATFORMS), 5)
+
+    def test_all_server_files_are_required(self):
+        for name in P.SERVER_BINARIES | P.SERVER_DEPLOY | P.SERVER_SQL | P.SERVER_DOCS:
+            with self.subTest(name=name), self.assertRaises(P.Rejected):
+                self.verify(installation_package(omit=name)[0])
+
+    def test_server_unknown_files_and_wrong_modes_rejected(self):
+        for name in ('bin/unknown', 'deploy/secret.env', 'infra/migrations/tests/unsafe.sql', 'sdk/lib/libdevice_ffi.so'):
+            with self.subTest(name=name), self.assertRaisesRegex(P.Rejected, 'UNEXPECTED_INSTALL'):
+                self.verify(installation_package(extra={name: b'unknown'})[0])
+        with self.assertRaisesRegex(P.Rejected, 'MODES'):
+            self.verify(installation_package(bad_mode='bin/device-server')[0])
+
+    def test_binary_tamper_and_outer_unknown_rejected(self):
+        with self.assertRaisesRegex(P.Rejected, 'COVERAGE'):
+            self.verify(installation_package(bad_binary=True)[0])
+        files, _ = installation_package()
+        files['undeclared-root.txt'] = b'even with a recomputed outer checksum'
+        with self.assertRaises(P.Rejected):
+            self.verify(files)
+
+    def test_product_and_platform_are_not_interchangeable(self):
+        for field, value in [('product', 'sdk'), ('platform', 'linux-x86_64'), ('cargo_features', 'default')]:
+            files, meta = installation_package()
+            meta[field] = value
+            files['release-metadata.json'] = json.dumps(meta).encode()
+            with self.subTest(field=field), self.assertRaisesRegex(P.Rejected, 'IDENTITY'):
+                self.verify(files)
+        for value in (None, 'server'):
+            files, meta = package()
+            meta['product'] = value
+            files['release-metadata.json'] = json.dumps(meta).encode()
+            with self.assertRaisesRegex(P.Rejected, 'IDENTITY'):
+                self.verify(files, 'windows-x86_64')
+
+    def test_public_names_explicitly_separate_server_and_sdk(self):
+        self.assertEqual(P.release_asset_name('server-linux-amd64', 'v0.1.1'),
+                         'peerloom-server-v0.1.1-linux-amd64.zip')
+        for platform in set(P.PLATFORMS) - {'server-linux-amd64'}:
+            self.assertEqual(P.release_asset_name(platform, 'v0.1.1'), f'peerloom-sdk-v0.1.1-{platform}.zip')
+        for platform, tag in [('server-other', 'v0.1.1'), ('android', '../v0.1.1'), ('sdk', 'v0.1.1')]:
+            with self.assertRaises(P.Rejected):
+                P.release_asset_name(platform, tag)
+
+    def test_release_requires_exact_five_roles(self):
+        plan = {'approved': True, 'format_version': 1, 'repository': P.REPO,
+                'administration_sha': MASTER, 'operation': 'release', 'release_sha': SHA,
+                'tag': 'v0.1.1', 'prerelease': False, 'notes': 'notes', 'final_scope_accepted': True,
+                'artifacts': {name: {'id': number} for number, name in enumerate(P.PLATFORMS, 1)}}
+        admin = A.Admin(None, plan, MASTER)
+        admin.fresh_master = lambda: None
+        admin.gates = lambda *args: {}
+        admin.ancestor = lambda *args: True
+        admin.validate()
+        duplicate = copy.deepcopy(plan)
+        duplicate['artifacts']['server-linux-amd64']['id'] = duplicate['artifacts']['linux-x86_64']['id']
+        admin.plan = duplicate
+        with self.assertRaisesRegex(P.Rejected, 'DISTINCT_PRODUCT'):
+            admin.validate()
+        for missing in P.PLATFORMS:
+            changed = copy.deepcopy(plan)
+            del changed['artifacts'][missing]
+            admin.plan = changed
+            with self.subTest(missing=missing), self.assertRaisesRegex(P.Rejected, 'ALL_PLATFORM'):
+                admin.validate()
+        admin.plan = copy.deepcopy(plan)
+        admin.plan['artifacts']['server-unknown'] = {}
+        with self.assertRaisesRegex(P.Rejected, 'ALL_PLATFORM'):
+            admin.validate()
+
+    def test_server_artifact_must_come_from_canonical_ci_run(self):
+        class API:
+            def call(self, endpoint):
+                return {'id': 7, 'expired': False, 'name': P.ARTIFACT_PREFIX['server-linux-amd64'] + SHA,
+                        'digest': 'sha256:' + 'a' * 64, 'workflow_run': {'head_sha': SHA, 'id': 9}}
+            def download(self, *args):
+                raise AssertionError('noncanonical producer cannot download')
+        plan = {'release_sha': SHA, 'artifacts': {'server-linux-amd64': {'id': 7, 'sha256': 'a' * 64}}}
+        with self.assertRaisesRegex(P.Rejected, 'WRONG_ARTIFACT'):
+            A.Admin(API(), plan, MASTER).artifacts(Path('/unused'), {'ci.yml': 8})
+
+    def test_sdk_rejects_server_payload_even_with_full_checksums(self):
+        for platform in ('windows-x86_64', 'apple', 'android'):
+            files, _ = package(platform)
+            files['bin/device-admin'] = b'forbidden server tool'
+            with self.subTest(platform=platform), self.assertRaises(P.Rejected):
+                self.verify(files, platform)
 
 class PolicyTests(unittest.TestCase):
     def test_unsafe_paths(self):
@@ -109,31 +239,17 @@ class PolicyTests(unittest.TestCase):
             P.metadata(json.dumps(meta).encode(), 'android', SHA, '0.1.0')
 
     def test_linux_tar_modes_and_manifest(self):
-        files, meta = package('linux-x86_64')
-        modes = {}
-        for target in ('linux-amd64', 'linux-arm64', 'darwin-arm64', 'windows-amd64'):
-            for command in ('device-server', 'device-migrate', 'device-bootstrap', 'device-admin', 'device-admin-user'):
-                name = f'go-crossbuilds/{target}/{command}' + ('.exe' if target.startswith('windows') else '')
-                files[name] = b'binary'
-                modes[name] = 0o644 if target.startswith('windows') else 0o755
-        for name in ('sdk/lib/libdevice_ffi.so', 'sdk/lib/libdevice_ffi.a', 'sdk/include/device_sdk.h'):
-            files[name] = b'abi'
-        meta['executable_files'] = [n for n, m in modes.items() if m == 0o755]
-        def archive(change=None):
-            stream = io.BytesIO()
-            all_files = dict(files, SHA256SUMS=sums(files))
-            with tarfile.open(fileobj=stream, mode='w:gz') as out:
-                for name, data in all_files.items():
-                    item = tarfile.TarInfo(name)
-                    item.size, item.mode = len(data), modes.get(name, 0o644)
-                    if name == change:
-                        item.mode = 0o644
-                    out.addfile(item, io.BytesIO(data))
-            stream.seek(0)
-            return stream
-        P.verify_linux_tar(archive(), {}, meta)
-        with self.assertRaisesRegex(P.Rejected, 'MODES'):
-            P.verify_linux_tar(archive(meta['executable_files'][0]), {}, meta)
+        files, meta = installation_package('linux-x86_64')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sdk.zip'
+            write_zip(path, files)
+            P.verify_zip(path, 'linux-x86_64', SHA, '0.1.0')
+        files, meta = installation_package('linux-x86_64', {'go-crossbuilds/linux-amd64/device-server': b'wrong'})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sdk.zip'
+            write_zip(path, files)
+            with self.assertRaisesRegex(P.Rejected, 'UNEXPECTED_INSTALL'):
+                P.verify_zip(path, 'linux-x86_64', SHA, '0.1.0')
 
     def test_tar_link(self):
         stream = io.BytesIO()
@@ -336,13 +452,13 @@ class GatesTests(unittest.TestCase):
         env = {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REPOSITORY': P.REPO, 'GITHUB_REF': 'refs/heads/master', 'GITHUB_SHA': MASTER}
         event = {'repository': {'full_name': P.REPO}, 'ref': 'refs/heads/master', 'before': SHA, 'after': MASTER,
                  'commits': [{'id': MASTER}]}  # Real Actions shape: no file arrays.
-        A.context(env, event, {'administration_sha': 'event'})
+        A.context(env, event, {'administration_sha': 'event', 'operation': 'release'})
         for key, value in [('GITHUB_EVENT_NAME', 'pull_request_target'), ('GITHUB_REF', 'refs/heads/feat/test'), ('GITHUB_REPOSITORY', 'fork/repo')]:
             with self.subTest(key=key), self.assertRaises(P.Rejected):
-                A.context(dict(env, **{key: value}), event, {'administration_sha': 'event'})
+                A.context(dict(env, **{key: value}), event, {'administration_sha': 'event', 'operation': 'release'})
         for change in ({'created': True}, {'forced': True}, {'deleted': True}, {'before': 'bad'}, {'before': '0' * 40}):
             with self.subTest(change=change), self.assertRaises(P.Rejected):
-                A.context(env, dict(event, **change), {'administration_sha': 'event'})
+                A.context(env, dict(event, **change), {'administration_sha': 'event', 'operation': 'release'})
 
 class PushComparisonTests(unittest.TestCase):
     def comparison(self):
@@ -383,115 +499,42 @@ class PushComparisonTests(unittest.TestCase):
         self.call(self.comparison(), {'before': SHA, 'after': MASTER,
                                       'compare': 'https://untrusted.invalid/collect'})
 
-class CleanupTests(unittest.TestCase):
-    def item(self):
-        return {'branch': 'feat/foundation', 'sha': SHA, 'inactive': True, 'no_wip': True, 'proof': 'ancestor'}
+class ReleaseOnlyBoundaryTests(unittest.TestCase):
+    def test_removed_branch_deletion_interfaces(self):
+        self.assertFalse(hasattr(A.Admin, 'cleanup'))
+        self.assertFalse(hasattr(A, 'execute_delete'))
+        for name in ('TASK_BRANCHES', 'validate_cleanup', 'deletion_command'):
+            self.assertFalse(hasattr(P, name))
+        source = Path(A.__file__).read_text(encoding='utf-8')
+        self.assertNotIn('GIT_ASKPASS', source)
+        self.assertNotIn('--force-with-lease', source)
 
-    def test_allowed_exact_deletion_only(self):
-        branch, sha = P.validate_cleanup(self.item(), MASTER, None, lambda a, b: True)
-        cmd = P.deletion_command(branch, sha)
-        self.assertEqual(cmd[-1], ':refs/heads/feat/foundation')
-        self.assertIn('--force-with-lease=refs/heads/feat/foundation:' + SHA, cmd)
-        self.assertNotIn('--force', cmd)
+    def test_delete_method_is_not_an_api_capability(self):
+        from unittest.mock import patch
+        with patch.object(A.subprocess, 'run') as process:
+            with self.assertRaisesRegex(P.Rejected, 'METHOD_FORBIDDEN'):
+                A.GitHub().call('/repos/' + P.REPO + '/git/refs/heads/anything', method='DELETE')
+            process.assert_not_called()
 
-    def test_master_unrelated_active_rejected(self):
-        for patch in ({'branch': 'master'}, {'branch': 'feat/user-work'}, {'inactive': False}, {'no_wip': False}):
-            with self.subTest(patch=patch), self.assertRaises(P.Rejected):
-                P.validate_cleanup(dict(self.item(), **patch), MASTER, None, lambda a, b: True)
+    def test_approved_cleanup_rejected_before_any_api(self):
+        plan = {'approved': True, 'format_version': 1, 'repository': P.REPO,
+                'administration_sha': MASTER, 'operation': 'cleanup', 'branches': []}
+        with self.assertRaisesRegex(P.Rejected, 'RELEASE_OPERATION'):
+            A.Admin(None, plan, MASTER).validate()
 
-    def test_equivalent_full_tree(self):
-        item = dict(self.item(), proof='equivalent_tree', retained_equivalent_commit=MASTER, expected_tree=TREE)
-        P.validate_cleanup(item, MASTER, lambda commit: {'tree': {'sha': TREE}}, lambda a, b: True)
-        with self.assertRaisesRegex(P.Rejected, 'TREE'):
-            P.validate_cleanup(item, MASTER, lambda commit: {'tree': {'sha': TREE if commit == MASTER else SHA}}, lambda a, b: True)
-        with self.assertRaisesRegex(P.Rejected, 'NOT_RETAINED'):
-            P.validate_cleanup(item, MASTER, lambda commit: {'tree': {'sha': TREE}}, lambda a, b: False)
-
-    def test_ref_race_before_delete(self):
-        class API:
-            def call(self, endpoint, **kw):
-                return {'object': {'sha': MASTER}}
-        admin = A.Admin(API(), {'branches': [self.item()]}, MASTER)
-        admin.ancestor = lambda a, b: True
-        called = []
-        with self.assertRaisesRegex(P.Rejected, 'BRANCH_MOVED'):
-            admin.cleanup(called.append)
-        self.assertEqual(called, [])
-
-    def test_git_lease_rejection_propagates(self):
-        class API:
-            def call(self, endpoint, **kw):
-                return {'object': {'sha': MASTER if endpoint.endswith('/master') else SHA}}
-        admin = A.Admin(API(), {'branches': [self.item()]}, MASTER)
-        admin.ancestor = lambda a, b: True
-        calls = []
-        def fail(command):
-            calls.append(command)
-            raise P.Rejected('EXACT_LEASE_DELETE_FAILED_NO_RETRY')
-        with self.assertRaises(P.Rejected):
-            admin.cleanup(fail)
-        self.assertEqual(len(calls), 1)
-
-class CleanupEventBindingTests(unittest.TestCase):
-    def fixture(self):
-        env={'GITHUB_EVENT_NAME':'push','GITHUB_REPOSITORY':P.REPO,'GITHUB_REF':'refs/heads/master','GITHUB_SHA':MASTER}
-        event={'repository':{'full_name':P.REPO},'ref':'refs/heads/master','before':SHA,'after':MASTER}
-        plan={'administration_sha':'event','operation':'cleanup','branches':[{'branch':'feat/validation-release-packaging','sha':'event','inactive':True,'no_wip':True,'proof':'ancestor'}]}
-        return env,event,plan
-
-    def test_trusted_event_resolves_without_mutating_plan(self):
-        env,event,plan=self.fixture();original=copy.deepcopy(plan)
-        bound,commit=A.context(env,event,plan)
-        self.assertEqual(plan,original);self.assertEqual(commit,MASTER)
-        self.assertEqual(bound['branches'][0]['sha'],MASTER)
-        self.assertEqual(P.validate_cleanup(bound['branches'][0],MASTER,None,lambda a,b:a==b)[1],MASTER)
-
-    def test_policy_without_trusted_context_rejects_event(self):
-        with self.assertRaises(P.Rejected):
-            P.validate_cleanup(self.fixture()[2]['branches'][0],MASTER,None,lambda *a:True)
-
-    def test_master_unrelated_active_or_equivalent_event_ref_rejected(self):
-        for change in ({'branch':'master'},{'branch':'feat/user-work'},{'inactive':False},{'no_wip':False},{'proof':'equivalent_tree'}):
-            env,event,plan=self.fixture();plan['branches'][0].update(change)
-            with self.subTest(change=change),self.assertRaises(P.Rejected):A.context(env,event,plan)
-
-    def test_only_one_event_cleanup_ref(self):
-        env,event,plan=self.fixture();plan['branches'].append(dict(plan['branches'][0],branch='feat/validation-multichannel'))
-        with self.assertRaises(P.Rejected):A.context(env,event,plan)
-
-    def test_noncleanup_or_event_in_other_fields_rejected(self):
-        for change in ({'operation':'release'},{'release_sha':'event'},{'artifacts':{'apple':{'source':'event'}}},{'source':'event'}):
-            env,event,plan=self.fixture();plan.update(change)
-            with self.subTest(change=change),self.assertRaises(P.Rejected):A.context(env,event,plan)
-        for key in ('proof','retained_equivalent_commit','expected_tree'):
-            env,event,plan=self.fixture();plan['branches'][0][key]='event'
-            with self.subTest(key=key),self.assertRaises(P.Rejected):A.context(env,event,plan)
-
-    def test_event_cannot_bypass_trusted_push_identity(self):
-        for change in ({'GITHUB_EVENT_NAME':'pull_request'},{'GITHUB_REF':'refs/heads/feat/test'},{'GITHUB_REPOSITORY':'fork/repo'},{'GITHUB_SHA':SHA}):
-            env,event,plan=self.fixture();env.update(change)
-            with self.subTest(change=change),self.assertRaises(P.Rejected):A.context(env,event,plan)
-
-    def test_resolved_ref_exact_lease_and_missing_rerun(self):
-        env,event,plan=self.fixture();bound,commit=A.context(env,event,plan)
-        class API:
-            deleted=False
-            def call(self,endpoint,**kw):
-                if endpoint.endswith('/master'):return {'object':{'sha':MASTER}}
-                return None if self.deleted else {'object':{'sha':MASTER}}
-        api=API();admin=A.Admin(api,bound,commit);admin.ancestor=lambda a,b:a==b;calls=[]
-        def execute(command):calls.append(command);api.deleted=True
-        admin.cleanup(execute);admin.cleanup(execute)
-        self.assertEqual(len(calls),1)
-        self.assertIn('--force-with-lease=refs/heads/feat/validation-release-packaging:'+MASTER,calls[0])
-
-    def test_resolved_ref_movement_rejected(self):
-        env,event,plan=self.fixture();bound,commit=A.context(env,event,plan)
-        class API:
-            def call(self,endpoint,**kw):return {'object':{'sha':MASTER if endpoint.endswith('/master') else SHA}}
-        admin=A.Admin(API(),bound,commit);admin.ancestor=lambda a,b:a==b;calls=[]
-        with self.assertRaisesRegex(P.Rejected,'BRANCH_MOVED'):admin.cleanup(calls.append)
-        self.assertEqual(calls,[])
+    def test_only_administration_event_binding_survives(self):
+        env = {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REPOSITORY': P.REPO,
+               'GITHUB_REF': 'refs/heads/master', 'GITHUB_SHA': MASTER}
+        event = {'repository': {'full_name': P.REPO}, 'ref': 'refs/heads/master', 'before': SHA, 'after': MASTER}
+        plan = {'administration_sha': 'event', 'operation': 'release'}
+        bound, commit = A.context(env, event, plan)
+        self.assertEqual(bound['administration_sha'], MASTER)
+        self.assertEqual(plan['administration_sha'], 'event')
+        for change in ({'operation': 'cleanup'}, {'branches': []},
+                       {'branches': [{'sha': 'event'}]}, {'release_sha': 'event'},
+                       {'artifacts': {'android': {'source': 'event'}}}):
+            with self.subTest(change=change), self.assertRaises(P.Rejected):
+                A.context(env, event, dict(plan, **change))
 
 
 class ReleaseTests(unittest.TestCase):
@@ -572,12 +615,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(plan['repository'], P.REPO)
         self.assertIs(type(plan['approved']), bool)
         self.assertEqual(plan['administration_sha'], 'event')
-        self.assertIn(plan['operation'], ('release', 'cleanup'))
-        if plan['operation'] == 'cleanup':
-            self.assertIsInstance(plan['branches'], list)
-            if plan['approved']:
-                self.assertTrue(plan['branches'])
-        else:
+        self.assertEqual(plan['operation'], 'release')
+        self.assertNotIn('branches', plan)
+        if plan['approved']:
             P.sha(plan['release_sha'])
             self.assertRegex(plan['tag'], r'^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$')
             self.assertIs(type(plan['prerelease']), bool)
@@ -603,7 +643,7 @@ class ExtraBoundaryTests(unittest.TestCase):
     def test_plan_false_never_calls_api(self):
         from unittest.mock import patch
         plan = {'format_version': 1, 'repository': P.REPO, 'approved': False,
-                'administration_sha': 'event', 'operation': 'cleanup', 'branches': []}
+                'administration_sha': 'event', 'operation': 'release'}
         with patch.dict(A.os.environ, {}, clear=True), \
                 patch.object(Path, 'read_text', return_value=json.dumps(plan)) as read, \
                 patch.object(A, 'GitHub', side_effect=AssertionError('must remain offline')) as api, \
@@ -615,9 +655,7 @@ class ExtraBoundaryTests(unittest.TestCase):
     def test_approved_plan_untrusted_event_never_calls_api(self):
         from unittest.mock import patch
         plan = {'format_version': 1, 'repository': P.REPO, 'approved': True,
-                'administration_sha': 'event', 'operation': 'cleanup',
-                'branches': [{'branch': 'feat/validation-release-packaging', 'sha': 'event',
-                              'inactive': True, 'no_wip': True, 'proof': 'ancestor'}]}
+                'administration_sha': 'event', 'operation': 'release'}
         env = {'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_EVENT_PATH': '/fixture/event.json'}
         with patch.dict(A.os.environ, env, clear=True), \
                 patch.object(Path, 'read_text', side_effect=[json.dumps(plan), '{}']), \
@@ -633,7 +671,7 @@ class ExtraBoundaryTests(unittest.TestCase):
         from unittest.mock import patch, Mock
         env={'GITHUB_EVENT_NAME':'push','GITHUB_REPOSITORY':P.REPO,'GITHUB_REF':'refs/heads/master','GITHUB_SHA':MASTER,'GITHUB_EVENT_PATH':'/fixture/event.json'}
         event={'repository':{'full_name':P.REPO},'ref':'refs/heads/master','before':SHA,'after':MASTER}
-        plan={'approved':True,'administration_sha':'event'}
+        plan={'approved':True,'administration_sha':'event','operation':'release'}
         reads=lambda path,*a,**kw:json.dumps(event if str(path)=='/fixture/event.json' else plan)
         with patch.dict(A.os.environ,env,clear=True),patch.object(Path,'read_text',reads),patch.object(A.subprocess,'check_output',return_value=MASTER+'\n'),patch.object(A.subprocess,'run',return_value=Mock(returncode=1)) as changed,patch.object(A,'GitHub') as api,patch('sys.argv',['release-admin.py']),self.assertRaisesRegex(P.Rejected,'TRUSTED_FILES_MODIFIED'):
             A.main()
@@ -646,7 +684,7 @@ class ExtraBoundaryTests(unittest.TestCase):
         from unittest.mock import patch, Mock
         env={'GITHUB_EVENT_NAME':'push','GITHUB_REPOSITORY':P.REPO,'GITHUB_REF':'refs/heads/master','GITHUB_SHA':MASTER,'GITHUB_EVENT_PATH':'/fixture/event.json'}
         event={'repository':{'full_name':P.REPO},'ref':'refs/heads/master','before':SHA,'after':MASTER}
-        plan={'approved':True,'administration_sha':'event','operation':'cleanup'}
+        plan={'approved':True,'administration_sha':'event','operation':'release'}
         reads=lambda path,*a,**kw:json.dumps(event if str(path)=='/fixture/event.json' else plan)
         for execute in (False,True):
             admin=Mock();admin.validate.side_effect=A.Pending('not terminal')
@@ -654,7 +692,7 @@ class ExtraBoundaryTests(unittest.TestCase):
                 A.main()
             if execute:sleep.assert_not_called();self.assertEqual(admin.validate.call_count,1)
             else:sleep.assert_called_once_with(30);self.assertEqual(admin.validate.call_count,2)
-            admin.cleanup.assert_not_called();admin.publish.assert_not_called()
+            admin.publish.assert_not_called()
 
     def test_preflight_job_budget_keeps_write_budget_unchanged(self):
         source=(Path(__file__).resolve().parents[1]/'.github/workflows/release-admin.yml').read_text(encoding='utf-8')
@@ -672,7 +710,7 @@ class ExtraBoundaryTests(unittest.TestCase):
                 return []
         admin = A.Admin(API(), {}, MASTER)
         with self.assertRaises(A.Pending):
-            admin.gates(SHA, True)
+            admin.gates(SHA)
 
     def test_latest_failure_cannot_use_old_success(self):
         class API:
@@ -682,7 +720,7 @@ class ExtraBoundaryTests(unittest.TestCase):
                             {'id': 2, 'status': 'completed', 'conclusion': 'failure'}]
                 return []
         with self.assertRaises(P.Rejected):
-            A.Admin(API(), {}, MASTER).gates(SHA, False)
+            A.Admin(API(), {}, MASTER).gates(SHA)
 
     def test_all_platform_artifacts_and_head_required(self):
         class API:
@@ -708,10 +746,6 @@ class ExtraBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(P.Rejected, 'ALL_PLATFORM'):
             admin.validate()
 
-    def test_no_cleanup_without_retained_commit(self):
-        item = {'branch': 'feat/foundation', 'sha': SHA, 'inactive': True, 'no_wip': True, 'proof': 'ancestor'}
-        with self.assertRaisesRegex(P.Rejected, 'NOT_RETAINED'):
-            P.validate_cleanup(item, MASTER, None, lambda *args: False)
 
     def test_missing_tag_after_upload_stops_publish(self):
         admin, api, outputs = ReleaseTests().setup_admin()
