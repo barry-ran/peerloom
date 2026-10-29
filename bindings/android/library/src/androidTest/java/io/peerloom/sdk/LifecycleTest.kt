@@ -298,6 +298,113 @@ class LifecycleTest {
     }
 
     @Test
+    fun closeWaitsForRunningHostStorageAfterNativeRelease() {
+        assertCloseWaitsForHostStorage(false)
+    }
+
+    @Test
+    fun closeWaitsForStorageReservationCleanup() {
+        assertCloseWaitsForHostStorage(true)
+    }
+
+    private fun assertCloseWaitsForHostStorage(blockCleanup: Boolean) {
+        val executor = Executors.newSingleThreadExecutor()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val resume = java.util.concurrent.CountDownLatch(1)
+        val worker = java.util.concurrent.atomic.AtomicReference<Thread>()
+        val sdk =
+            PeerloomSdk.createWithStore(
+                    ApplicationProvider.getApplicationContext(),
+                    JSONObject()
+                        .put("origin", "http://127.0.0.1:1")
+                        .put("development_loopback", true)
+                        .put("application_id", UUID.randomUUID().toString()),
+                    executor,
+                    IdentityStorage {
+                        worker.set(Thread.currentThread())
+                        entered.countDown()
+                        check(resume.await(20, TimeUnit.SECONDS))
+                        JSONObject("{}")
+                    },
+                ) {}
+                .get(20, TimeUnit.SECONDS)
+        fun field(name: String): Any =
+            requireNotNull(
+                PeerloomSdk::class
+                    .java
+                    .getDeclaredField(name)
+                    .apply { isAccessible = true }
+                    .get(sdk)
+            )
+        val budget = field("budget") as HostBudget
+        val payload = "{\"op\":\"load\"}".toByteArray()
+        val reservation = budget.acquire(payload.size.toLong(), true)
+        try {
+            // Host-only storage callback injection: no fabricated native CAS success or timeout.
+            PeerloomSdk::class.java.getDeclaredField("copiedEventReservation").apply {
+                isAccessible = true
+                set(sdk, reservation)
+            }
+            val callback =
+                PeerloomSdk::class
+                    .java
+                    .getDeclaredMethod(
+                        "onNativeEvent",
+                        Long::class.javaPrimitiveType,
+                        Int::class.javaPrimitiveType,
+                        Long::class.javaPrimitiveType,
+                        Long::class.javaPrimitiveType,
+                        Long::class.javaPrimitiveType,
+                        Int::class.javaPrimitiveType,
+                        ByteArray::class.java,
+                    )
+                    .apply { isAccessible = true }
+            synchronized(reservation) {
+                callback.invoke(sdk, field("handle") as Long, 10, 999L, 0L, 0L, 0, payload)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                if (blockCleanup) {
+                    resume.countDown()
+                    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                    while (
+                        worker.get().state != Thread.State.BLOCKED && System.nanoTime() < deadline
+                    ) {
+                        Thread.yield()
+                    }
+                    assertEquals(Thread.State.BLOCKED, worker.get().state)
+                    assertTrue(payload.all { it == 0.toByte() })
+                }
+                val closing = sdk.close()
+                val nativeReleased =
+                    field("nativeReleased") as java.util.concurrent.atomic.AtomicBoolean
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
+                while (!nativeReleased.get() && System.nanoTime() < deadline) {
+                    Thread.sleep(10)
+                }
+                assertTrue(nativeReleased.get())
+                executor.submit {}.get(5, TimeUnit.SECONDS)
+                // Exercise the release predicate after native teardown and event delivery drained.
+                PeerloomSdk::class.java.getDeclaredMethod("finishReleaseIfDrained").apply {
+                    isAccessible = true
+                    invoke(sdk)
+                }
+                assertFalse("host storage still owns its reservation", closing.isDone)
+                assertTrue(budget.usage()[1] > 0L)
+                resume.countDown()
+            }
+            sdk.close().get(20, TimeUnit.SECONDS)
+            assertTrue(payload.all { it == 0.toByte() })
+            assertEquals(listOf(0L, 0L, 0L, 0L), budget.usage())
+        } finally {
+            resume.countDown()
+            try {
+                sdk.close().get(20, TimeUnit.SECONDS)
+            } finally {
+                executor.shutdownNow()
+            }
+        }
+    }
+
+    @Test
     fun nativeOwnershipCloseAndInvalidHandle() {
         val events = Executors.newSingleThreadExecutor()
         try {

@@ -23,6 +23,101 @@ kvm = module("kvm-access")
 artifacts = module("verify-artifacts")
 ACL = "# file: /dev/kvm\n# owner: root\n# group: kvm\nuser::rw-\ngroup::rw-\nother::---\n"
 
+class PinnedEmulator(unittest.TestCase):
+    SHA256 = "b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1"
+
+    def install_script(self):
+        lines = (ROOT.parents[2]/'.github/workflows/android.yml').read_text().splitlines()
+        matches = [index for index, line in enumerate(lines)
+                   if line == '      - name: 安装官方模拟器与固定API镜像']
+        self.assertEqual(len(matches), 1)
+        start = matches[0]+1
+        self.assertEqual(lines[start], '        run: |')
+        body = []
+        for line in lines[start+1:]:
+            if line and not line.startswith('          '):
+                break
+            body.append(line[10:] if line else '')
+        self.assertTrue(body)
+        script = '\n'.join(body)+'\n'
+        self.assertIn('emulator-linux_x64-16428233.zip', script)
+        self.assertIn(self.SHA256, script)
+        self.assertIn('timeout 600 curl', script)
+        self.assertIn('--connect-timeout 20 --max-time 600', script)
+        self.assertNotIn("sdkmanager\" 'emulator'", script)
+        self.assertNotIn('echo "$ANDROID_HOME/emulator"', script)
+        self.assertLess(script.index('sha256sum --strict --check'), script.index('unzip -q'))
+        self.assertLess(script.index('cat "$emulator_root/emulator/source.properties"'), script.index('grep -Eq'))
+        return script[script.index('emulator_root='):]
+
+    def run_install(self, version='37.2.12', image_revision='7', corrupt=False, image_flavor='google_apis'):
+        script = self.install_script()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            sdk = root/'sdk'
+            existing = sdk/'emulator/source.properties'
+            existing.parent.mkdir(parents=True)
+            existing.write_text('runner emulator must remain untouched')
+            image = sdk/'system-images/android-36'/image_flavor/'x86_64/source.properties'
+            image.parent.mkdir(parents=True)
+            image.write_text('Pkg.Revision = '+image_revision+'\n')
+            archive = root/'fixture.zip'
+            with zipfile.ZipFile(archive, 'w') as package:
+                package.writestr('emulator/source.properties', 'Pkg.Revision = '+version+'\n')
+                info = zipfile.ZipInfo('emulator/emulator')
+                info.external_attr = 0o100755 << 16
+                package.writestr(info, '#!/bin/sh\necho pinned-emulator\n')
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            if corrupt:
+                archive.write_bytes(archive.read_bytes()+b'tampered')
+            binary = root/'bin'
+            binary.mkdir()
+            curl = binary/'curl'
+            curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\ncp "$FIXTURE_ZIP" "$2"\n')
+            curl.chmod(0o755)
+            paths = root/'github-path'
+            paths.touch()
+            runner = root/'runner'
+            runner.mkdir()
+            script = script.replace(self.SHA256, digest).replace("${{ matrix.page == 16384 && 'google_apis_ps16k' || 'google_apis' }}", image_flavor)
+            env = {**os.environ, 'PATH': str(binary)+os.pathsep+os.environ['PATH'],
+                   'ANDROID_HOME': str(sdk), 'RUNNER_TEMP': str(runner),
+                   'GITHUB_PATH': str(paths), 'FIXTURE_ZIP': str(archive)}
+            result = subprocess.run(['bash', '-euo', 'pipefail', '-c', script], env=env,
+                                    capture_output=True, text=True, timeout=15)
+            self.assertEqual(existing.read_text(), 'runner emulator must remain untouched')
+            success = version == '37.2.12' and image_revision == '7' and not corrupt
+            self.assertEqual(result.returncode == 0, success, result.stdout+result.stderr)
+            if success:
+                selected = paths.read_text().strip()
+                self.assertTrue(selected.startswith(str(runner)+'/peerloom-emulator.'))
+                self.assertEqual(Path(selected).name, 'emulator')
+                command = subprocess.run(['bash', '-c', 'command -v emulator; emulator'],
+                                         env={**env, 'PATH': selected+os.pathsep+env['PATH']},
+                                         capture_output=True, text=True, check=True)
+                self.assertEqual(command.stdout.splitlines(), [selected+'/emulator', 'pinned-emulator'])
+                self.assertFalse(list(runner.rglob('*.zip')))
+            else:
+                self.assertEqual(paths.read_text(), '')
+                self.assertEqual(list(runner.iterdir()), [])
+            if not corrupt:
+                self.assertIn('Pkg.Revision = '+version, result.stdout)
+                self.assertIn('Pkg.Revision = '+image_revision, result.stdout)
+
+    def test_fixed_archive_selects_isolated_binary(self):
+        for flavor in ('google_apis', 'google_apis_ps16k'):
+            with self.subTest(image=flavor):
+                self.run_install(image_flavor=flavor)
+
+    def test_corrupt_archive_fails_before_unpack_and_path_selection(self):
+        self.run_install(corrupt=True)
+
+    def test_wrong_emulator_version_fails_with_diagnostic(self):
+        self.run_install(version='37.2.13')
+
+    def test_wrong_system_image_revision_fails_with_diagnostic(self):
+        self.run_install(image_revision='8')
+
 class NativeVendorInputs(unittest.TestCase):
     def test_every_workspace_path_patch_invalidates_native_build(self):
         import tomllib

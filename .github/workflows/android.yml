@@ -143,14 +143,24 @@ jobs:
         run: |
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'emulator' '${{ matrix.image }}'
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" '${{ matrix.image }}'
           test -e /dev/kvm
           python3 bindings/android/scripts/kvm-access.py prepare
-          grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*37\.2\.12$' "$ANDROID_HOME/emulator/source.properties"
-          grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*7$' "$ANDROID_HOME/system-images/android-36/${{ matrix.page == 16384 && 'google_apis_ps16k' || 'google_apis' }}/x86_64/source.properties"
-          cat "$ANDROID_HOME/emulator/source.properties"
+          # Official archive: https://developer.android.com/studio/emulator_archive
+          emulator_root=$(mktemp -d "${RUNNER_TEMP:?}/peerloom-emulator.XXXXXX")
+          trap 'status=$?; if [ "$status" -ne 0 ]; then rm -rf -- "$emulator_root"; fi' EXIT
+          timeout 600 curl --fail --location --connect-timeout 20 --max-time 600 --retry 2 --retry-max-time 600 --proto '=https' --proto-redir '=https' \
+            'https://redirector.gvt1.com/edgedl/android/repository/emulator-linux_x64-16428233.zip' \
+            --output "$emulator_root/emulator.zip"
+          echo "b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1  $emulator_root/emulator.zip" | sha256sum --strict --check
+          unzip -q "$emulator_root/emulator.zip" -d "$emulator_root"
+          rm -- "$emulator_root/emulator.zip"
+          cat "$emulator_root/emulator/source.properties"
           cat "$ANDROID_HOME/system-images/android-36/${{ matrix.page == 16384 && 'google_apis_ps16k' || 'google_apis' }}/x86_64/source.properties"
+          grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*37\.2\.12$' "$emulator_root/emulator/source.properties"
+          grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*7$' "$ANDROID_HOME/system-images/android-36/${{ matrix.page == 16384 && 'google_apis_ps16k' || 'google_apis' }}/x86_64/source.properties"
+          # Select only the verified package; leave the runner's SDK emulator untouched.
+          echo "$emulator_root/emulator" >> "$GITHUB_PATH"
       - name: CheckJNI、TLS、持久化重启与真实控制面通信
         run: ./bindings/android/scripts/emulator.sh '${{ matrix.page }}' '${{ matrix.image }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
