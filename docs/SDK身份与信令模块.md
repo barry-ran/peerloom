@@ -207,3 +207,7 @@ TEST_SIGNAL_FIXTURE_FILE=/private/fresh-pair.json \
 ```
 
 该模式不向SDK传入静态TURN用户名或密码；双方只有平台注册凭据，从已授权会话接口获取配置，按RelayOnly连接并检查本地实际Relay候选后才Ready。测试覆盖双向二进制消息、设备凭据轮换/WSS重建、主动租约续期与关闭；会旋转source凭据，不可复用旧夹具。无该环境变量时仍跑DirectOnly回归，两种验证不可相互替代。初次取得TURN配置的实际成功不代表网络切换/ICE restart或任意长度的稳定性验收。
+
+## 准备会话接入与目标 epoch
+
+`DeviceSdk::connect_prepared(session_id)` 先读取相关联的权威快照，验证当前安装身份是原 source，再提交同一 session 接入；返回请求关联 ID，不表示 Ready。旧 `connect(target)` 不变，但不能绕过已启用独占策略的目标。目标接受、数据gate、恢复和释放均绑定原 epoch，未知协议版本失败关闭。公开恢复失效与权威会话终态仍是两个阶段，不把旧handle Closed当释放。包含休眠的时钟及原WSS fence/子任务回收约束见[独占会话模块](独占会话模块.md)。

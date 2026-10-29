@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barry-ran/peerloom/src/device-server/internal/authorization"
 	"github.com/barry-ran/peerloom/src/device-server/internal/identity"
 )
 
@@ -89,6 +90,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sendError(failure("INVALID_INPUT", 422))
 		return
 	}
+	epochs := r.Header.Values("X-Peerloom-Target-Epoch")
+	if len(epochs) > 1 {
+		sendError(failure("INVALID_INPUT", 422))
+		return
+	}
+	ctx = authorization.WithExclusiveAuthority(ctx, r.Header.Get("X-Peerloom-Target-Epoch"), "")
 	result, err := h.service.IssueAuthenticated(ctx, actor, path[0], parts[1])
 	if err != nil {
 		sendError(err)

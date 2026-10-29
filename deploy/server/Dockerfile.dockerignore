@@ -30,3 +30,6 @@
 !deploy/
 !deploy/Dockerfile
 !deploy/Dockerfile.dockerignore
+
+!infra/migrations/000011_exclusive_sessions.down.sql
+!infra/migrations/000011_exclusive_sessions.up.sql

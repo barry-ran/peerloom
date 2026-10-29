@@ -3,6 +3,7 @@ package authorization
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -71,15 +72,32 @@ func now(ctx context.Context, tx pgx.Tx) (time.Time, error) {
 const sessionColumns = `id::text,tenant_id::text,source_device_id::text,target_device_id::text,
 COALESCE(grant_id::text,''),state,COALESCE(close_reason,''),
 COALESCE(source_lease_expires_at,'epoch'::timestamptz),COALESCE(target_lease_expires_at,'epoch'::timestamptz),
-lease_generation,source_connected,target_connected,source_offer_seen,target_answer_seen,negotiation_generation,negotiation_started_at`
+lease_generation,source_connected,target_connected,source_offer_seen,target_answer_seen,negotiation_generation,negotiation_started_at,target_epoch,prepared,connect_deadline,target_fenced,exclusive_release_not_before,
+CASE WHEN target_epoch=0 THEN '' WHEN state<>'closed' THEN 'held'
+WHEN target_fenced OR exclusive_release_not_before<=clock_timestamp() THEN 'released' ELSE 'closing' END`
 
 type scanner interface{ Scan(...any) error }
 
 func scanSession(row scanner) (Session, error) {
 	var result Session
-	err := row.Scan(&result.ID, &result.TenantID, &result.SourceDeviceID, &result.TargetDeviceID, &result.GrantID, &result.State, &result.CloseReason, &result.SourceLeaseExpiresAt, &result.TargetLeaseExpiresAt, &result.LeaseGeneration, &result.SourceConnected, &result.TargetConnected, &result.SourceOfferSeen, &result.TargetAnswerSeen, &result.NegotiationGeneration, &result.NegotiationStartedAt)
+	var epoch int64
+	err := row.Scan(&result.ID, &result.TenantID, &result.SourceDeviceID, &result.TargetDeviceID, &result.GrantID, &result.State, &result.CloseReason, &result.SourceLeaseExpiresAt, &result.TargetLeaseExpiresAt, &result.LeaseGeneration, &result.SourceConnected, &result.TargetConnected, &result.SourceOfferSeen, &result.TargetAnswerSeen, &result.NegotiationGeneration, &result.NegotiationStartedAt, &epoch, &result.Prepared, &result.ConnectDeadline, &result.TargetFenced, &result.ReleaseNotBefore, &result.ExclusiveReleaseState)
 	if err != nil {
 		return result, err
+	}
+	if result.ConnectDeadline != nil {
+		utc := result.ConnectDeadline.UTC()
+		result.ConnectDeadline = &utc
+	}
+	if result.ReleaseNotBefore != nil {
+		utc := result.ReleaseNotBefore.UTC()
+		result.ReleaseNotBefore = &utc
+	}
+	if epoch > 0 {
+		result.ExclusiveTarget = true
+		result.ExclusiveProtocolVersion = 1
+		result.TargetEpoch = strconv.FormatInt(epoch, 10)
+		result.FenceRequired = result.State == "closed" && result.ExclusiveReleaseState == "closing" && !result.TargetFenced
 	}
 	result.LeaseExpiresAt = result.SourceLeaseExpiresAt
 	if result.TargetLeaseExpiresAt.Before(result.LeaseExpiresAt) {
@@ -106,14 +124,14 @@ WHERE tenant_id=$2 AND id=$3 RETURNING `+sessionColumns, reason, value.TenantID,
 }
 
 type peer struct {
-	id, app, status                string
-	enabled, connectable, approval bool
-	limit                          int
+	id, app, status                           string
+	enabled, connectable, approval, exclusive bool
+	limit                                     int
 }
 
 func loadPeers(ctx context.Context, tx pgx.Tx, tenant, source, target string) (peer, peer, error) {
 	rows, err := tx.Query(ctx, `SELECT d.id::text,d.application_id::text,d.status,a.enabled AND t.status='active',
-d.connectable,a.require_target_approval,COALESCE(d.max_connections,a.max_connections)
+d.connectable,a.require_target_approval,COALESCE(d.max_connections,a.max_connections),a.exclusive_target
 FROM devices d JOIN applications a ON a.id=d.application_id AND a.tenant_id=d.tenant_id
 JOIN tenants t ON t.id=d.tenant_id WHERE d.tenant_id=$1 AND d.id IN($2,$3) ORDER BY d.id FOR SHARE OF d,a,t`, tenant, source, target)
 	if err != nil {
@@ -123,7 +141,7 @@ JOIN tenants t ON t.id=d.tenant_id WHERE d.tenant_id=$1 AND d.id IN($2,$3) ORDER
 	var from, to peer
 	for rows.Next() {
 		var p peer
-		if err = rows.Scan(&p.id, &p.app, &p.status, &p.enabled, &p.connectable, &p.approval, &p.limit); err != nil {
+		if err = rows.Scan(&p.id, &p.app, &p.status, &p.enabled, &p.connectable, &p.approval, &p.limit, &p.exclusive); err != nil {
 			return from, to, databaseError(err)
 		}
 		if p.id == source {

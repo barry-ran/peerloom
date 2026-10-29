@@ -146,6 +146,7 @@ mod tests {
             .insert_incoming(
                 session_id.clone(),
                 Session {
+                    fence_safe: true,
                     id: session_id.clone(),
                     initial_request_id: None,
                     source: source.clone(),

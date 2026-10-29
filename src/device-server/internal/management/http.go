@@ -77,6 +77,18 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, authenticate fun
 		return
 	}
 	switch {
+	case r.URL.Path == "/v1/exclusive-sessions/prepare":
+		if r.Method != http.MethodPost {
+			methodError(w, id, "POST")
+			return
+		}
+		var input ExclusivePrepareInput
+		if err = decode(w, r, &input); err != nil {
+			writeError(w, id, err)
+			return
+		}
+		result, err := h.service.PrepareExclusiveSession(ctx, p, input, r.Header.Get("Idempotency-Key"))
+		respond(w, id, result, err, 201)
 	case r.URL.Path == "/v1/applications":
 		switch r.Method {
 		case http.MethodPost:

@@ -1,35 +1,7 @@
 {
   "format_version": 1,
   "repository": "barry-ran/peerloom",
-  "approved": true,
+  "approved": false,
   "administration_sha": "event",
-  "operation": "release",
-  "release_sha": "25b33273ac5bbd03506905a635b1453dcf969c70",
-  "tag_sha": "event",
-  "tag": "v0.1.3",
-  "prerelease": false,
-  "final_scope_accepted": true,
-  "artifacts": {
-    "server-linux-amd64": {
-      "id": 12897206080,
-      "sha256": "15a8fcd490c29f952ce715a8aa4ac16e1585f96933317791e647ef7318722b97"
-    },
-    "linux-x86_64": {
-      "id": 12897510638,
-      "sha256": "9b761155d5eb88d7d38baafd4b756d1a9cf0b4bb80552bbdb3d0088fcf1f724c"
-    },
-    "windows-x86_64": {
-      "id": 12896218265,
-      "sha256": "059f24f7972a9a0b465136a0da96e16d07549d20ee9c9053a6e6bd86928d4142"
-    },
-    "android": {
-      "id": 12895509163,
-      "sha256": "c3fee66862a03d4c0df10e81f1fd6e6f451a4c8d95d68faadba97b103b10d4c7"
-    },
-    "apple": {
-      "id": 12898023332,
-      "sha256": "f6a650eaf8a8ef0d674b5a84db9522a6e76cd69230afe228bf2b3db8163e40e0"
-    }
-  },
-  "notes": "# Peerloom v0.1.3\n\n服务端 `GET /v1/device-self` 新增 `credential_expires_at`：返回本次 Bearer 凭证在数据库中的实际到期时间（UTC RFC3339），与设备、租户、应用及有效性在同一认证查询绑定。\n\n- 刷新重叠窗口内的旧凭证返回缩短后的实际期限，新凭证返回自身期限。\n- 过期、撤销、设备禁用、应用禁用或租户停用仍拒绝认证，不返回有效身份快照。\n- 不新增令牌原文或 hash 输出，不采用客户端时间，不改变注册/刷新权限、令牌格式或 SDK ABI。\n- 这是认证时快照，不保证响应之后不会撤销；业务服务应继续按自身需求逐请求重验/处理撤销，不能把离线业务票据当作永久继承设备授权。\n\n服务端与 Linux、Windows、Apple、Android SDK 仍分开提供。统一版本元数据更新为0.1.3；SDK功能代码保持0.1.2，不把元数据升级当成新增媒体或平台能力。产物源码为 `25b33273ac5bbd03506905a635b1453dcf969c70`，同一提交八个必要 CI job 全通过，五份实际ZIP逐项核验。标签指向后续已审发布管理提交；资产保留上述真实源码，不冒称重新构建。\n\n容量与平台边界保持：默认不设人工连接数量配额但仍有内存/报文/背压保护；500原生模拟设备和C ABI并发字节流测试不等于500台Android真机或500路视频。生产签名Apple宿主、物理设备、公网长期负载仍需目标环境验收；Android提供arm64-v8a/x86_64，不含ARM32。\n\n原创代码MIT；第三方材料和精确披露缺项随包保留，尚不声称完成法务上线审查。不会覆盖v0.1.2资产。\n\n[源码与公开API](https://github.com/barry-ran/peerloom/tree/25b33273ac5bbd03506905a635b1453dcf969c70)、[身份模块说明](https://github.com/barry-ran/peerloom/blob/25b33273ac5bbd03506905a635b1453dcf969c70/docs/设备身份模块.md)、[服务端部署包说明](https://github.com/barry-ran/peerloom/blob/25b33273ac5bbd03506905a635b1453dcf969c70/deploy/server/README.md)。\n\n服务端下载 `peerloom-server-v0.1.3-linux-amd64.zip`；SDK下载 `peerloom-sdk-v0.1.3-{linux-x86_64,windows-x86_64,apple,android}.zip`。校验和和元数据随包提供；服务端仍需声明的Docker/Compose依赖与外部TURN，不是离线基础设施全集。\n"
+  "operation": "release"
 }

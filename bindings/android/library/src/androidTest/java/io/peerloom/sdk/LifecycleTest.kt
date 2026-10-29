@@ -46,6 +46,30 @@ class LifecycleTest {
 
     @Test
     fun optionalCapacityAcceptsOmittedZeroAndFiveHundred() {
+        assertNull(targetEpoch(JSONObject("{}")))
+        assertEquals(
+            "9223372036854775807",
+            targetEpoch(
+                JSONObject(
+                    "{\"exclusive_target\":true,\"exclusive_protocol_version\":1,\"target_epoch\":\"9223372036854775807\"}"
+                )
+            ),
+        )
+        for (invalid in
+            listOf(
+                "{\"target_epoch\":\"1\"}",
+                "{\"exclusive_target\":true,\"exclusive_protocol_version\":1.0,\"target_epoch\":\"1\"}",
+                "{\"exclusive_target\":true,\"exclusive_protocol_version\":true,\"target_epoch\":\"1\"}",
+                "{\"exclusive_target\":true,\"exclusive_protocol_version\":null,\"target_epoch\":\"1\"}",
+                "{\"exclusive_target\":null}",
+                "{\"exclusive_protocol_version\":null}",
+                "{\"target_epoch\":null}",
+                "{\"exclusive_target\":true,\"exclusive_protocol_version\":1,\"target_epoch\":null}",
+                "{\"exclusive_target\":true,\"exclusive_protocol_version\":2,\"target_epoch\":\"1\"}",
+                "{\"exclusive_target\":false,\"exclusive_protocol_version\":1,\"target_epoch\":\"1\"}",
+                "{\"exclusive_target\":true,\"exclusive_protocol_version\":1,\"target_epoch\":1}",
+            )) assertThrows(PeerloomException::class.java) { targetEpoch(JSONObject(invalid)) }
+
         val executor = Executors.newSingleThreadExecutor()
         try {
             for (count in listOf<Int?>(null, 0, 500)) {
@@ -67,6 +91,14 @@ class LifecycleTest {
                             executor,
                         ) {}
                         .get(20, TimeUnit.SECONDS)
+                assertTrue(Native.capabilities() and 256L != 0L)
+                assertEquals(
+                    2,
+                    sdk.connectPrepared(UUID.randomUUID().toString())
+                        .completion
+                        .get(20, TimeUnit.SECONDS)
+                        .status,
+                )
                 sdk.close().get(20, TimeUnit.SECONDS)
             }
         } finally {

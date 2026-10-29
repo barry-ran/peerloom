@@ -21,6 +21,8 @@ final class MockNative: NativeAPI, @unchecked Sendable {
         get { lock.lock(); defer { lock.unlock() }; return validValue }
         set { lock.lock(); validValue = newValue; lock.unlock() }
     }
+    var supportedCapabilities: UInt64 = 0
+    func capabilities() -> UInt64 { supportedCapabilities }
     var holdReads = false
     var holdManagement = false
     var suppressOpenBirth = false
@@ -143,6 +145,22 @@ final class NativeCoreTests: XCTestCase {
             XCTAssertEqual(error as? PeerloomError, .invalidEvent)
         }
         try await core.close()
+        let readyNative = MockNative(), readyCore = NativeCore(store: EmptyStore(), api: readyNative)
+        try readyCore.create(Data("{}".utf8))
+        let metadata = Data(#"{"session_id":"00000000-0000-4000-8000-000000000001","peer_device_id":"00000000-0000-4000-8000-000000000002","generation":1,"exclusive_target":true,"exclusive_protocol_version":1,"target_epoch":"1"}"#.utf8)
+        readyNative.emit(kind: 5, connection: 42, data: metadata)
+        let nextReady = try await readyCore.nextEvent()
+        let ready = try XCTUnwrap(nextReady)
+        let info = try PeerloomConnectionInfo(event: ready)
+        XCTAssertEqual(info.targetEpoch, "1")
+        readyNative.emit(kind: 5, connection: 43, data: metadata)
+        let nextHeldReady = try await readyCore.nextEvent()
+        let heldReady = try XCTUnwrap(nextHeldReady)
+        readyNative.isValid = false
+        XCTAssertThrowsError(try PeerloomConnectionInfo(event: heldReady)) { error in
+            XCTAssertEqual(error as? PeerloomError, .native(5))
+        }
+        try await readyCore.close()
     }
     @MainActor
     func testRetainedEventsKeepBoundedCreditsUntilConsumption() async throws {
@@ -239,6 +257,30 @@ final class NativeCoreTests: XCTestCase {
     func testTypedChildMetadataAndPartialWriteResult() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
         try core.create(Data("{}".utf8))
+        do { try await core.connectPrepared(sessionID: "00000000-0000-4000-8000-000000000001"); XCTFail("old library accepted exclusive op") }
+        catch { XCTAssertEqual(error as? PeerloomError, .native(7)) }
+        native.supportedCapabilities = 256
+        try await core.connectPrepared(sessionID: "00000000-0000-4000-8000-000000000001")
+        XCTAssertNil(try decodeTargetEpoch(Data("{}".utf8)))
+        let exclusive = Data(#"{"exclusive_target":true,"exclusive_protocol_version":1,"target_epoch":"9223372036854775807"}"#.utf8)
+        XCTAssertEqual(try decodeTargetEpoch(exclusive), "9223372036854775807")
+        for invalid in [#"{"exclusive_target":true,"exclusive_protocol_version":1e0,"target_epoch":"1"}"#,
+                        #"{"exclusive_target":true,"exclusive_protocol_version":1,"exclusive_protocol_version":1,"target_epoch":"1"}"#,
+                        #"{"exclusive_target":null,"exclusive_protocol_version":1,"target_epoch":"1"}"#,
+                        #"{"exclusive_target":true,"exclusive_protocol_version":1.0,"target_epoch":"1"}"#,
+                        #"{"exclusive_target":true,"exclusive_protocol_version":true,"target_epoch":"1"}"#,
+                        #"{"exclusive_target":true,"exclusive_protocol_version":null,"target_epoch":"1"}"#,
+                        #"{"exclusive_target":null}"#,
+                        #"{"exclusive_protocol_version":null}"#,
+                        #"{"target_epoch":null}"#,
+                        #"{"exclusive_target":true,"exclusive_protocol_version":1,"target_epoch":null}"#,
+                        #"{"target_epoch":"1"}"#, #"{"exclusive_target":false,"exclusive_protocol_version":1,"target_epoch":"1"}"#,
+                        #"{"exclusive_target":true,"exclusive_protocol_version":2,"target_epoch":"1"}"#,
+                        #"{"exclusive_target":true,"exclusive_protocol_version":1,"target_epoch":"01"}"#,
+                        #"{"exclusive_target":true,"exclusive_protocol_version":1,"target_epoch":"9223372036854775808"}"#] {
+            XCTAssertThrowsError(try decodeTargetEpoch(Data(invalid.utf8)))
+        }
+
         let message = try PeerloomChannel(core: core, connection: 42, handle: 51,
             metadata: Data("{\"mode\":\"low_latency_message\",\"label\":\"test\"}".utf8))
         let disposition = try await message.send(Data([1, 2, 3]))

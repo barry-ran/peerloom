@@ -30,6 +30,7 @@ extern "C" {
 #define DP_OP_CLOSE_CONNECTION UINT32_C(6)
 #define DP_OP_RESET_IDENTITY UINT32_C(7)
 #define DP_OP_OPEN_CHANNEL UINT32_C(8)
+#define DP_OP_CONNECT_PREPARED UINT32_C(9)
 #define DP_CHANNEL_SEND UINT32_C(1)
 #define DP_CHANNEL_READ UINT32_C(2)
 #define DP_CHANNEL_WRITE UINT32_C(3)
@@ -57,6 +58,7 @@ extern "C" {
 #define DP_CAP_TYPED_CHANNELS UINT64_C(32)
 #define DP_CAP_RELIABLE_STREAM UINT64_C(64)
 #define DP_CAP_LOW_LATENCY_MESSAGE UINT64_C(128)
+#define DP_CAP_EXCLUSIVE_PREPARED UINT64_C(256)
 
 typedef struct dp_event {
     uint32_t abi_version;
@@ -122,6 +124,10 @@ uint32_t dp_sdk_create(const uint8_t *json, size_t len, dp_callback callback,
  * Direct enrollment omits registration_grant; server must explicitly enable direct.
  * Its idempotency_key is a secret: fresh CSPRNG32 bytes as canonical base64url43 chars.
  * Keep it securely with the exact body; UUID/public installation keys are not sufficient.
+ * Connect prepared (capability 256): {"session_id":"UUID"}, connection=0.
+ * Correlated server sync validates the source/epoch before connecting; no second
+ * session is created. Completion is submission, not Ready. Unsupported clocks
+ * fail closed for exclusive sessions. Epoch in Ready JSON is a decimal string.
  * Connect: {"target_device_id":"UUID"}; respond: {"session_id":"UUID","accept":true}.
  * Send: raw binary <=65536 bytes, connection handle required. Empty messages allowed.
  * Refresh/close: empty input; close requires connection handle. Others connection=0.

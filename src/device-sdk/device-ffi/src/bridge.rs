@@ -188,6 +188,7 @@ pub async fn run(
                     Some(SdkEvent::ConnectionReady(connection)) => {
                         let session = connection.session_id().to_owned();
                         let generation = connection.negotiation_generation();
+                        let target_epoch = connection.target_epoch();
                         let gathering = match connection.gathering_outcome() {
                             device_transport_webrtc::GatheringOutcome::Complete => "complete",
                             device_transport_webrtc::GatheringOutcome::PartialAtDeadline => "partial_at_deadline",
@@ -208,7 +209,9 @@ pub async fn run(
                         let Ok((id, validity)) = admitted else { drop(connection); instance.stop(); continue; };
                         match crate::channels::spawn_connection(instance.clone(), id, validity.clone(), connection) {
                             Ok(task) => {
-                                let payload = json!({"session_id":session,"generation":generation,"peer_device_id":peer_device_id,"request_id":request_id,"ice_gathering":gathering}).to_string().into_bytes();
+                                let mut metadata = json!({"session_id":session,"generation":generation,"peer_device_id":peer_device_id,"request_id":request_id,"ice_gathering":gathering});
+                                crate::channels::exclusive_metadata(&mut metadata, target_epoch);
+                                let payload = metadata.to_string().into_bytes();
                                 connections.insert(id, (session, task));
                                 let mut event = Event::new(5, 0, id, OK, payload);
                                 event.validity = Some(validity);
@@ -355,6 +358,26 @@ async fn execute(
                 .map_err(error)?;
             return Ok(
                 json!({"request_id":request_id,"target_device_id":t.target_device_id})
+                    .to_string()
+                    .into_bytes(),
+            );
+        }
+        9 => {
+            if op.connection != 0 {
+                return Err(HANDLE);
+            }
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Prepared {
+                session_id: String,
+            }
+            let prepared: Prepared = serde_json::from_slice(&op.input).map_err(|_| INVALID)?;
+            let request_id = sdk
+                .connect_prepared(&prepared.session_id)
+                .await
+                .map_err(error)?;
+            return Ok(
+                json!({"request_id":request_id,"session_id":prepared.session_id})
                     .to_string()
                     .into_bytes(),
             );

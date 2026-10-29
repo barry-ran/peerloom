@@ -100,6 +100,22 @@ impl<T> SessionMap<T> {
         Ok(id)
     }
 
+    pub(super) fn retarget(
+        &mut self,
+        reservation: Reservation,
+        target: String,
+    ) -> Result<(), MapError> {
+        Self::identifier(&target)?;
+        let pending = self
+            .pending
+            .get_mut(&reservation)
+            .ok_or(MapError::UnknownReservation)?;
+        if pending.request.is_some() {
+            return Err(MapError::RequestMismatch);
+        }
+        pending.target = target;
+        Ok(())
+    }
     pub(super) fn bind_request(
         &mut self,
         reservation: Reservation,

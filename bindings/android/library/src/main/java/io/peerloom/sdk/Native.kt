@@ -8,6 +8,8 @@ object Native {
         System.loadLibrary("peerloom_android")
     }
 
+    @JvmStatic external fun capabilities(): Long
+
     @JvmStatic external fun initialize(application: Context): Int
 
     @JvmStatic external fun create(config: ByteArray, receiver: PeerloomSdk): LongArray

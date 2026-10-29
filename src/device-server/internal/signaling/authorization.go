@@ -15,6 +15,7 @@ type bearerContextKey struct{}
 // AuthorizationDispatch never accepts a tenant, actor, grant or lease from a client.
 func AuthorizationDispatch(service *authorization.Service) Dispatch {
 	return func(ctx context.Context, actor identity.Device, e Envelope) ([]Delivery, error) {
+		ctx = authorization.WithExclusiveAuthority(ctx, e.TargetEpoch, e.Fence)
 		var session authorization.Session
 		var err error
 		switch e.Type {
@@ -22,10 +23,20 @@ func AuthorizationDispatch(service *authorization.Service) Dispatch {
 			var request struct {
 				TargetDeviceID string `json:"target_device_id"`
 			}
-			if e.SessionID != "" || decodePayload(e.Payload, &request) != nil || !uuidPattern.MatchString(request.TargetDeviceID) {
+			if e.SessionID != "" || e.TargetEpoch != "" || decodePayload(e.Payload, &request) != nil || !uuidPattern.MatchString(request.TargetDeviceID) {
 				return closedDeliveries(session, e.ID), errors.New("invalid request")
 			}
 			session, err = service.Request(ctx, actor, request.TargetDeviceID, e.ID)
+		case "session.connect_prepared":
+			if !validSession(e) || !EmptyPayload(e) {
+				return nil, errors.New("invalid prepared connect")
+			}
+			session, err = service.ConnectPrepared(ctx, actor, e.SessionID)
+		case "session.fence_ack":
+			if !validSession(e) || !EmptyPayload(e) {
+				return nil, errors.New("invalid fence acknowledgement")
+			}
+			session, err = service.FenceAck(ctx, actor, e.SessionID, e.TargetEpoch)
 		case "session.accept", "session.reject":
 			if !validSession(e) || !EmptyPayload(e) {
 				return closedDeliveries(session, e.ID), errors.New("invalid response")
@@ -76,7 +87,7 @@ func AuthorizationDispatch(service *authorization.Service) Dispatch {
 			if actor.ID == target {
 				target = session.SourceDeviceID
 			}
-			return []Delivery{{TenantID: actor.TenantID, DeviceID: target, Message: Envelope{Type: e.Type, SessionID: session.ID, Negotiation: session.NegotiationGeneration, RequestID: e.ID, Payload: e.Payload}}}, nil
+			return []Delivery{{TenantID: actor.TenantID, DeviceID: target, Message: Envelope{Type: e.Type, SessionID: session.ID, Negotiation: session.NegotiationGeneration, TargetEpoch: session.TargetEpoch, RequestID: e.ID, Payload: e.Payload}}}, nil
 		case "sync.request":
 			if !validSession(e) || !EmptyPayload(e) {
 				return closedDeliveries(session, e.ID), errors.New("invalid sync")
@@ -86,7 +97,7 @@ func AuthorizationDispatch(service *authorization.Service) Dispatch {
 				return closedDeliveries(session, e.ID), err
 			}
 			payload, _ := json.Marshal(session)
-			return []Delivery{{TenantID: actor.TenantID, DeviceID: actor.ID, Message: Envelope{Type: "sync.snapshot", SessionID: session.ID, Negotiation: session.NegotiationGeneration, RequestID: e.ID, Payload: payload}}}, nil
+			return []Delivery{{TenantID: actor.TenantID, DeviceID: actor.ID, Message: Envelope{Type: "sync.snapshot", SessionID: session.ID, Negotiation: session.NegotiationGeneration, TargetEpoch: session.TargetEpoch, RequestID: e.ID, Payload: payload}}}, nil
 		default:
 			return closedDeliveries(session, e.ID), errors.New("unsupported message")
 		}
@@ -101,7 +112,7 @@ func AuthorizationDispatch(service *authorization.Service) Dispatch {
 			kind = "session.terminated"
 		}
 		payload, _ := json.Marshal(session)
-		message := Envelope{Type: kind, SessionID: session.ID, Negotiation: session.NegotiationGeneration, RequestID: e.ID, Payload: payload}
+		message := Envelope{Type: kind, SessionID: session.ID, Negotiation: session.NegotiationGeneration, TargetEpoch: session.TargetEpoch, RequestID: e.ID, Payload: payload}
 		return []Delivery{{TenantID: session.TenantID, DeviceID: session.SourceDeviceID, Message: message}, {TenantID: session.TenantID, DeviceID: session.TargetDeviceID, Message: message}}, nil
 	}
 }
@@ -120,7 +131,7 @@ func (s *Server) NotifySession(session authorization.Session) {
 	if session.State == "closed" {
 		kind = "session.terminated"
 	}
-	message := Envelope{Type: kind, SessionID: session.ID, Negotiation: session.NegotiationGeneration, Payload: payload}
+	message := Envelope{Type: kind, SessionID: session.ID, Negotiation: session.NegotiationGeneration, TargetEpoch: session.TargetEpoch, Payload: payload}
 	s.deliver(session.TenantID, session.SourceDeviceID, message)
 	s.deliver(session.TenantID, session.TargetDeviceID, message)
 }
@@ -138,6 +149,6 @@ func closedDeliveries(session authorization.Session, requestID string) []Deliver
 		return nil
 	}
 	payload, _ := json.Marshal(session)
-	message := Envelope{Type: "session.terminated", SessionID: session.ID, Negotiation: session.NegotiationGeneration, RequestID: requestID, Payload: payload}
+	message := Envelope{Type: "session.terminated", SessionID: session.ID, Negotiation: session.NegotiationGeneration, TargetEpoch: session.TargetEpoch, RequestID: requestID, Payload: payload}
 	return []Delivery{{TenantID: session.TenantID, DeviceID: session.SourceDeviceID, Message: message}, {TenantID: session.TenantID, DeviceID: session.TargetDeviceID, Message: message}}
 }

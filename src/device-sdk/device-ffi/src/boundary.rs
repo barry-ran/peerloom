@@ -68,7 +68,7 @@ pub extern "C" fn dp_abi_version() -> u32 {
 /// Capability bits are additive; ABI1 prefix remains stable.
 #[unsafe(no_mangle)]
 pub extern "C" fn dp_capabilities() -> u64 {
-    1 | 2 | 4 | 8 | 16 | 32 | 64 | 128
+    1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256
 }
 
 /// # Safety

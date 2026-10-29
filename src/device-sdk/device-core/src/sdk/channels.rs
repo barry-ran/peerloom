@@ -319,6 +319,18 @@ impl SdkIncomingChannels {
     }
 }
 
+#[derive(Default)]
+pub(super) struct WorkerTasks {
+    workers: JoinSet<(bool, Result<(), SdkError>)>,
+    preparing: JoinSet<Result<Prepared, SdkError>>,
+}
+impl WorkerTasks {
+    pub(super) async fn shutdown(&mut self) {
+        self.preparing.shutdown().await;
+        self.workers.shutdown().await;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
     peer: Arc<PeerTransport>,
@@ -332,6 +344,7 @@ pub(super) async fn run(
     sdk: mpsc::Sender<Command>,
     peer_device_id: String,
     request_id: Option<String>,
+    tasks: &mut WorkerTasks,
 ) -> Result<(), SdkError> {
     let active = Arc::new(ActiveChannels {
         used: AtomicUsize::new(0),
@@ -344,8 +357,7 @@ pub(super) async fn run(
         mode: ChannelMode::ReliableMessage,
         gate: ChannelGate::new(parent.clone()),
     };
-    let mut workers = JoinSet::new();
-    let mut preparing: JoinSet<Result<Prepared, SdkError>> = JoinSet::new();
+    let WorkerTasks { workers, preparing } = tasks;
     let default = Prepared {
         raw: RawChannel::Message(initial, ChannelMode::ReliableMessage),
         label: "peerloom.reliable".into(),
@@ -357,8 +369,7 @@ pub(super) async fn run(
         permit: active.reserve()?,
         response: None,
     };
-    let (SdkChannel::Message(default), _) = bind(default, &scope, &budget, &mut workers, true)?
-    else {
+    let (SdkChannel::Message(default), _) = bind(default, &scope, &budget, workers, true)? else {
         unreachable!()
     };
     let (channels, mut opens) = mpsc::channel::<OpenRequest>(32);
@@ -400,7 +411,7 @@ pub(super) async fn run(
             result = preparing.join_next(), if !preparing.is_empty() => {
                 match result {
                     Some(Ok(Ok(prepared))) => {
-                        let (handle, response) = bind(prepared, &scope, &budget, &mut workers, false)?;
+                        let (handle, response) = bind(prepared, &scope, &budget, workers, false)?;
                         if let Some(response) = response { let _ = response.send(Ok(handle)); }
                         else if let Err(error) = incoming.try_send(handle) { drop(error.into_inner()); }
                     },
@@ -512,6 +523,30 @@ pub(super) fn test_connection() -> (Connection, Arc<Gate>, mpsc::Sender<Vec<u8>>
 
 #[cfg(test)]
 mod gate_tests {
+    #[tokio::test]
+    async fn shutdown_waits_for_each_child_future_destruction() {
+        struct Dropped(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut tasks = super::WorkerTasks::default();
+        for _ in 0..32 {
+            let token = Dropped(dropped.clone());
+            tasks.workers.spawn(async move {
+                let _token = token;
+                std::future::pending::<()>().await;
+                (false, Ok(()))
+            });
+        }
+        tasks.shutdown().await;
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 32);
+        assert!(tasks.workers.is_empty());
+        assert!(tasks.preparing.is_empty());
+    }
+
     use super::*;
     #[test]
     fn active_construction_and_workers_share_slot_without_reclaiming_lifetime_counter() {

@@ -212,12 +212,32 @@ impl IdentityClient {
         body: Option<&[u8]>,
         expected: u16,
     ) -> Result<Zeroizing<Vec<u8>>, IdentityError> {
+        self.request_epoch(method, path, token, key, body, expected, None)
+            .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn request_epoch(
+        &self,
+        method: Method,
+        path: &str,
+        token: Option<&SecretString>,
+        key: Option<&IdempotencyKey>,
+        body: Option<&[u8]>,
+        expected: u16,
+        epoch: Option<u64>,
+    ) -> Result<Zeroizing<Vec<u8>>, IdentityError> {
         let mut request = self.client.request(
             method,
             self.origin
                 .join(path)
                 .map_err(|_| IdentityError::InvalidConfiguration)?,
         );
+        if let Some(epoch) = epoch {
+            if epoch == 0 || epoch > i64::MAX as u64 {
+                return Err(IdentityError::InvalidRequest);
+            }
+            request = request.header("X-Peerloom-Target-Epoch", epoch.to_string());
+        }
         if let Some(token) = token {
             let mut value = header::HeaderValue::from_str(&format!("Bearer {}", token.expose()))
                 .map_err(|_| IdentityError::InvalidRequest)?;

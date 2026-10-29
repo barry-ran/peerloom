@@ -80,6 +80,8 @@ public final class PeerloomSDK: @unchecked Sendable {
     public func connect(to deviceID: String) async throws {
         _ = try await core.perform(operation: 2, connection: 0, input: encodeJSON(["target_device_id": deviceID]))
     }
+    /// Connects only the original source to a trusted-service prepared session.
+    public func connectPrepared(sessionID: String) async throws { try await core.connectPrepared(sessionID: sessionID) }
     public func respond(to sessionID: String, accept: Bool) async throws {
         struct Response: Encodable { let session_id: String; let accept: Bool }
         _ = try await core.perform(operation: 3, connection: 0, input: encodeJSON(Response(session_id: sessionID, accept: accept)))
@@ -99,6 +101,11 @@ public final class PeerloomSDK: @unchecked Sendable {
         let value = try await core.performDetailed(operation: 8, connection: connection, input: encodeJSON(Open(mode: mode, label: label, queue: queue)))
         guard value.channel != 0 else { throw PeerloomError.invalidEvent }
         return try PeerloomChannel(core: core, connection: connection, handle: value.channel, metadata: value.payload)
+    }
+    /// Consumes a CONNECTION_READY event exactly once, rechecking native epoch/lease validity.
+    /// The returned metadata is not a transferable authorization token.
+    public func readyConnection(from event: PeerloomEvent) throws -> PeerloomConnectionInfo {
+        try PeerloomConnectionInfo(event: event)
     }
     /// Only CHANNEL_READY events are constructible as typed incoming children.
     public func incomingChannel(from event: PeerloomEvent) throws -> PeerloomChannel {

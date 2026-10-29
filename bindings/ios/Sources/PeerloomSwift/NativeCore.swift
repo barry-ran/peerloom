@@ -46,6 +46,7 @@ public struct PeerloomEvent: Sendable {
 struct NativeCompletion: Sendable { let channel: UInt64; let payload: Data }
 typealias NativeCallback = @convention(c) (UInt64, UnsafePointer<dp_event>?) -> Void
 protocol NativeAPI: Sendable {
+    func capabilities() -> UInt64
     func create(_ data: Data, callback: NativeCallback, context: UInt64) -> (UInt32, UInt64)
     func submit(_ sdk: UInt64, operation: UInt32, connection: UInt64, data: Data) -> (UInt32, UInt64)
     func channelSubmit(_ sdk: UInt64, connection: UInt64, channel: UInt64, operation: UInt32, data: Data) -> (UInt32, UInt64)
@@ -58,11 +59,13 @@ protocol NativeAPI: Sendable {
     func storage(_ sdk: UInt64, request: UInt64, status: UInt32, data: Data) -> UInt32
 }
 extension NativeAPI {
+    func capabilities() -> UInt64 { 0 }
     // Older test adapters remain explicit Unsupported, never an emulated success.
     func channelSubmit(_ sdk: UInt64, connection: UInt64, channel: UInt64, operation: UInt32, data: Data) -> (UInt32, UInt64) { (7, 0) }
     func channelValid(_ sdk: UInt64, connection: UInt64, channel: UInt64) -> UInt32 { 7 }
 }
 struct CNativeAPI: NativeAPI {
+    func capabilities() -> UInt64 { dp_capabilities() }
     func create(_ data: Data, callback: NativeCallback, context: UInt64) -> (UInt32, UInt64) {
         var handle: UInt64 = 0
         let status = data.withUnsafeBytes { dp_sdk_create($0.bindMemory(to: UInt8.self).baseAddress, numericCast(data.count), callback, context, &handle) }
@@ -173,6 +176,10 @@ final class NativeCore: @unchecked Sendable {
         }
         handle = result.1
         lock.unlock()
+    }
+    func connectPrepared(sessionID: String) async throws {
+        guard api.capabilities() & 256 != 0 else { throw PeerloomError.native(7) }
+        _ = try await perform(operation: 9, connection: 0, input: encodeJSON(["session_id": sessionID]))
     }
     func perform(operation: UInt32, connection: UInt64, input: Data) async throws -> Data {
         try await performDetailed(operation: operation, connection: connection, input: input).payload

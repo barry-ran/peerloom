@@ -11,6 +11,9 @@ import (
 // validateSessionTx is shared by ordinary session operations and ICE issuance.
 // It neither commits nor changes state; the owning operation controls cleanup.
 func validateSessionTx(ctx context.Context, tx pgx.Tx, actor identity.Device, value Session) (grant, time.Time, error) {
+	if err := validateExclusiveTx(ctx, tx, value); err != nil {
+		return grant{}, time.Time{}, err
+	}
 	from, to, err := loadPeers(ctx, tx, actor.TenantID, value.SourceDeviceID, value.TargetDeviceID)
 	if err != nil {
 		return grant{}, time.Time{}, err
@@ -61,6 +64,9 @@ func (s *Service) AuthorizeICEInTx(ctx context.Context, tx pgx.Tx, actor identit
 	}
 	if value.State == "closed" {
 		return Session{}, failure("SESSION_CLOSED", 409)
+	}
+	if err = checkExclusiveAuthority(ctx, value, false); err != nil {
+		return Session{}, err
 	}
 	if err = accepted(value); err != nil {
 		return Session{}, err

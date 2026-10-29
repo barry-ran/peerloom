@@ -31,6 +31,7 @@ protected constructor(
     internal val handle: Long,
     val label: String,
     val mode: ChannelMode,
+    val targetEpoch: String? = null,
 ) {
     fun isValid(): Boolean = sdk.validChannel(parent, handle)
 
@@ -44,7 +45,8 @@ internal constructor(
     handle: Long,
     label: String,
     mode: ChannelMode,
-) : Channel(sdk, parent, handle, label, mode) {
+    targetEpoch: String? = null,
+) : Channel(sdk, parent, handle, label, mode, targetEpoch) {
     /** Completion JSON distinguishes local send from explicit policy drop; not peer receipt. */
     fun send(message: ByteArray): SendOperation {
         val operation = sdk.submitChannel(parent, handle, 1, message)
@@ -62,8 +64,14 @@ internal constructor(
     }
 }
 
-class ByteStream internal constructor(sdk: PeerloomSdk, parent: Long, handle: Long, label: String) :
-    Channel(sdk, parent, handle, label, ChannelMode.RELIABLE_STREAM) {
+class ByteStream
+internal constructor(
+    sdk: PeerloomSdk,
+    parent: Long,
+    handle: Long,
+    label: String,
+    targetEpoch: String? = null,
+) : Channel(sdk, parent, handle, label, ChannelMode.RELIABLE_STREAM, targetEpoch) {
     /** Empty successful read means EOF. Pending read never blocks independent writes. */
     fun read(maxBytes: Int): ReadOperation {
         require(maxBytes in 1..65536)
@@ -127,9 +135,10 @@ internal fun PeerloomSdk.channel(parent: Long, handle: Long, payload: ByteArray)
     val value = JSONObject(String(payload, UTF_8))
     val mode = ChannelMode.entries.single { it.wire == value.getString("mode") }
     val label = value.getString("label")
+    val epoch = targetEpoch(value)
     return if (mode == ChannelMode.RELIABLE_STREAM) {
-        ByteStream(this, parent, handle, label)
+        ByteStream(this, parent, handle, label, epoch)
     } else {
-        MessageChannel(this, parent, handle, label, mode)
+        MessageChannel(this, parent, handle, label, mode, epoch)
     }
 }

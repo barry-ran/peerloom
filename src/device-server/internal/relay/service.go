@@ -54,6 +54,7 @@ func NewService(pool *pgxpool.Pool, issuer *Issuer, authorization *authorization
 }
 
 type Response struct {
+	TargetEpoch           string        `json:"target_epoch,omitempty"`
 	SessionID             string        `json:"session_id"`
 	NegotiationGeneration int           `json:"negotiation_generation"`
 	ICEServers            []Credentials `json:"ice_servers"`
@@ -149,7 +150,7 @@ ORDER BY (tenant_id IS NULL),created_at,id LIMIT 4 FOR SHARE`, actor.TenantID)
 	if !authorized.LeaseExpiresAt.After(now) {
 		return Response{}, failure("LEASE_EXPIRED", 403)
 	}
-	result := Response{SessionID: sessionID, NegotiationGeneration: int(authorized.NegotiationGeneration), ICEServers: make([]Credentials, 0, len(nodes))}
+	result := Response{TargetEpoch: authorized.TargetEpoch, SessionID: sessionID, NegotiationGeneration: int(authorized.NegotiationGeneration), ICEServers: make([]Credentials, 0, len(nodes))}
 	for _, node := range nodes {
 		if err = s.issuer.ValidateNode(actor.TenantID, node.Node); err != nil {
 			return Response{}, failure("RELAY_CONFIGURATION_UNAVAILABLE", 503)

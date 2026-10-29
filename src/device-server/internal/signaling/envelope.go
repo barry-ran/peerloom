@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -15,6 +16,7 @@ const MaxFrameBytes = 128 << 10
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type Envelope struct {
+	TargetEpoch string          `json:"target_epoch,omitempty"`
 	Version     int             `json:"v"`
 	Type        string          `json:"type"`
 	ID          string          `json:"id"`
@@ -57,6 +59,17 @@ func Decode(data []byte) (Envelope, error) {
 	}
 	if err := json.Unmarshal(data, &presence); err != nil || (len(presence.Negotiation) != 0 && e.Negotiation == 0) {
 		return e, errors.New("invalid negotiation generation")
+	}
+	if raw, ok := func() (json.RawMessage, bool) {
+		var m map[string]json.RawMessage
+		_ = json.Unmarshal(data, &m)
+		v, ok := m["target_epoch"]
+		return v, ok
+	}(); ok {
+		n, err := strconv.ParseInt(e.TargetEpoch, 10, 64)
+		if string(raw) == "null" || err != nil || n < 1 || strconv.FormatInt(n, 10) != e.TargetEpoch {
+			return e, errors.New("invalid target epoch")
+		}
 	}
 	if e.Generation < 0 || e.Generation > 9007199254740991 || e.Negotiation < 0 || e.Negotiation > 9007199254740991 || len(e.Fence) > 256 {
 		return e, errors.New("invalid generation")

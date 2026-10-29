@@ -46,10 +46,16 @@ func TestCapacityMigrationPreservesExistingPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This regression targets migration 10, not whatever later migration exists.
+	for version := migrate.CurrentVersion; version > 10; version-- {
+		if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {
 		t.Fatal(err)
 	}
-	if err = migrate.Apply(f.ctx, f.pool, migrations, "up"); err != nil {
+	if err = migrate.Apply(f.ctx, f.pool, migrations[:10], "up"); err != nil {
 		t.Fatal(err)
 	}
 	var application, device, grant int
