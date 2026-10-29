@@ -1,7 +1,7 @@
 name: 受审计划正式发布
 on:
   push:
-    branches: [master, feat/validation-release-packaging]
+    branches: [master, 'feat/**']
     paths:
       - release/approved-plan.json
       - scripts/release-admin.py
@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   preflight:
-    if: github.repository == 'barry-ran/peerloom' && github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/feat/validation-release-packaging')
+    if: github.repository == 'barry-ran/peerloom' && github.event_name == 'push' && (github.ref == 'refs/heads/master' || (startsWith(github.ref, 'refs/heads/feat/') && github.ref != 'refs/heads/feat/'))
     runs-on: ubuntu-24.04
     timeout-minutes: 130
     outputs:
@@ -33,6 +33,8 @@ jobs:
           persist-credentials: false
       - name: 编译检查发布脚本（不重新联调产品）
         run: python3 -m py_compile scripts/release-admin.py scripts/release-policy.py
+      - name: 发布管理器离线安全回归（不重新联调产品）
+        run: python3 -S scripts/test-release-admin.py
       - id: plan
         name: 只读核对管理改动与已验证源码产物
         env:

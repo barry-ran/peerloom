@@ -589,6 +589,22 @@ class ReviewedBootstrapTests(unittest.TestCase):
             A.verify_administration_scope(api, A.BOOTSTRAP_SOURCE, TREE, A.BOOTSTRAP_TAG)
         self.assertIn('?ref=' + A.BOOTSTRAP_SOURCE, api.call.call_args.args[0])
 
+    def test_bootstrap_is_only_this_reviewed_source_and_seven_blob_files(self):
+        self.assertEqual(A.BOOTSTRAP_SOURCE, '25b33273ac5bbd03506905a635b1453dcf969c70')
+        self.assertEqual(A.BOOTSTRAP_TAG, 'v0.1.3')
+        self.assertEqual(set(A.REVIEWED_BOOTSTRAP_BLOBS), {
+            '.github/workflows/release-admin.yml', 'scripts/test-release-admin.py',
+            'scripts/test-workflow-triggers.py', '.github/workflows/ci.yml',
+            '.github/workflows/native.yml', '.github/workflows/android.yml',
+            '.github/workflows/admin-web.yml'})
+        root = Path(__file__).resolve().parents[1]
+        for name, entry in A.REVIEWED_BOOTSTRAP_BLOBS.items():
+            data = (root / name).read_bytes()
+            blob = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+            self.assertEqual(entry['after_blob'], blob, name)
+        self.assertEqual(P.ADMINISTRATION_FILES, {
+            'README.md', 'docs/assets/peerloom-banner.svg', 'release/approved-plan.json'})
+
     def test_wrong_source_tag_after_or_before_rejected(self):
         from unittest.mock import patch
         for kind in ('source', 'tag', 'after', 'before', 'extra', 'removed', 'rename', 'missing'):
@@ -620,21 +636,30 @@ class ReviewedBootstrapTests(unittest.TestCase):
 class ReadOnlyCandidateTests(unittest.TestCase):
     def event(self):
         env = {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REPOSITORY': P.REPO,
-               'GITHUB_REF': 'refs/heads/feat/validation-release-packaging', 'GITHUB_SHA': MASTER}
+               'GITHUB_REF': 'refs/heads/feat/capacity-unlimited', 'GITHUB_SHA': MASTER}
         event = {'repository': {'full_name': P.REPO}, 'ref': env['GITHUB_REF'],
                  'before': SHA, 'after': MASTER}
         return env, event, {'approved': True, 'administration_sha': 'event', 'operation': 'release'}
 
-    def test_only_fixed_packaging_push_is_accepted(self):
+    def test_only_nonempty_feat_push_is_accepted(self):
         env, event, plan = self.event()
-        self.assertEqual(A.candidate_context(env, event, plan)[1], MASTER)
+        for ref in ('refs/heads/feat/capacity-unlimited', 'refs/heads/feat/release/v0.1.3'):
+            self.assertEqual(A.candidate_context(dict(env, GITHUB_REF=ref), dict(event, ref=ref), plan)[1], MASTER)
         for key, value in [('GITHUB_REF', 'refs/heads/master'), ('GITHUB_REF', 'refs/heads/other'),
+                           ('GITHUB_REF', 'refs/heads/feat/'), ('GITHUB_REF', 'refs/heads/feature/release'),
+                           ('GITHUB_REF', 'refs/heads/feat/../master'), ('GITHUB_REF', 'refs/heads/feat//release'),
+                           ('GITHUB_EVENT_NAME', 'pull_request'),
                            ('GITHUB_EVENT_NAME', 'workflow_dispatch'), ('GITHUB_REPOSITORY', 'fork/repo')]:
             with self.subTest(key=key, value=value), self.assertRaises(P.Rejected):
-                A.candidate_context(dict(env, **{key: value}), event, plan)
-        for delta in ({'after': SHA}, {'forced': True}, {'deleted': True}, {'created': True}):
+                A.candidate_context(dict(env, **{key: value}),
+                                    dict(event, ref=value) if key == 'GITHUB_REF' else event, plan)
+        for delta in ({'after': SHA}, {'forced': True}, {'deleted': True}, {'created': True},
+                      {'repository': {'full_name': 'fork/repo'}}, {'before': '0' * 40}):
             with self.subTest(delta=delta), self.assertRaises(P.Rejected):
                 A.candidate_context(env, dict(event, **delta), plan)
+        for invalid in ('not-a-sha', 'F' * 40, ''):
+            with self.assertRaises(P.Rejected):
+                A.candidate_context(dict(env, GITHUB_SHA=invalid), dict(event, after=invalid), plan)
         with self.assertRaises(P.Rejected):
             A.context(env, event, plan)
 
@@ -666,12 +691,14 @@ class ReadOnlyCandidateTests(unittest.TestCase):
             admin.artifacts.assert_called_once()
             admin.publish.assert_not_called()
             changed.assert_not_called()
-            self.assertFalse(output.exists())
+            self.assertEqual(output.read_text(), 'enabled=false\n')
 
     def test_candidate_fresh_ref_and_both_ancestry_links_are_enforced(self):
         from unittest.mock import Mock, patch
-        for case in ('valid', 'moved', 'source_not_retained', 'master_not_ancestor'):
+        for case in ('valid', 'valid_second_branch', 'moved', 'source_not_retained', 'master_not_ancestor'):
             env, event, plan = self.event()
+            if case == 'valid_second_branch':
+                env['GITHUB_REF'] = event['ref'] = 'refs/heads/feat/release/v0.1.3'
             plan['release_sha'] = SHA
             env['GITHUB_EVENT_PATH'] = '/unused-event'
             api = Mock()
@@ -686,9 +713,12 @@ class ReadOnlyCandidateTests(unittest.TestCase):
                  patch.object(A.subprocess, 'check_output', return_value=MASTER), \
                  patch.object(A.subprocess, 'run', return_value=Mock(returncode=0)), \
                  patch.object(A, 'GitHub', return_value=api), patch.object(A, 'Admin', return_value=admin):
-                if case == 'valid':
+                if case in ('valid', 'valid_second_branch'):
                     A.main()
                     admin.artifacts.assert_called_once()
+                    self.assertEqual(api.call.call_args_list[0].args[0],
+                                     '/repos/' + P.REPO + '/git/ref/' + event['ref'].removeprefix('refs/'))
+                    self.assertTrue(all(len(call.args) == 1 and not call.kwargs for call in api.call.call_args_list))
                 else:
                     with self.assertRaises(P.Rejected):
                         A.main()
@@ -940,7 +970,7 @@ class ExtraBoundaryTests(unittest.TestCase):
     def test_workflow_permission_isolation(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / '.github/workflows/release-admin.yml').read_text()
-        self.assertIn("on:\n  push:\n    branches: [master, feat/validation-release-packaging]\n    paths:\n", source)
+        self.assertIn("on:\n  push:\n    branches: [master, 'feat/**']\n    paths:\n", source)
         path_block = source.split('    paths:\n', 1)[1].split('permissions:', 1)[0]
         self.assertEqual(set(line.strip().removeprefix('- ') for line in path_block.splitlines() if line.strip()), {
             'release/approved-plan.json', 'scripts/release-admin.py', 'scripts/release-policy.py',
@@ -955,6 +985,7 @@ class ExtraBoundaryTests(unittest.TestCase):
         self.assertNotIn('contents: write', read_job)
         self.assertNotIn('--execute', read_job)
         self.assertIn('--validate-candidate', read_job)
+        self.assertIn('run: python3 -S scripts/test-release-admin.py', read_job)
         self.assertIn("needs.preflight.outputs.enabled == 'true'", write_job)
         self.assertIn("github.ref == 'refs/heads/master'", write_job)
         self.assertIn('permissions:\n      contents: write\n      actions: read', write_job)

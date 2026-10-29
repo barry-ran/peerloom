@@ -22,29 +22,23 @@ spec.loader.exec_module(P)
 # One reviewed transition; not a permanent workflow/script allowlist. The root reviewer
 # approves this execution file itself, including these constants, at its exact final hash.
 # This is the existing trusted-master-code boundary, NOT cryptographic self-attestation.
-BOOTSTRAP_SOURCE = '489294528319223e4f38a5ec80a2d0192783988e'
-BOOTSTRAP_TAG = 'v0.1.1'
+BOOTSTRAP_SOURCE = '25b33273ac5bbd03506905a635b1453dcf969c70'
+BOOTSTRAP_TAG = 'v0.1.3'
 EXECUTION_FILE = 'scripts/release-admin.py'
-REVIEWED_BOOTSTRAP_BLOBS = {'.github/workflows/admin-web.yml': {'after_blob': 'd40bf6215a290591b70eed10d017ca271743ae2f',
-                                     'before_blob': '2aaea8702200604025c406b3894758c9567a625f'},
- '.github/workflows/android.yml': {'after_blob': 'e3c94bcdfa515493f03f5bf6574c0995dcf1cadf',
-                                   'before_blob': '98863cf07a8631ecddd9dd5924175eddbd5be7da'},
- '.github/workflows/ci.yml': {'after_blob': 'f4b3acac2f2b83297dd2a7a9350d8a26b2e033fb',
-                              'before_blob': 'f89e9a6658a5f6e8e7475549122a7cf8177dc840'},
- '.github/workflows/native.yml': {'after_blob': '9680d45597f958bdb96efd55c4aa620109b75283',
-                                  'before_blob': 'bd7293e3526b7087bb382ca90af5d56226f8bbf5'},
- '.github/workflows/release-admin.yml': {'after_blob': '637fe5be5913635194e74bf5c409f973d3e5911d',
-                                         'before_blob': '01d5ce8393f98a50d65da89206cc1bc6f6977297'},
- 'docs/发布与分支清理模块.md': {'after_blob': '5b5d2ae8bc065718a6038a3bc4dfc83bb11b3ba8',
-                       'before_blob': 'd34cead23879b2215277330d3191bb848eab0712'},
- 'docs/开发与验收.md': {'after_blob': '1a7016e1caf173b314ae172f117ac4f8418d35da',
-                   'before_blob': '72eb9acfff21a3da61c4648e74c461cfa5556022'},
- 'scripts/release-policy.py': {'after_blob': '377fdbcbfdd1dbb165c8878aa7fa28d80857cd79',
-                               'before_blob': '47bd8640145af0ab2b44d3ce56c8f290e797acaf'},
- 'scripts/test-release-admin.py': {'after_blob': '677b21a0a233d5916692bd23e759bf5af29ef8af',
-                                   'before_blob': '8d50e4dab2d81c7fb3dfafbe094e4703fc0bcebc'},
- 'scripts/test-workflow-triggers.py': {'after_blob': '0d313f72f1e76b4afc57317c1f2eae299c399533',
-                                       'before_blob': None}}
+REVIEWED_BOOTSTRAP_BLOBS = {'.github/workflows/admin-web.yml': {'after_blob': 'bf4322315b6b40e6fd6c0343ab6f6ddd30b3c5d5',
+                                     'before_blob': 'd40bf6215a290591b70eed10d017ca271743ae2f'},
+ '.github/workflows/android.yml': {'after_blob': '37fe5630031ec6cca8fe38412703d020d3642f82',
+                                   'before_blob': 'e3c94bcdfa515493f03f5bf6574c0995dcf1cadf'},
+ '.github/workflows/ci.yml': {'after_blob': 'cae53369b209e223d6b5b2201838d3d81021b1ec',
+                              'before_blob': 'd34a919877b3793cdc3aecd8236de67d79f28f08'},
+ '.github/workflows/native.yml': {'after_blob': '4a14e8b01e0e652b1efcee28f623b2675ab01f8f',
+                                  'before_blob': '9680d45597f958bdb96efd55c4aa620109b75283'},
+ '.github/workflows/release-admin.yml': {'after_blob': 'a1eb0ef4944aedd1f93c80a8ade123404fd6c5b9',
+                                         'before_blob': '637fe5be5913635194e74bf5c409f973d3e5911d'},
+ 'scripts/test-release-admin.py': {'after_blob': '0ee4d5d762f483cd905a0470939c0dfbfa01255c',
+                                   'before_blob': 'ebf16849622b523020e97ff786db2b6b64a34858'},
+ 'scripts/test-workflow-triggers.py': {'after_blob': 'dfc6913d29c6ca264ab555c45d77e197d096e374',
+                                       'before_blob': '0d313f72f1e76b4afc57317c1f2eae299c399533'}}
 
 class Pending(P.Rejected):
     pass
@@ -304,7 +298,10 @@ def context(env, event, plan):
 
 def candidate_context(env, event, plan):
     P.require(env.get('GITHUB_EVENT_NAME') == 'push' and env.get('GITHUB_REPOSITORY') == P.REPO and
-              env.get('GITHUB_REF') == 'refs/heads/feat/validation-release-packaging' and
+              isinstance(env.get('GITHUB_REF'), str) and
+              env['GITHUB_REF'].startswith('refs/heads/feat/') and
+              len(env['GITHUB_REF']) > len('refs/heads/feat/') and
+              all(part not in ('', '.', '..') for part in env['GITHUB_REF'].split('/')) and
               event.get('repository', {}).get('full_name') == P.REPO and
               event.get('ref') == env.get('GITHUB_REF') and event.get('after') == env.get('GITHUB_SHA') and
               not event.get('created') and not event.get('deleted') and not event.get('forced'), 'UNTRUSTED_CANDIDATE_EVENT')
@@ -374,7 +371,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     plan = json.loads((root / 'release/approved-plan.json').read_text())
     if plan.get('approved') is not True:
-        if not args.validate_candidate and os.environ.get('GITHUB_OUTPUT'):
+        if os.environ.get('GITHUB_OUTPUT'):
             with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                 output.write('enabled=false\n')
         return
@@ -389,9 +386,11 @@ def main():
         verify_plan_changed(api, event, commit)
     admin = Admin(api, plan, commit)
     if args.validate_candidate:
+        candidate_ref = event['ref'].removeprefix('refs/')
         # Read-only branch validation never impersonates or mutates master.
         def fresh_candidate():
-            value = api.call('/repos/' + P.REPO + '/git/ref/heads/feat/validation-release-packaging')
+            value = api.call('/repos/' + P.REPO + '/git/ref/' +
+                             urllib.parse.quote(candidate_ref, safe='/'))
             P.require(value['object']['sha'] == commit, 'CANDIDATE_MOVED')
             master = P.sha(api.call('/repos/' + P.REPO + '/git/ref/heads/master')['object']['sha'])
             source = P.sha(plan.get('release_sha'))
@@ -410,9 +409,9 @@ def main():
         outputs = admin.artifacts(Path(directory), runs)
         if args.execute:
             admin.publish(outputs)
-    if not args.execute and not args.validate_candidate and os.environ.get('GITHUB_OUTPUT'):
+    if not args.execute and os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-            output.write('enabled=true\n')
+            output.write('enabled=false\n' if args.validate_candidate else 'enabled=true\n')
 
 if __name__ == '__main__':
     try:

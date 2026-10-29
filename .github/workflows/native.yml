@@ -12,6 +12,11 @@ on:
       - 'bindings/android/scripts/Maven证据说明.md'
       - 'bindings/ios/Apple封装说明.md'
       - 'release/approved-plan.json'
+      - 'scripts/release-admin.py'
+      - 'scripts/release-policy.py'
+      - 'scripts/test-release-admin.py'
+      - 'scripts/test-workflow-triggers.py'
+      - '.github/workflows/release-admin.yml'
   # Explicit full validation remains available, including on master.
   workflow_dispatch:
 permissions:
