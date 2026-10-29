@@ -3,28 +3,151 @@
   "repository": "barry-ran/peerloom",
   "approved": true,
   "administration_sha": "event",
-  "operation": "release",
-  "release_sha": "bfb836997841753b0790ae172ab6cbd1c45befb7",
-  "tag": "v0.1.0",
-  "prerelease": false,
-  "notes": "# Peerloom v0.1.0\n\n原生设备连接平台：Go 控制面、Rust/webrtc-rs 核心与 C ABI、Android Kotlin/JNI、Apple Swift/XCFramework，以及中英文管理后台。\n\n## 功能\n\n- App 安装实例的 grant/direct 注册、持久身份、凭证轮换与显式 reset。\n- 同租户跨应用的显式授权、目标确认、双端租约与撤销；不同租户隔离。\n- WebRTC 直连/自动选择/强制 TURN，可靠消息、低延迟消息及可靠字节流，多连接、多通道和有界背压。\n- WSS 重连与授权有效期内的重建式数据恢复；不承诺 exactly-once，不实现原地 ICE restart。\n- 平台安全存储、异步 C 生命周期，以及管理 API、管理员登录、审计、Webhook、TLS 与隔离备份恢复工具。\n\n## 产物\n\nLinux x86_64、Windows x86_64、Android、Apple 四组 ZIP；Apple 包覆盖 macOS/iOS device/iOS Simulator 三变体五架构。各包包含版本与源码提交元数据、SHA256SUMS、适用的 SDK/头文件/示例及第三方证据。Linux 包另含明确标注的 Go 服务交叉构建，不把交叉编译当对应平台运行测试。\n\n发布源码：[`bfb836997841753b0790ae172ab6cbd1c45befb7`](https://github.com/barry-ran/peerloom/tree/bfb836997841753b0790ae172ab6cbd1c45befb7)。验证覆盖真实注册/持久身份恢复、授权与撤销、双端租约跨期、三类通道、原生 ABI、平台存储、TLS/备份及管理后台；各平台的完整门禁与实际交付 ZIP 分别核验。\n\n集成说明见[部署指南](https://github.com/barry-ran/peerloom/blob/bfb836997841753b0790ae172ab6cbd1c45befb7/docs/部署指南.md)、[用户使用说明](https://github.com/barry-ran/peerloom/blob/bfb836997841753b0790ae172ab6cbd1c45befb7/docs/用户使用说明.md)和[开发与验收](https://github.com/barry-ran/peerloom/blob/bfb836997841753b0790ae172ab6cbd1c45befb7/docs/开发与验收.md)。\n\n## 集成和已知边界\n\n- Web SDK 延期；平台不提供屏幕采集、视频编码、输入注入或业务协议。\n- 管理后台默认关闭，需显式配置 Origin 与离线创建账号；无默认密码。开发 Compose 默认只监听回环地址。\n- macOS 测试采用隔离 DEBUG 文件 Keychain；iOS Simulator 已测试真实 DP Keychain 服务链。生产签名/entitlement 宿主、物理设备及 OEM 行为未全面验证；unsigned device 构建不是实机验收。\n- 复杂公网 NAT、长期后台/休眠与切网、24小时级压力、生产容量、证书运维及 RPO/RTO 需要目标环境验收。不提供生产可用性 SLA。\n- Peerloom 原创代码为 MIT。保留第三方声明、版本、SBOM 与所有已收集原文；四项 Cargo 与十九项 Maven 的精确许可原文收集缺项已披露，原报告仍为 incomplete。这不是法律审核或第三方权利清关，项目法务须在上线前处理。\n\n文档以所标注源码提交为准。产物未签名；校验和用于字节完整性，不替代可信来源或生产代码签名。\n",
-  "final_scope_accepted": true,
-  "artifacts": {
-    "linux-x86_64": {
-      "id": 12855825693,
-      "sha256": "c20910f9c490473f219b5c35473263a13a09dd9a1e5128223105058256c29434"
+  "operation": "cleanup",
+  "branches": [
+    {
+      "branch": "feat/foundation",
+      "sha": "bec621d4cb15cb811a1915e92c4ddb401320b01d",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "equivalent_tree",
+      "retained_equivalent_commit": "450e0af25db64169166a8a80d5343f6b95a64241",
+      "expected_tree": "cce8219b6cd9ff55383b65e2493a5193c09a73bf"
     },
-    "android": {
-      "id": 12853124605,
-      "sha256": "a585857b97c6e9047e2352f0d1b6a02d4f6a596dec395fe70e3cfa7f6ce367c8"
+    {
+      "branch": "feat/identity-transport",
+      "sha": "a7dde0283a058b0b1bbe3c1587c034a318ba7dea",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "equivalent_tree",
+      "retained_equivalent_commit": "c72b45b5f994b35675ef21739d65bb39128fe89b",
+      "expected_tree": "8fe82a2498afe1baa90e55e0161303a07666d718"
     },
-    "windows-x86_64": {
-      "id": 12855101044,
-      "sha256": "5bae71bb14dd1ca2011479eb474801a7db1a07ee545c698e4841c82e8fa7a42a"
+    {
+      "branch": "feat/validation-admin-console",
+      "sha": "db19c9b041223dd95008c5c6f078cf043ccb2675",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
     },
-    "apple": {
-      "id": 12855399670,
-      "sha256": "14346419605c4c77503517a220e126e876b28cdc1b0a7c6d6f5d321cd10d9f69"
+    {
+      "branch": "feat/validation-android",
+      "sha": "10b0090d17d4b59f5fe5d37b1c9a377e5a37a657",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-android-stability",
+      "sha": "653e244e41878ebda911a69c57d3f81a0ad6caf4",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-apple-diagnostics",
+      "sha": "75d046e939b49dc019c23913fa1895daf0450271",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-apple-keychain",
+      "sha": "944881f6166ec58169bf228d7f26faa8c3696fb7",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-control-plane",
+      "sha": "f89c4d6521249d7fcb52f222316961d3aba036dc",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-identity-transport",
+      "sha": "c72b45b5f994b35675ef21739d65bb39128fe89b",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-linux-storage",
+      "sha": "9216c5ec5123b4238ebe1c83a8b1566255a4c02f",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-managed-ice",
+      "sha": "2db4a06d9748cd0fa127b5c0f7c4306e68855d6e",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-managed-turn",
+      "sha": "6bbeb216da139e28c4c4487883052129915978af",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-multichannel",
+      "sha": "4b8b4b0fd94485f83145ad25585c55b6f88c3566",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-native-ffi",
+      "sha": "90a4b0e382bde6c897658cc3ac010d30e4098e62",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-native-platforms",
+      "sha": "ed66efab8cfd85774d0e9701aec7189348c7ecdb",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-platform-fixes",
+      "sha": "b44787a8923d66615ff7f123ecf881b893d233bd",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-release-packaging",
+      "sha": "event",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-sdk-facade",
+      "sha": "79cfd4e4e4cdd43e7fe2da504d50a49c1cb3600c",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "feat/validation-tenant-management",
+      "sha": "106a2c0f9c7b631e75c09324c0ab26c74688879f",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
+    },
+    {
+      "branch": "validation/identity-transport",
+      "sha": "c72b45b5f994b35675ef21739d65bb39128fe89b",
+      "inactive": true,
+      "no_wip": true,
+      "proof": "ancestor"
     }
-  }
+  ]
 }
