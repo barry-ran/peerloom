@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -18,29 +19,38 @@ func TestDirectRecoveryKeyCanonicalEncoding(t *testing.T) {
 	}
 }
 func TestDirectQuotaConfigurationBounds(t *testing.T) {
-	if _, err := LoadSettings(func(name string) string {
-		if name == "DIRECT_IP_PER_MINUTE" {
-			return "0"
-		}
-		return ""
-	}); err == nil {
-		t.Fatal("disabled abuse control")
+	names := []string{"DIRECT_GLOBAL_PER_MINUTE", "DIRECT_IP_PER_MINUTE", "DIRECT_APP_PER_MINUTE", "DIRECT_APP_PER_DAY", "DIRECT_APP_DEVICES"}
+	defaults := DefaultSettings()
+	if defaults.DirectGlobalPerMinute != 0 || defaults.DirectIPPerMinute != 0 || defaults.DirectAppPerMinute != 0 || defaults.DirectAppPerDay != 0 || defaults.DirectAppDevices != 0 {
+		t.Fatal("direct policy defaults must be unlimited")
 	}
-	if _, err := LoadSettings(func(name string) string {
-		if name == "DIRECT_APP_DEVICES" {
-			return "100001"
+	for _, name := range names {
+		for _, value := range []string{"0", "1", "100001", "2147483647"} {
+			if _, err := LoadSettings(func(key string) string {
+				if key == name {
+					return value
+				}
+				return ""
+			}); err != nil {
+				t.Fatalf("valid %s=%s: %v", name, value, err)
+			}
 		}
-		return ""
-	}); err == nil {
-		t.Fatal("unbounded application quota")
+		for _, value := range []string{"-1", "2147483648", "999999999999999999999999", "bad"} {
+			if _, err := LoadSettings(func(key string) string {
+				if key == name {
+					return value
+				}
+				return ""
+			}); err == nil {
+				t.Fatalf("invalid %s=%s accepted", name, value)
+			}
+		}
 	}
-	settings, err := LoadSettings(func(name string) string {
-		if name == "DIRECT_APP_PER_DAY" {
-			return "25"
-		}
-		return ""
-	})
-	if err != nil || settings.DirectAppPerDay != 25 {
-		t.Fatal("valid quota override rejected")
+}
+func TestDisabledDirectBucketsNeedNoDatabase(t *testing.T) {
+	// A nil pool would panic if zero policies performed even an empty transaction.
+	s := &Store{settings: DefaultSettings()}
+	if err := s.directAdmission(context.Background(), []directBucket{{"global", 0}, {"ip:192.0.2.1", 0}}); err != nil {
+		t.Fatal(err)
 	}
 }

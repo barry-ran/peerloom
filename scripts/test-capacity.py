@@ -83,8 +83,16 @@ def free_port():
 def clean_env():
     env = dict(os.environ)
     for name in list(env):
-        if name.startswith(('TEST_', 'PG', 'ADMIN_', 'TURN_', 'WEBHOOK_', 'REDIS_', 'RELAY_', 'DATABASE_', 'REPLAY_', 'LISTEN_', 'SIGNAL_', 'CREDENTIAL_', 'ROTATION_', 'DIRECT_')) or name in ('RUST_LOG', 'RUST_BACKTRACE'):
+        if name.startswith(('TEST_', 'PG', 'ADMIN_', 'TURN_', 'WEBHOOK_', 'REDIS_', 'RELAY_', 'DATABASE_', 'REPLAY_', 'LISTEN_', 'SIGNAL_', 'CREDENTIAL_', 'ROTATION_', 'DIRECT_')) or name in ('RUST_LOG', 'RUST_BACKTRACE', 'PEERLOOM_TEST_LEASE_DIAGNOSTICS'):
             env.pop(name, None)
+    return env
+
+
+def sdk_environment(fixture):
+    # Only the test executable opts in; production builds omit test-diagnostics.
+    env = clean_env()
+    env['TEST_CAPACITY_FIXTURE'] = str(fixture)
+    env['PEERLOOM_TEST_LEASE_DIAGNOSTICS'] = '1'
     return env
 
 
@@ -94,19 +102,42 @@ def digest(path):
 
 
 def safe_progress(path):
-    lines = []
+    # Fixed enums and bounded numeric fields only. Keep the first failure even
+    # when teardown emits hundreds of subsequent per-connection notifications.
+    from collections import deque
+    first, important, phases_seen, failures, tail = [], [], [], [], deque(maxlen=64)
+    phases = r'(?:register|authorize|connect|baseline|hold|renewal-proof|pc-wss-reconnect|manual-new-sessions|explicit-session-close|shutdown)'
+    unsigned, signed = r'[0-9]{1,16}', r'-?[0-9]{1,16}'
+    patterns = (
+        rf'capacity (?:ready_pairs=[0-9]{{1,3}}|phase={phases}(?: elapsed_ms={unsigned})?)',
+        rf'capacity event=closed endpoint=[0-9]{{1,3}} reason=(?:closed|rejected|authorization_expired|transport|other) session_tag=[a-f0-9]{{16}}(?: elapsed_ms={unsigned})?',
+        r'PeerloomTestDiag lease stage=(?:stale-generation|expired-before-update|expiry-conversion|maintenance-deadline|renewal-registration) current=[0-9]{1,20} incoming=[0-9]{1,20} own_ack=(?:true|false) pending=(?:true|false) remaining_ms=[0-9]{1,39}',
+        rf'capacity baseline_complete elapsed_ms={unsigned} snapshot_elapsed_ms={unsigned} sessions=[0-9]{{1,3}}',
+        rf'capacity lease_baseline endpoint=[0-9]{{1,3}} session_tag=[a-f0-9]{{16}} lease_generation={unsigned} baseline_elapsed_ms={unsigned} event_elapsed_ms={unsigned} snapshot_elapsed_ms={unsigned} source_baseline_remaining_ms={signed} target_baseline_remaining_ms={signed} source_event_remaining_ms={signed} target_event_remaining_ms={signed}',
+    )
     if path.exists():
         with path.open('r', encoding='utf-8', errors='replace') as stream:
-            for line in stream:
+            for index, line in enumerate(stream):
                 text = line.strip()
-                if re.fullmatch(r'capacity (?:ready_pairs=[0-9]+|phase=[a-z-]+)', text):
-                    lines.append(text)
-                elif re.fullmatch(r'capacity event=closed endpoint=[0-9]+ reason=[a-z_]+ session_tag=[a-f0-9]{16}', text):
-                    lines.append(text)
+                if len(text) <= 2048 and any(re.fullmatch(pattern, text) for pattern in patterns):
+                    accepted = text
                 elif 'panicked at ' in text:
-                    location = re.search(r'\bsdk_scale\.rs:([0-9]+):([0-9]+)', text)
-                    lines.append('Rust assertion failed at sdk_scale.rs:' + ':'.join(location.groups()) if location else 'Rust assertion failed; private panic details withheld')
-    return lines[-2000:]
+                    location = re.search(r'\bsdk_scale\.rs:([0-9]{1,6}):([0-9]{1,6})', text)
+                    accepted = 'Rust assertion failed at sdk_scale.rs:' + ':'.join(location.groups()) if location else 'Rust assertion failed; private panic details withheld'
+                else:
+                    continue
+                item = (index, accepted)
+                if len(first) < 96:
+                    first.append(item)
+                if len(important) < 64 and accepted.startswith('PeerloomTestDiag lease '):
+                    important.append(item)
+                if len(phases_seen) < 24 and accepted.startswith(('capacity phase=', 'capacity baseline_complete ')):
+                    phases_seen.append(item)
+                if len(failures) < 8 and accepted.startswith(('capacity lease_baseline ', 'Rust assertion failed')):
+                    failures.append(item)
+                tail.append(item)
+    # At most 256 summaries, independent of shutdown event count; original order.
+    return [text for _, text in sorted(dict(first + important + phases_seen + failures + list(tail)).items())]
 
 
 def versions(pg, redis):
@@ -263,6 +294,7 @@ def main():
     spec = importlib.util.spec_from_file_location('capacity_management', root / 'scripts/test-management.py')
     management = importlib.util.module_from_spec(spec); spec.loader.exec_module(management)
     env = clean_env(); children, logs, samples = [], [], []
+    started = None; cpu_seconds = 0.0; peak = {'rss': 0, 'fds': 0, 'threads': 0}
     result = {'status': 'failed', 'requested_peers': args.peers, 'physical_android_devices': False,
               'sdk_test_sha256': digest(sdk_test), 'tested_source_status': 'combined-working-tree-not-claimed-clean-commit',
               'source_manifest_sha256': digest(args.source_manifest.resolve(strict=True)) if args.source_manifest else None,
@@ -322,7 +354,7 @@ def main():
             if args.debug_close_only: fixture['hold_seconds'] = 0
             private(private_dir / 'fixture.json', json.dumps(fixture))
             STAGE = 'real-sdk-capacity'
-            test_env = clean_env(); test_env['TEST_CAPACITY_FIXTURE'] = str(private_dir / 'fixture.json')
+            test_env = sdk_environment(private_dir / 'fixture.json')
             sdk = launch([str(sdk_test), '--ignored', '--exact', 'one_pc_five_hundred_real_native_peers', '--nocapture'], 'sdk', test_env)
             started = time.monotonic(); previous = {}; cpu_seconds = 0.0; peak = {'rss': 0, 'fds': 0, 'threads': 0}
             baseline_presence_checked = False
@@ -359,6 +391,9 @@ def main():
                           redis_active_presence_after_close=0, elapsed_seconds=round(time.monotonic()-started,3), peak=peak,
                           cpu_seconds=round(cpu_seconds,3), samples=len(samples))
         except BaseException as error:
+            if started is not None:
+                result.update(elapsed_seconds=round(time.monotonic() - started, 3), peak=peak,
+                              cpu_seconds=round(cpu_seconds, 3), samples=len(samples))
             result['failure_stage'] = STAGE
             result['failure'] = str(error) if isinstance(error, Failure) else type(error).__name__
             raise

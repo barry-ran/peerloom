@@ -162,11 +162,23 @@ struct Driver {
     commands: mpsc::Sender<Command>,
     task: tokio::task::JoinHandle<()>,
 }
+fn session_tag(id: &str) -> u64 {
+    let mut hash = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(id, &mut hash);
+    std::hash::Hasher::finish(&hash)
+}
+fn phase(name: &str, started: Instant) {
+    println!(
+        "capacity phase={name} elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+}
 async fn register(
     f: &Fixture,
     registration: &Registration,
     index: usize,
     events: mpsc::Sender<(usize, SdkEvent)>,
+    started: Instant,
 ) -> Driver {
     let mut config = SdkConfig::new(f.origin.clone(), registration.application_id.clone());
     // Test the production default unlimited count, NOT a special high test cap.
@@ -213,10 +225,8 @@ async fn register(
                             SdkError::Transport(_) => "transport",
                             _ => "other",
                         };
-                        let mut hash = std::hash::DefaultHasher::new();
-                        std::hash::Hash::hash(session_id, &mut hash);
-                        let tag = std::hash::Hasher::finish(&hash);
-                        println!("capacity event=closed endpoint={index} reason={reason} session_tag={tag:016x}");
+                        let tag = session_tag(session_id);
+                        println!("capacity event=closed endpoint={index} reason={reason} session_tag={tag:016x} elapsed_ms={}", started.elapsed().as_millis());
                     }
                     if let SdkEvent::IncomingConnection { ref session_id, .. } = event {
                         assert_ne!(index, 0, "PC must be sole initiator");
@@ -432,6 +442,7 @@ async fn snapshot(
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "requires capacity controller, real Go/PG/Redis and 501 registered native SDKs"]
 async fn one_pc_five_hundred_real_native_peers() {
+    let started = Instant::now();
     let path = std::env::var("TEST_CAPACITY_FIXTURE").expect("private fixture");
     #[cfg(unix)]
     {
@@ -454,9 +465,9 @@ async fn one_pc_five_hundred_real_native_peers() {
     let api = Api::new(&f.origin, &f.service_credential);
     let (events_tx, mut events) = mpsc::channel(64);
     let mut drivers = Vec::new();
-    println!("capacity phase=register");
+    phase("register", started);
     for (index, registration) in f.registrations.iter().enumerate() {
-        drivers.push(register(&f, registration, index, events_tx.clone()).await);
+        drivers.push(register(&f, registration, index, events_tx.clone(), started).await);
         let (actual, event) = next(&mut events).await;
         assert_eq!(actual, index);
         assert!(matches!(event, SdkEvent::Online));
@@ -465,7 +476,7 @@ async fn one_pc_five_hundred_real_native_peers() {
         drivers.iter().map(|d| &d.id).collect::<BTreeSet<_>>().len(),
         f.peer_count + 1
     );
-    println!("capacity phase=authorize");
+    phase("authorize", started);
     for peer in drivers.iter().skip(1) {
         let result=api.request("/v1/connection-grants", Some(json!({"source_device_id":drivers[0].id,"target_device_id":peer.id,"expires_in_seconds":3600,"expiry_action":"terminate"}))).await;
         assert_eq!(
@@ -473,7 +484,7 @@ async fn one_pc_five_hundred_real_native_peers() {
             "server default grants unlimited"
         );
     }
-    println!("capacity phase=connect");
+    phase("connect", started);
     let mut pairs = BTreeMap::new();
     let mut latency = Vec::new();
     let indices: Vec<_> = (1..=f.peer_count).collect();
@@ -488,8 +499,15 @@ async fn one_pc_five_hundred_real_native_peers() {
     }
     all_valid(&pairs, f.peer_count);
     exchange(&mut pairs, "initial").await;
-    println!("capacity phase=baseline");
+    phase("baseline", started);
+    let snapshot_started = Instant::now();
     let initial = snapshot(&api, &pairs, &drivers[0].id, &drivers).await;
+    let snapshot_elapsed_ms = snapshot_started.elapsed().as_millis();
+    let baseline_elapsed_ms = started.elapsed().as_millis();
+    println!(
+        "capacity baseline_complete elapsed_ms={baseline_elapsed_ms} snapshot_elapsed_ms={snapshot_elapsed_ms} sessions={}",
+        initial.len()
+    );
     let baseline_time = time::OffsetDateTime::now_utc();
     let initial_deadline = initial
         .values()
@@ -504,16 +522,34 @@ async fn one_pc_five_hundred_real_native_peers() {
         &f.directory.join("baseline.json"),
         json!({"simultaneous_ready":pairs.len(),"sdk_instances":drivers.len(),"pc_sdk_instances":1,"snapshot_complete_at":baseline_time.to_string(),"sessions":initial}),
     );
-    println!("capacity phase=hold");
+    phase("hold", started);
     let hold = Instant::now();
     while !f.debug_close_only
         && (hold.elapsed() < Duration::from_secs(f.hold_seconds)
             || time::OffsetDateTime::now_utc() <= initial_deadline)
     {
         all_valid(&pairs, f.peer_count);
-        if let Ok(Some((endpoint, _))) =
+        if let Ok(Some((endpoint, event))) =
             tokio::time::timeout(Duration::from_secs(1), events.recv()).await
         {
+            if let SdkEvent::ConnectionClosed { session_id, .. } = &event
+                && let Some(before) = initial.get(session_id)
+            {
+                let (source, target) = before.deadlines();
+                let observed = time::OffsetDateTime::now_utc();
+                let tag = session_tag(session_id);
+                // Numeric differences describe the recorded DB baseline, not the
+                // SDK's private monotonic guard or a claim of actual lease expiry.
+                println!(
+                    "capacity lease_baseline endpoint={endpoint} session_tag={tag:016x} lease_generation={} baseline_elapsed_ms={baseline_elapsed_ms} event_elapsed_ms={} snapshot_elapsed_ms={snapshot_elapsed_ms} source_baseline_remaining_ms={} target_baseline_remaining_ms={} source_event_remaining_ms={} target_event_remaining_ms={}",
+                    before.lease_generation,
+                    started.elapsed().as_millis(),
+                    (source - baseline_time).whole_milliseconds(),
+                    (target - baseline_time).whole_milliseconds(),
+                    (source - observed).whole_milliseconds(),
+                    (target - observed).whole_milliseconds()
+                );
+            }
             panic!("unexpected live-session transition during hold endpoint {endpoint}");
         }
         assert!(
@@ -523,7 +559,7 @@ async fn one_pc_five_hundred_real_native_peers() {
     }
     all_valid(&pairs, f.peer_count);
     exchange(&mut pairs, "post-deadline").await;
-    println!("capacity phase=renewal-proof");
+    phase("renewal-proof", started);
     let renewed = snapshot(&api, &pairs, &drivers[0].id, &drivers).await;
     let now = time::OffsetDateTime::now_utc();
     for (id, before) in initial.iter().filter(|_| !f.debug_close_only) {
@@ -543,7 +579,7 @@ async fn one_pc_five_hundred_real_native_peers() {
         &f.directory.join("renewed.json"),
         json!({"sessions":renewed,"hold_seconds":hold.elapsed().as_secs_f64(),"simultaneous_ready":pairs.len()}),
     );
-    println!("capacity phase=pc-wss-reconnect");
+    phase("pc-wss-reconnect", started);
     // Credential rotation exercises control-plane reconnect without claiming an ICE outage.
     let (tx, rx) = oneshot::channel();
     drivers[0]
@@ -567,7 +603,7 @@ async fn one_pc_five_hundred_real_native_peers() {
     }
     all_valid(&pairs, f.peer_count);
     exchange(&mut pairs, "pc-wss-reconnected").await;
-    println!("capacity phase=manual-new-sessions");
+    phase("manual-new-sessions", started);
     let reconnect_count = f.peer_count.min(20);
     let mut closed_ids = BTreeSet::new();
     for wave in indices[..reconnect_count].chunks(10) {
@@ -597,7 +633,7 @@ async fn one_pc_five_hundred_real_native_peers() {
         .values()
         .flat_map(|(a, b)| [a.validity(), b.validity()])
         .collect();
-    println!("capacity phase=explicit-session-close");
+    phase("explicit-session-close", started);
     // DeviceSdk.close() fences local resources, but WSS loss alone is not a
     // server-side revocation. Explicitly terminate each session before shutdown.
     for wave in indices.chunks(10) {
@@ -614,7 +650,7 @@ async fn one_pc_five_hundred_real_native_peers() {
         assert!(Instant::now() < end, "all persisted sessions closed");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    println!("capacity phase=shutdown");
+    phase("shutdown", started);
     for driver in &drivers {
         driver.commands.send(Command::Stop).await.unwrap();
     }

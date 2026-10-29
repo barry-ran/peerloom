@@ -104,6 +104,7 @@ class CapacityCI(unittest.TestCase):
         self.assertEqual(len([x for x in upload.splitlines() if x.strip()]),4)
         source=(HERE/'run-capacity-ci.py').read_text(encoding='utf-8')
         self.assertIn("'--peers', '500'",source)
+        self.assertIn("'--features', 'test-diagnostics'",source)
         self.assertNotIn('setrlimit',source)
 
 

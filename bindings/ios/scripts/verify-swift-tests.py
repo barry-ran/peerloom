@@ -12,6 +12,7 @@ EXPECTED = {
         "testRetainedEventsKeepBoundedCreditsUntilConsumption",
         "testReadRechecksAfterCallerActorResumes",
         "testTypedChildMetadataAndPartialWriteResult",
+        "testOptionalCapacityDefaultsAndLargeValuesEncodeWithoutClamping",
         "testEarlyCompletionsAndQuiescentRelease",
         "testExpiredBufferedReadyAndMessageAreNotDelivered",
         "testHostEventOverflowStopsInsteadOfDroppingAndContinuing",
@@ -32,8 +33,8 @@ def discovery(path):
     names = [line.strip() for line in path.read_text().splitlines() if line.strip()]
     expected = {"PeerloomSwiftTests." + suite + "/" + method
                 for suite, methods in EXPECTED.items() for method in methods}
-    if len(names) != 14 or set(names) != expected:
-        raise ValueError("XCTest discovery 必须精确覆盖当前两个 suite 的全部 14 项")
+    if len(names) != len(expected) or set(names) != expected:
+        raise ValueError("XCTest discovery 必须精确覆盖当前两个 suite 的全部 15 项")
 
 
 def suite_completed(suite, path):
@@ -55,7 +56,7 @@ def aggregate(out):
             raise ValueError(suite + " 未通过，其他 suite 仅用于诊断")
         suite_completed(suite, out / ("phase-" + name + ".log"))
         statuses.append(status)
-    result = {"classification": "passed", "exit_code": 0, "test_count": 14,
+    result = {"classification": "passed", "exit_code": 0, "test_count": sum(len(methods) for methods in EXPECTED.values()),
               "started_at": min(s["started_at"] for s in statuses),
               "finished_at": max(s["finished_at"] for s in statuses),
               "elapsed_seconds": sum(s["elapsed_seconds"] for s in statuses)}

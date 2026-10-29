@@ -63,6 +63,10 @@ impl ServerClockBound {
             .ok_or(LeaseError::InvalidUpdate)
     }
 }
+struct PendingRenewal {
+    request_id: String,
+    generation_at_request: u64,
+}
 pub struct LeaseGuard {
     session_id: String,
     source: String,
@@ -71,7 +75,8 @@ pub struct LeaseGuard {
     deadline: Option<Instant>,
     active: bool,
     closed: bool,
-    pending_renewal: Option<String>,
+    pending_renewal: Option<PendingRenewal>,
+    latest_snapshot_bound: Option<Instant>,
 }
 impl LeaseGuard {
     pub fn new(session_id: String, source: String, target: String) -> Result<Self, LeaseError> {
@@ -103,6 +108,7 @@ impl LeaseGuard {
             active: false,
             closed: false,
             pending_renewal: None,
+            latest_snapshot_bound: None,
         })
     }
     /// 只标记已经由信令客户端提交的 session.renew 请求 UUID；发送本身不能延长期限。
@@ -113,7 +119,10 @@ impl LeaseGuard {
         if uuid::Uuid::parse_str(&request_id).is_err() {
             return Err(LeaseError::InvalidUpdate);
         }
-        self.pending_renewal = Some(request_id);
+        self.pending_renewal = Some(PendingRenewal {
+            request_id,
+            generation_at_request: self.generation,
+        });
         Ok(())
     }
     pub fn apply(
@@ -134,6 +143,13 @@ impl LeaseGuard {
             return Err(LeaseError::InvalidUpdate);
         }
         if self.deadline.is_some_and(|d| received >= d) {
+            #[cfg(feature = "test-diagnostics")]
+            self.trace_failure(
+                "expired-before-update",
+                envelope.payload["lease_generation"].as_u64().unwrap_or(0),
+                self.matches_renewal(envelope),
+                received,
+            );
             self.invalidate();
             return Err(LeaseError::Expired);
         }
@@ -160,9 +176,6 @@ impl LeaseGuard {
             .as_u64()
             .filter(|g| *g > 0)
             .ok_or(LeaseError::InvalidUpdate)?;
-        if generation < self.generation {
-            return Err(LeaseError::InvalidUpdate);
-        }
         let mut expiry = None;
         for field in [
             "lease_expires_at",
@@ -176,27 +189,88 @@ impl LeaseGuard {
             .map_err(|_| LeaseError::InvalidUpdate)?;
             expiry = Some(expiry.map_or(value, |old: OffsetDateTime| old.min(value)));
         }
+        let stale = generation < self.generation;
+        let own_renewal = self.matches_renewal(envelope)
+            && self
+                .pending_renewal
+                .as_ref()
+                .is_some_and(|pending| generation > pending.generation_at_request)
+            && state != "authorizing";
         let deadline = match clock.deadline(expiry.ok_or(LeaseError::InvalidUpdate)?, received) {
             Ok(value) => value,
+            Err(LeaseError::Expired) if stale => {
+                // A fully parsed older live snapshot can expire while a newer
+                // authorized lease remains valid. It grants no new authority.
+                if own_renewal {
+                    self.pending_renewal = None;
+                }
+                return Ok(());
+            }
             Err(error) => {
+                #[cfg(feature = "test-diagnostics")]
+                self.trace_failure(
+                    "expiry-conversion",
+                    generation,
+                    self.matches_renewal(envelope),
+                    received,
+                );
                 self.invalidate();
                 return Err(error);
             }
         };
-        let own_renewal = self.pending_renewal.is_some()
-            && self.pending_renewal == envelope.request_id
-            && envelope.kind == "session.updated";
-        self.deadline = Some(match self.deadline {
-            None => deadline,
-            Some(_) if generation > self.generation && own_renewal => deadline,
-            Some(old) => old.min(deadline),
-        });
-        if own_renewal {
-            self.pending_renewal = None;
+        // This upper bound is evidence, not permission: a peer's renewal alone
+        // never extends the local authorization deadline. Same-generation replay
+        // and a new hello clock can only tighten an existing snapshot bound.
+        if !stale {
+            self.latest_snapshot_bound = Some(match self.latest_snapshot_bound {
+                Some(old) if generation == self.generation => old.min(deadline),
+                _ => deadline,
+            });
         }
-        self.generation = generation;
-        self.active = state != "authorizing";
+        if stale && !own_renewal {
+            return Ok(());
+        }
+        if own_renewal {
+            self.deadline = Some(deadline.min(self.latest_snapshot_bound.unwrap_or(deadline)));
+            self.pending_renewal = None;
+        } else {
+            self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
+        }
+        if !stale {
+            self.generation = generation;
+            self.active = state != "authorizing";
+        }
         Ok(())
+    }
+    fn matches_renewal(&self, envelope: &Envelope) -> bool {
+        envelope.kind == "session.updated"
+            && self
+                .pending_renewal
+                .as_ref()
+                .is_some_and(|pending| Some(&pending.request_id) == envelope.request_id.as_ref())
+    }
+    #[cfg(feature = "test-diagnostics")]
+    pub(crate) fn trace_failure(
+        &self,
+        stage: &'static str,
+        incoming: u64,
+        own_ack: bool,
+        received: Instant,
+    ) {
+        if std::env::var_os("PEERLOOM_TEST_LEASE_DIAGNOSTICS").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+        let remaining_ms = self
+            .deadline
+            .and_then(|deadline| deadline.checked_duration_since(received))
+            .map_or(0, |value| value.as_millis());
+        eprintln!(
+            "PeerloomTestDiag lease stage={stage} current={} incoming={incoming} own_ack={own_ack} pending={} remaining_ms={remaining_ms}",
+            self.generation,
+            self.pending_renewal.is_some()
+        );
     }
     pub fn invalidate(&mut self) {
         self.closed = true;

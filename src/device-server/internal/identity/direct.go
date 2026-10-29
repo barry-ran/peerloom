@@ -98,13 +98,26 @@ func (s *Store) RegisterDirect(ctx context.Context, input Registration, key, rem
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
 	}
-	var total, daily int
-	err = tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM devices WHERE application_id=$1 AND tenant_id=$2),(SELECT count(*) FROM direct_registration_receipts WHERE application_id=$1 AND created_at>=date_trunc('day',clock_timestamp() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`, input.ApplicationID, tenant).Scan(&total, &daily)
-	if err != nil {
-		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
-	}
-	if total >= s.settings.DirectAppDevices || daily >= s.settings.DirectAppPerDay {
-		return Credential{}, Fail("REGISTRATION_QUOTA_EXCEEDED", 429)
+	// Zero means no optional quota: do not scan an ever-growing table unless
+	// the operator explicitly enables that count policy. Tenant/application
+	// locks, credential issuance and durable recovery receipts remain intact.
+	for _, quota := range []struct {
+		limit int
+		query string
+	}{
+		{s.settings.DirectAppDevices, "SELECT count(*) FROM devices WHERE application_id=$1 AND tenant_id=$2"},
+		{s.settings.DirectAppPerDay, "SELECT count(*) FROM direct_registration_receipts WHERE application_id=$1 AND tenant_id=$2 AND created_at>=date_trunc('day',clock_timestamp() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"},
+	} {
+		if quota.limit == 0 {
+			continue
+		}
+		var count int64
+		if err = tx.QueryRow(ctx, quota.query, input.ApplicationID, tenant).Scan(&count); err != nil {
+			return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
+		}
+		if count >= int64(quota.limit) {
+			return Credential{}, Fail("REGISTRATION_QUOTA_EXCEEDED", 429)
+		}
 	}
 	metadata := input.Metadata
 	if metadata == nil {
@@ -145,8 +158,19 @@ type directBucket struct {
 }
 
 // Admission persists independently of enrollment success or rollback, including
-// retries. Global-first ordering bounds new IP-counter cardinality and lock order.
+// retries. When enabled, global-first admission bounds new IP-counter cardinality.
+// Positive buckets retain a consistent lock order.
 func (s *Store) directAdmission(ctx context.Context, buckets []directBucket) error {
+	active := false
+	for _, bucket := range buckets {
+		if bucket.limit > 0 {
+			active = true
+			break
+		}
+	}
+	if !active {
+		return nil
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Fail("DATABASE_UNAVAILABLE", 503)
@@ -154,14 +178,17 @@ func (s *Store) directAdmission(ctx context.Context, buckets []directBucket) err
 	defer rollback(tx)
 	limited := false
 	for _, bucket := range buckets {
-		var attempts int
-		err = tx.QueryRow(ctx, `INSERT INTO direct_registration_windows(key_hash,window_start,attempts) VALUES($1,date_trunc('minute',clock_timestamp()),1) ON CONFLICT(key_hash,window_start) DO UPDATE SET attempts=LEAST(direct_registration_windows.attempts+1,6001) RETURNING attempts`, digest("peerloom-direct:"+bucket.key)).Scan(&attempts)
-		if err != nil {
-			return Fail("DATABASE_UNAVAILABLE", 503)
+		if bucket.limit == 0 {
+			continue
 		}
-		if attempts > bucket.limit {
+		var attempts int
+		err = tx.QueryRow(ctx, `INSERT INTO direct_registration_windows(key_hash,window_start,attempts) VALUES($1,date_trunc('minute',clock_timestamp()),1) ON CONFLICT(key_hash,window_start) DO UPDATE SET attempts=direct_registration_windows.attempts+1 WHERE direct_registration_windows.attempts < $2 RETURNING attempts`, digest("peerloom-direct:"+bucket.key), bucket.limit).Scan(&attempts)
+		if errors.Is(err, pgx.ErrNoRows) {
 			limited = true
 			break
+		}
+		if err != nil {
+			return Fail("DATABASE_UNAVAILABLE", 503)
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {

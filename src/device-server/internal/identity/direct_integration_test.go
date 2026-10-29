@@ -6,10 +6,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/barry-ran/peerloom/src/device-server/internal/migrate"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -145,14 +148,33 @@ func TestDirectDurableRateAndDeviceQuota(t *testing.T) {
 		requireCode(t, err, "REGISTRATION_RATE_LIMITED")
 	})
 	t.Run("application-and-replay", func(t *testing.T) {
-		s, _, ctx, input := directFixture(t)
+		s, p, ctx, input := directFixture(t)
 		s.settings.DirectAppPerMinute = 1
 		key := directKey(t)
 		if _, err := s.RegisterDirect(ctx, input, key, "192.0.2.1"); err != nil {
 			t.Fatal(err)
 		}
+		// First prove that real enrollment charged the durable app counter.
+		hash := digest("peerloom-direct:app:" + input.ApplicationID)
+		var charged int
+		if err := p.QueryRow(ctx, "SELECT sum(attempts) FROM direct_registration_windows WHERE key_hash=$1", hash).Scan(&charged); err != nil || charged != 1 {
+			t.Fatalf("initial durable application charge: %d, %v", charged, err)
+		}
+		// This isolated fixture has a 60-second context. Seed only its current
+		// and next minute as exhausted, so the rejection assertion also holds
+		// when the wall clock crosses a minute between the two API calls.
+		// Production clocks, admission limits and replay handling are unchanged.
+		if _, err := p.Exec(ctx, `WITH instant AS MATERIALIZED (SELECT date_trunc('minute',clock_timestamp()) AS minute)
+INSERT INTO direct_registration_windows(key_hash,window_start,attempts)
+SELECT $1,minute+offsets.delta,1 FROM instant CROSS JOIN (VALUES(interval '0 minutes'),(interval '1 minute')) AS offsets(delta)
+ON CONFLICT(key_hash,window_start) DO UPDATE SET attempts=EXCLUDED.attempts`, hash); err != nil {
+			t.Fatal(err)
+		}
 		_, err := s.RegisterDirect(ctx, input, key, "192.0.2.2")
 		requireCode(t, err, "REGISTRATION_RATE_LIMITED")
+		if err := p.QueryRow(ctx, "SELECT max(attempts) FROM direct_registration_windows WHERE key_hash=$1", hash).Scan(&charged); err != nil || charged != 1 {
+			t.Fatalf("exhausted replay must not overflow its durable counter: %d, %v", charged, err)
+		}
 	})
 	for _, daily := range []bool{false, true} {
 		t.Run(map[bool]string{false: "total", true: "daily"}[daily], func(t *testing.T) {
@@ -247,5 +269,127 @@ func TestDirectCrossTenantReceiptIsolation(t *testing.T) {
 	again, err := s.RegisterDirect(ctx, first, key, "192.0.2.1")
 	if err != nil || again != a {
 		t.Fatal("cross-tenant attempt changed original receipt")
+	}
+}
+
+// A previous minute's exhausted bucket must not forbid a legitimate replay in
+// the next minute. Move only test-owned counter data; never alter the DB clock.
+func TestDirectApplicationQuotaMinuteRollover(t *testing.T) {
+	s, p, ctx, input := directFixture(t)
+	s.settings.DirectAppPerMinute = 1
+	key := directKey(t)
+	first, err := s.RegisterDirect(ctx, input, key, "192.0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := digest("peerloom-direct:app:" + input.ApplicationID)
+	var charged int
+	if err = p.QueryRow(ctx, "SELECT sum(attempts) FROM direct_registration_windows WHERE key_hash=$1", hash).Scan(&charged); err != nil || charged != 1 {
+		t.Fatalf("first charge: %d %v", charged, err)
+	}
+	if _, err = p.Exec(ctx, "UPDATE direct_registration_windows SET window_start=date_trunc('minute',clock_timestamp())-interval '1 minute' WHERE key_hash=$1", hash); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := s.RegisterDirect(ctx, input, key, "192.0.2.2")
+	if err != nil || replay != first {
+		t.Fatalf("new minute replay must reuse identity: %v", err)
+	}
+	var windows int
+	if err = p.QueryRow(ctx, "SELECT count(*),sum(attempts) FROM direct_registration_windows WHERE key_hash=$1", hash).Scan(&windows, &charged); err != nil || windows != 2 || charged != 2 {
+		t.Fatalf("rollover counters: %d/%d %v", windows, charged, err)
+	}
+}
+
+func TestDirectUnlimitedDefaultsKeepIdentitySecurityWithoutCounters(t *testing.T) {
+	s, p, ctx, input := directFixture(t)
+	// Efficiently seed the former 10,000-device/500-daily ceilings in this owned
+	// schema; no credentials or real installations are fabricated outside it.
+	if _, err := p.Exec(ctx, `INSERT INTO devices(tenant_id,application_id,installation_key_hash,platform)
+ SELECT tenant_id,id,decode(repeat('00',32),'hex'),'linux' FROM applications CROSS JOIN generate_series(1,10000) WHERE id=$1`, input.ApplicationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO direct_registration_receipts(tenant_id,application_id,key_hash,request_hash,device_id)
+ SELECT tenant_id,application_id,decode(md5(id::text)||md5(id::text),'hex'),decode(repeat('00',32),'hex'),id FROM devices WHERE application_id=$1 LIMIT 500`, input.ApplicationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterDirect(ctx, input, "invalid", "192.0.2.1"); err == nil {
+		t.Fatal("unlimited must not bypass recovery secret validation")
+	}
+	key := directKey(t)
+	first, err := s.RegisterDirect(ctx, input, key, "192.0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := s.RegisterDirect(ctx, input, key, "192.0.2.2")
+	if err != nil || replay != first {
+		t.Fatalf("unlimited replay identity: %v", err)
+	}
+	var devices, receipts, windows int
+	if err = p.QueryRow(ctx, `SELECT (SELECT count(*) FROM devices WHERE application_id=$1),(SELECT count(*) FROM direct_registration_receipts WHERE application_id=$1),(SELECT count(*) FROM direct_registration_windows)`, input.ApplicationID).Scan(&devices, &receipts, &windows); err != nil || devices != 10001 || receipts != 501 || windows != 0 {
+		t.Fatalf("unlimited defaults accounting %d/%d/%d: %v", devices, receipts, windows, err)
+	}
+}
+func TestDirectPositiveCounterBeyondFormerCeilingAndNoOverflow(t *testing.T) {
+	s, p, ctx, _ := directFixture(t)
+	for _, limit := range []int{6002, 2147483647} {
+		key := fmt.Sprintf("explicit:%d", limit)
+		hash := digest("peerloom-direct:" + key)
+		if _, err := p.Exec(ctx, `WITH instant AS MATERIALIZED (SELECT date_trunc('minute',clock_timestamp()) AS minute)
+INSERT INTO direct_registration_windows(key_hash,window_start,attempts)
+SELECT $1,minute+offsets.delta,$2 FROM instant CROSS JOIN (VALUES(interval '0 minutes'),(interval '1 minute')) AS offsets(delta)`, hash, limit-1); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.directAdmission(ctx, []directBucket{{key, limit}}); err != nil {
+			t.Fatal("last positive permit rejected", limit, err)
+		}
+		// Exhaust both covered minute buckets before the denial assertion; this is
+		// test data only and prevents a real minute boundary from changing its meaning.
+		if _, err := p.Exec(ctx, "UPDATE direct_registration_windows SET attempts=$2 WHERE key_hash=$1", hash, limit); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 3; i++ {
+			requireCode(t, s.directAdmission(ctx, []directBucket{{key, limit}}), "REGISTRATION_RATE_LIMITED")
+		}
+		var minimum, maximum int
+		if err := p.QueryRow(ctx, "SELECT min(attempts),max(attempts) FROM direct_registration_windows WHERE key_hash=$1", hash).Scan(&minimum, &maximum); err != nil || minimum != limit || maximum != limit {
+			t.Fatal("counter overflow or policy changed", limit, err)
+		}
+	}
+}
+func TestDirectCounterMigrationPreservesRowsAndRollbackFailsClosed(t *testing.T) {
+	_, p, ctx, _ := directFixture(t)
+	if _, err := p.Exec(ctx, "UPDATE applications SET max_connections=8"); err != nil {
+		t.Fatal(err)
+	}
+	hash := digest("owned-counter-migration")
+	if _, err := p.Exec(ctx, "INSERT INTO direct_registration_windows VALUES($1,date_trunc('minute',clock_timestamp()),6001)", hash); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := filepath.Abs("../../../../infra/migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := migrate.Load(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = migrate.Apply(ctx, p, migrations, "down"); err != nil {
+		t.Fatal(err)
+	}
+	if err = migrate.Apply(ctx, p, migrations, "up"); err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	if err = p.QueryRow(ctx, "SELECT attempts FROM direct_registration_windows WHERE key_hash=$1", hash).Scan(&attempts); err != nil || attempts != 6001 {
+		t.Fatal("migration rewrote historical count", err)
+	}
+	if _, err = p.Exec(ctx, "UPDATE direct_registration_windows SET attempts=6002 WHERE key_hash=$1", hash); err != nil {
+		t.Fatal(err)
+	}
+	if err = migrate.Apply(ctx, p, migrations, "down"); err == nil {
+		t.Fatal("rollback silently truncated new counter")
+	}
+	if err = p.QueryRow(ctx, "SELECT attempts FROM direct_registration_windows WHERE key_hash=$1", hash).Scan(&attempts); err != nil || attempts != 6002 {
+		t.Fatal("failed rollback changed count", err)
 	}
 }

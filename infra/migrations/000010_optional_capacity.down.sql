@@ -1,3 +1,5 @@
+ALTER TABLE direct_registration_windows DROP CONSTRAINT direct_registration_windows_attempts_check;
+ALTER TABLE direct_registration_windows ADD CONSTRAINT direct_registration_windows_attempts_check CHECK (attempts BETWEEN 1 AND 6001);
 -- Fail closed if unlimited policies exist: operators must explicitly replace them
 -- before rollback. Never silently convert unlimited to an arbitrary historical cap.
 ALTER TABLE applications DROP CONSTRAINT applications_max_connections_check;

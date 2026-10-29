@@ -12,3 +12,5 @@ ALTER TABLE sessions ADD CONSTRAINT sessions_negotiation_generation_check CHECK 
 ALTER TABLE relay_issuances DROP CONSTRAINT relay_issuances_negotiation_generation_check;
 ALTER TABLE relay_issuances ALTER COLUMN negotiation_generation TYPE bigint;
 ALTER TABLE relay_issuances ADD CONSTRAINT relay_issuances_negotiation_generation_check CHECK (negotiation_generation BETWEEN 1 AND 9007199254740991);
+ALTER TABLE direct_registration_windows DROP CONSTRAINT direct_registration_windows_attempts_check;
+ALTER TABLE direct_registration_windows ADD CONSTRAINT direct_registration_windows_attempts_check CHECK (attempts >= 1);

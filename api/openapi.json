@@ -3,7 +3,7 @@
   "info": {
     "title": "Peerloom 服务接口",
     "version": "0.1.0-dev",
-    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap、tenant service-key管理API及托管TURN节点/会话凭证接口；含内建浏览器管理员登录；含应用显式direct注册与持久防滥用限额；不包含OIDC或webhook管理。SDK在已接受会话中取得本代ICE配置，恢复时按服务端CAS新代重建PC/Channel；支持显式安装身份reset，不是原地ICE restart。生产入口必须TLS。"
+    "description": "已实现设备身份、原生WSS与授权会话、公开bootstrap、tenant service-key管理API及托管TURN节点/会话凭证接口；含内建浏览器管理员登录；含应用显式direct注册与可选持久防滥用限额（默认数量不限）；不包含OIDC或webhook管理。SDK在已接受会话中取得本代ICE配置，恢复时按服务端CAS新代重建PC/Channel；支持显式安装身份reset，不是原地ICE restart。生产入口必须TLS。"
   },
   "paths": {
     "/healthz": {
@@ -222,7 +222,7 @@
             }
           }
         },
-        "description": "省略registration_grant仅允许应用mode=direct且租户/应用启用。Direct按TCP RemoteAddr（忽略XFF/Forwarded，IPv6归并/64）执行持久全局/IP/应用请求限额及应用日新增/总设备配额。成功重试不重复计设备配额，但仍计请求次数。key/body相同恢复同设备；过期保留哈希回执并返回REPLAY_EXPIRED。禁用/模式切换/凭证撤销后拒绝旧回执。"
+        "description": "省略registration_grant仅允许应用mode=direct且租户/应用启用。Direct的五项DIRECT_*数量策略默认0=不限，正数在SQL integer表示范围内启用持久全局/IP/应用请求限额及应用日新增/总设备配额。公开启用direct应由运营方显式配置正数反滥用预算。IP按TCP RemoteAddr（忽略XFF/Forwarded，IPv6归并/64）；成功重试不重复计设备配额，启用正数请求预算时仍计准入次数。key/body相同恢复同设备；过期保留哈希回执并返回REPLAY_EXPIRED。禁用/模式切换/凭证撤销后拒绝旧回执。"
       }
     },
     "/v1/device-self": {

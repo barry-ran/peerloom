@@ -847,6 +847,12 @@ impl Actor {
                 .is_some_and(|deadline| now >= deadline);
             let closed = session.gate.closed.load(Ordering::Acquire) && session.worker.is_none();
             if expired || closed {
+                #[cfg(feature = "test-diagnostics")]
+                if expired {
+                    session
+                        .guard
+                        .trace_failure("maintenance-deadline", 0, false, now);
+                }
                 self.close_session(
                     &id,
                     if closed {
@@ -898,6 +904,10 @@ impl Actor {
                     Ok(request) => {
                         let session = self.sessions.get_mut(&id).expect("actor-owned session");
                         if session.guard.renewal_requested(request).is_err() {
+                            #[cfg(feature = "test-diagnostics")]
+                            session
+                                .guard
+                                .trace_failure("renewal-registration", 0, false, now);
                             self.close_session(&id, SdkError::AuthorizationExpired, true)
                                 .await;
                         } else {

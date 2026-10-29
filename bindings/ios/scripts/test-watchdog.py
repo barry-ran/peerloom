@@ -205,7 +205,7 @@ class WatchdogTests(unittest.TestCase):
                           {"workspace": {"schemes": ["Other-Package"]}}):
                 path.write_text(json.dumps(wrong))
                 self.assertNotEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
-        self.assertIn("summary['totalTestCount'] >= 12 and summary['failedTests'] == 0", source)
+        self.assertIn("summary['totalTestCount'] >= 13 and summary['failedTests'] == 0", source)
         self.assertIn("CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=", source)
         self.assertIn("run ios-device 600 xcodebuild -scheme PeerloomSwift", source)
         self.assertNotIn("-skip-testing", source)
@@ -350,7 +350,7 @@ class WatchdogTests(unittest.TestCase):
         self.assertNotIn("-skip-testing", workflow + build)
         native = SCRIPT.with_name("test-native.sh").read_text()
         self.assertIn("inspect-test-signing.py", native)
-        self.assertIn("summary['totalTestCount'] >= 12 and summary['failedTests'] == 0", native)
+        self.assertIn("summary['totalTestCount'] >= 13 and summary['failedTests'] == 0", native)
 
     def runtime_probe(self, root, first=0, second=0, payload=None, second_payload=None, name="out"):
         out = root / name
@@ -504,11 +504,12 @@ PYMOCK
             path = Path(directory) / "discovery"
             names = sorted("PeerloomSwiftTests." + suite + "/" + method
                            for suite, methods in VERIFY.EXPECTED.items() for method in methods)
-            self.assertEqual(len(names), 14)
+            self.assertEqual(len(names), 15)
             self.assertIn("PeerloomSwiftTests.NativeCoreTests/testTypedChildMetadataAndPartialWriteResult", names)
+            self.assertIn("PeerloomSwiftTests.NativeCoreTests/testOptionalCapacityDefaultsAndLargeValuesEncodeWithoutClamping", names)
             path.write_text("\n".join(names))
             VERIFY.discovery(path)
-            # Every original test and the new channel test remain mandatory.
+            # Every original test, channel test and capacity test remain mandatory.
             for missing in names:
                 path.write_text("\n".join(name for name in names if name != missing))
                 with self.assertRaises(ValueError, msg=missing):
@@ -549,7 +550,7 @@ PYMOCK
             self.assertFalse((root / "phase-macos-swift.json").exists())
             failure.write_text(success)
             VERIFY.aggregate(root)
-            self.assertEqual(json.loads((root / "phase-macos-swift.json").read_text())["test_count"], 14)
+            self.assertEqual(json.loads((root / "phase-macos-swift.json").read_text())["test_count"], 15)
 
 
 if __name__ == "__main__":

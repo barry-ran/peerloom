@@ -629,6 +629,12 @@ async fn authority_permanent_denials_release_only_unadmitted_slots() {
             matches!(events.try_recv().unwrap(), SdkEvent::ConnectionClosed { reason: SdkError::Rejected(ref reason), .. } if reason == "AUTHORITY_DENIED")
         );
         assert!(events.try_recv().is_err());
+        // Drain the mock server's already-issued live reply after the injected
+        // denial/timeout. It must not resurrect the removed slot, and the server
+        // must finish writing before the client closes its TCP connection.
+        apply_authority_reply(&mut actor).await;
+        assert!(actor.sessions.get(&id).is_none());
+        assert!(events.try_recv().is_err());
     }
     actor.signal.take().unwrap().close().await;
     server.await.unwrap();
@@ -673,6 +679,12 @@ async fn authority_transient_retry_has_cooldown_and_total_operation_deadline() {
                 ..
             }
         ));
+        assert!(events.try_recv().is_err());
+        // Drain the mock server's already-issued live reply after the injected
+        // denial/timeout. It must not resurrect the removed slot, and the server
+        // must finish writing before the client closes its TCP connection.
+        apply_authority_reply(&mut actor).await;
+        assert!(actor.sessions.get(&id).is_none());
         assert!(events.try_recv().is_err());
     }
     actor.signal.take().unwrap().close().await;

@@ -112,6 +112,56 @@ class CapacityControllerTests(unittest.TestCase):
             self.assertIn('session_tag=', rows[0])
             self.assertNotIn('private-identity', rows[0])
 
+    def test_timing_and_baseline_only_fixed_numeric_fields(self):
+        good = [
+            'capacity phase=baseline elapsed_ms=42001',
+            'capacity baseline_complete elapsed_ms=42041 snapshot_elapsed_ms=40 sessions=500',
+            'capacity event=closed endpoint=251 reason=authorization_expired session_tag=0123456789abcdef elapsed_ms=49993',
+            'capacity lease_baseline endpoint=251 session_tag=0123456789abcdef lease_generation=6 baseline_elapsed_ms=42041 event_elapsed_ms=49993 snapshot_elapsed_ms=40 source_baseline_remaining_ms=53000 target_baseline_remaining_ms=45000 source_event_remaining_ms=45048 target_event_remaining_ms=37048',
+        ]
+        bad = [good[0] + ' secret=synthetic', good[1].replace('40 sessions', 'secret sessions'),
+               good[2].replace('0123456789abcdef', 'private-device-uuid'),
+               good[3].replace('source_event_remaining_ms=45048', 'source_event_remaining_ms=1.5'),
+               good[3].replace('lease_generation=6', 'lease_generation=' + '1' * 17),
+               good[0].replace('baseline', 'private-token')]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sdk.log'; path.write_text('\n'.join(good + bad))
+            self.assertEqual(m.safe_progress(path), good)
+
+    def test_core_lease_diagnostics_enums_and_integer_bounds(self):
+        stages = ('stale-generation', 'expired-before-update', 'expiry-conversion', 'maintenance-deadline', 'renewal-registration')
+        good = [f'PeerloomTestDiag lease stage={stage} current=9 incoming=8 own_ack=true pending=false remaining_ms=51000' for stage in stages]
+        bad = [good[0] + ' session=private', good[0].replace('stale-generation', 'unknown'),
+               good[0].replace('own_ack=true', 'own_ack=secret'),
+               good[0].replace('remaining_ms=51000', 'remaining_ms=' + '1' * 40),
+               good[0].replace('current=9', 'current=-1')]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sdk.log'; path.write_text('\n'.join(good + bad))
+            self.assertEqual(m.safe_progress(path), good)
+
+    def test_shutdown_flood_cannot_evict_first_failure_or_phase(self):
+        close = 'capacity event=closed endpoint=1 reason=closed session_tag=0123456789abcdef elapsed_ms=60000'
+        early = ['capacity phase=hold elapsed_ms=40000'] + [close] * 300
+        failure = ['PeerloomTestDiag lease stage=stale-generation current=9 incoming=8 own_ack=true pending=true remaining_ms=51000',
+                   'thread test panicked at /private/sdk_scale.rs:540:13:']
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sdk.log'; path.write_text('\n'.join(early + [failure[0]] * 100 + failure + [close] * 5000 + ['capacity phase=shutdown elapsed_ms=61000']))
+            rows = m.safe_progress(path)
+        self.assertLessEqual(len(rows), 256)
+        self.assertIn(early[0], rows)
+        self.assertIn(failure[0], rows)
+        self.assertIn('Rust assertion failed at sdk_scale.rs:540:13', rows)
+        self.assertEqual(rows[-1], 'capacity phase=shutdown elapsed_ms=61000')
+
+    def test_lease_diagnostics_only_explicit_test_child_not_inherited(self):
+        with mock.patch.dict(os.environ, {'PEERLOOM_TEST_LEASE_DIAGNOSTICS': 'untrusted', 'TEST_CAPACITY_FIXTURE': 'secret'}, clear=True):
+            self.assertNotIn('PEERLOOM_TEST_LEASE_DIAGNOSTICS', m.clean_env())
+            env = m.sdk_environment(Path('/private/owned/fixture.json'))
+        self.assertEqual(env['PEERLOOM_TEST_LEASE_DIAGNOSTICS'], '1')
+        self.assertEqual(env['TEST_CAPACITY_FIXTURE'], '/private/owned/fixture.json')
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(m.sdk_environment(Path('/owned/fixture'))['PEERLOOM_TEST_LEASE_DIAGNOSTICS'], '1')
+
     def test_cpu_reused_pid_is_not_counted(self):
         previous={'1':{'birth':1,'ticks':10},'2':{'birth':2,'ticks':20}}
         current={'1':{'birth':9,'ticks':999999},'2':{'birth':2,'ticks':120}}

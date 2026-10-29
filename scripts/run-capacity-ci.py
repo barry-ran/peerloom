@@ -120,7 +120,7 @@ def main():
         private = Path(temporary)
         binaries = private / 'bin'; binaries.mkdir(mode=0o700)
         command(['go', 'build', '-o', str(binaries) + '/', './cmd/device-server', './cmd/device-migrate', './cmd/device-admin', './cmd/device-bootstrap', './cmd/device-admin-user'], root / 'src/device-server')
-        executable = select_executable(command(['cargo', 'test', '--locked', '-p', 'device-core', '--test', 'sdk_scale', '--no-run', '--message-format=json'], root / 'src/device-sdk'))
+        executable = select_executable(command(['cargo', 'test', '--locked', '-p', 'device-core', '--features', 'test-diagnostics', '--test', 'sdk_scale', '--no-run', '--message-format=json'], root / 'src/device-sdk'))
         runtime = private / 'runtime'
         try:
             run_controller(['python3', str(root / 'scripts/test-capacity.py'), '--root', str(root), '--pg-bin', str(selected['postgresql']), '--redis-bin', str(selected['redis']), '--server-bin', str(binaries), '--sdk-test', str(executable), '--output', str(runtime), '--source-manifest', str(manifest_path), '--peers', '500'])
