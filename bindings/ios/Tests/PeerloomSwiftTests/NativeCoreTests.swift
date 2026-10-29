@@ -37,6 +37,8 @@ final class MockNative: NativeAPI, @unchecked Sendable {
     func completeHeldRead() {
         lock.lock(); let action = heldRead; heldRead = nil; lock.unlock(); action?()
     }
+    var storageCompletion: (@Sendable () -> Void)?
+    let releaseCalled = DispatchSemaphore(value: 0)
     var released = 0
     func create(_ data: Data, callback: NativeCallback, context: UInt64) -> (UInt32, UInt64) {
         lock.lock(); self.callback = callback; self.context = context; lock.unlock()
@@ -95,10 +97,13 @@ final class MockNative: NativeAPI, @unchecked Sendable {
     func release(_ sdk: UInt64) -> UInt32 {
         lock.lock(); defer { lock.unlock() }
         guard final else { return 11 }
-        released += 1; return 0
+        released += 1; releaseCalled.signal(); return 0
     }
     func valid(_ sdk: UInt64, connection: UInt64) -> UInt32 { isValid ? 0 : 5 }
-    func storage(_ sdk: UInt64, request: UInt64, status: UInt32, data: Data) -> UInt32 { 0 }
+    func storage(_ sdk: UInt64, request: UInt64, status: UInt32, data: Data) -> UInt32 {
+        storageCompletion?()
+        return 0
+    }
 }
 final class NativeCoreTests: XCTestCase {
     func testOptionalCapacityDefaultsAndLargeValuesEncodeWithoutClamping() throws {
@@ -322,6 +327,42 @@ final class NativeCoreTests: XCTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTAssertNil(weakCore, "completed shared close task retained its core")
+        try await assertCloseWaitsForStorageReservationRelease()
+    }
+    private func assertCloseWaitsForStorageReservationRelease() async throws {
+        let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
+        try core.create(Data("{}".utf8))
+        let budget = try XCTUnwrap(Mirror(reflecting: core).children.first { $0.label == "budget" }?.value as? HostBudget)
+        let budgetLock = try XCTUnwrap(Mirror(reflecting: budget).children.first { $0.label == "lock" }?.value as? NSLock)
+        let storageReturned = DispatchSemaphore(value: 0)
+        let budgetLocked = DispatchSemaphore(value: 0)
+        let unlockBudget = DispatchSemaphore(value: 0)
+        let budgetUnlocked = DispatchSemaphore(value: 0)
+        defer { unlockBudget.signal() }
+        // Hold the budget on its own thread only after the callback has reserved it.
+        // This freezes the exact cleanup boundary, not the host store operation.
+        native.storageCompletion = {
+            DispatchQueue.global().async {
+                budgetLock.lock()
+                budgetLocked.signal()
+                defer { budgetLock.unlock(); budgetUnlocked.signal() }
+                XCTAssertEqual(unlockBudget.wait(timeout: .now() + 10), .success)
+            }
+            XCTAssertEqual(budgetLocked.wait(timeout: .now() + 5), .success)
+            storageReturned.signal()
+        }
+        let scope = IdentityScope(serverOrigin: "https://localhost/", applicationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        native.emit(kind: 10, request: 77, data: try encodeJSON(StorageRequest(operation: .load, scope: scope)))
+        XCTAssertEqual(storageReturned.wait(timeout: .now() + 5), .success)
+        core.requestShutdown()
+        XCTAssertEqual(native.finalEmitted.wait(timeout: .now() + 5), .success)
+        // Native final/state=2 alone must not permit release while cleanup is blocked.
+        XCTAssertEqual(native.releaseCalled.wait(timeout: .now() + 0.2), .timedOut)
+        unlockBudget.signal()
+        XCTAssertEqual(budgetUnlocked.wait(timeout: .now() + 5), .success)
+        try await core.close()
+        XCTAssertEqual(native.released, 1)
+        XCTAssertEqual(budget.usage, [0, 0, 0, 0])
     }
     func testExpiredBufferedReadyAndMessageAreNotDelivered() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)

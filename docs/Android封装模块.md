@@ -74,6 +74,8 @@ flowchart LR
 | verifier Kotlin AAR | 从 Cargo.lock 校验 `rustls-platform-verifier-android` 0.2.0，实际 Maven group 为 `org.rustls` |
 | emulator | 官方 stable 37.2.12；API36 两类镜像 revision7，变化时必须显式复核 |
 
+模拟器使用[官方归档](https://developer.android.com/studio/emulator_archive)的 `emulator-linux_x64-16428233.zip`，SHA256 固定为 `b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1`。CI 校验后解压到本作业独立临时目录，通过 PATH 选择该版本，不覆盖 runner 的 SDK 模拟器；安装镜像不隐式选择最新模拟器。模拟器与镜像元数据在严格版本断言前输出，版本漂移失败关闭。
+
 Gradle wrapper jar 与 distribution 均核对官方 SHA256；`gradle/wrapper/来源.json` 记录官方 commit、JAR 与嵌入 Apache-2.0 原文哈希，`许可证.txt` 保留原文，不把第三方改标为项目 MIT。NDK 不在本地脚本隐式下载；CI 明确安装固定版本。构建包括 Rust 本体、JNI、Kotlin、AAR 和示例 APK，不以单独交叉编译替代实际运行。Gradle 输入同时跟踪 SDK 目录外的已固定 nix 补丁源码，避免本地增量构建复用旧 native archive。
 
 CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单和 SHA256，再安装/运行。模拟器固定使用 4096MiB RAM；启动前只读检查宿主至少有 6144MiB 可用内存，并记录数值，不修改 swap、内核或安全配置。模拟器使用固定独占端口、明确 serial 和 AVD 名称，启动前拒绝碰撞；清理仅针对自己启动的 PID，身份不符不向其他模拟器发送清理命令。优先使用 runner 既有 KVM 权限，必要时仅临时赋予当前 runner 用户 ACL（保留共享 mask，不扩大其他用户有效权限），作业结束恢复原 ACL；工具缺失或权限不足失败关闭，不使用 world-write、持久用户组或桌面设置修改。
