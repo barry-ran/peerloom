@@ -1,3 +1,5 @@
+// 保留旧纯策略 API 的兼容性测试；连续时钟用例在 lease 模块中注入独立时钟。
+#![allow(deprecated)]
 use device_core::{
     lease::{LeaseError, LeaseGuard, ServerClockBound},
     signaling::Envelope,

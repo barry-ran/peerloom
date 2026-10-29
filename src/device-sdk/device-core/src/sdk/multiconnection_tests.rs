@@ -169,6 +169,7 @@ async fn queued_local_description_rechecks_generation_lease_and_reset_gate() {
             .unwrap();
 
         let now = Instant::now();
+        #[allow(deprecated)] // 此测试显式推进 Instant，保留旧纯策略夹具。
         let clock = ServerClockBound::from_hello("2026-10-28T00:00:00Z", now).unwrap();
         let message: Envelope = serde_json::from_value(json!({
             "v":1,"type":"session.updated","id":uuid::Uuid::new_v4().to_string(),

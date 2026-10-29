@@ -119,6 +119,7 @@ struct Gate {
     installation_closed: Arc<AtomicBool>,
     closed: AtomicBool,
     deadline: Mutex<Option<Instant>>,
+    continuous: Mutex<Option<crate::lease::ContinuousGrant>>,
     changed: tokio::sync::Notify,
 }
 impl Gate {
@@ -126,11 +127,27 @@ impl Gate {
         if self.closed.load(Ordering::Acquire) || self.installation_closed.load(Ordering::Acquire) {
             return Err(SdkError::Closed);
         }
-        let deadline = *self.deadline.lock().map_err(|_| SdkError::Closed)?;
+        let continuous = self.continuous.lock().map_err(|_| SdkError::Closed)?;
+        // 先取得两个截止锁，再读取时钟；不把等待截止锁的时间漏出检查。
+        let deadline = self.deadline.lock().map_err(|_| SdkError::Closed)?;
+        if continuous.as_ref().is_some_and(|grant| !grant.is_valid()) {
+            return Err(SdkError::AuthorizationExpired);
+        }
         if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
             return Err(SdkError::AuthorizationExpired);
         }
+        // 时钟读数也可能等待锁；等待期间发生的关闭必须在返回前可见。
+        // 这是检查的线性化边界，不承诺消除返回后任意 check-to-use 竞态。
+        if self.closed.load(Ordering::Acquire) || self.installation_closed.load(Ordering::Acquire) {
+            return Err(SdkError::Closed);
+        }
         Ok(())
+    }
+    fn update_guard(&self, guard: &LeaseGuard) {
+        if let Ok(mut value) = self.continuous.lock() {
+            *value = guard.continuous_grant();
+        }
+        self.update(guard.deadline());
     }
     fn update(&self, deadline: Option<Instant>) {
         if let Ok(mut value) = self.deadline.lock() {
@@ -841,10 +858,7 @@ impl Actor {
                 self.request_authority(&id).await;
                 continue;
             }
-            let expired = session
-                .guard
-                .deadline()
-                .is_some_and(|deadline| now >= deadline);
+            let expired = session.guard.is_expired(now);
             let closed = session.gate.closed.load(Ordering::Acquire) && session.worker.is_none();
             if expired || closed {
                 #[cfg(feature = "test-diagnostics")]
@@ -1409,7 +1423,7 @@ impl Actor {
                 .await;
                 return Ok(());
             }
-            session.gate.update(session.guard.deadline());
+            session.gate.update_guard(&session.guard);
             if message.kind == "sync.snapshot" {
                 session.sync_pending = false;
                 session.sync_requested = false;
@@ -1646,7 +1660,7 @@ impl Actor {
             installation_closed: self.installation_closed.clone(),
             ..Gate::default()
         });
-        session.gate.update(session.guard.deadline());
+        session.gate.update_guard(&session.guard);
         session.ready = false;
         session.recovery_at = Some(Instant::now() + backoff(session.recovery_attempt));
         self.emit(SdkEvent::ConnectionClosed {
@@ -1663,7 +1677,7 @@ impl Actor {
             installation_closed: self.installation_closed.clone(),
             ..Gate::default()
         });
-        session.gate.update(session.guard.deadline());
+        session.gate.update_guard(&session.guard);
         session.ready = false;
         session.recovery_at = None;
         // Old-generation error replies cannot terminate the newly authorized handle.
@@ -2061,6 +2075,38 @@ fn recoverable_transport_error(error: &SdkError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn close_during_continuous_clock_read_is_observed_before_check_returns() {
+        for installation in [false, true] {
+            let (entered, observed) = std::sync::mpsc::sync_channel(1);
+            let resume = Arc::new(std::sync::Barrier::new(2));
+            let reader_resume = resume.clone();
+            let clock = crate::continuous_clock::ContinuousClock::with_reader(move || {
+                entered.send(()).unwrap();
+                reader_resume.wait();
+                Ok(Duration::ZERO)
+            });
+            let gate = Arc::new(Gate {
+                deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
+                continuous: Mutex::new(Some(crate::lease::ContinuousGrant::for_test(
+                    clock,
+                    Duration::from_secs(60),
+                ))),
+                ..Gate::default()
+            });
+            let checking = gate.clone();
+            let worker = std::thread::spawn(move || checking.check());
+            observed.recv_timeout(Duration::from_secs(5)).unwrap();
+            if installation {
+                gate.installation_closed.store(true, Ordering::Release);
+            } else {
+                gate.close();
+            }
+            resume.wait();
+            assert_eq!(worker.join().unwrap(), Err(SdkError::Closed));
+        }
+    }
+
     use super::*;
     #[tokio::test]
     async fn terminal_worker_notification_cancels_with_full_actor_queue() {
@@ -2174,6 +2220,7 @@ mod tests {
                 installation_closed: Arc::new(AtomicBool::new(false)),
                 closed: AtomicBool::new(false),
                 deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
+                continuous: Mutex::new(None),
                 changed: tokio::sync::Notify::new(),
             });
             let (stop, stopped) = oneshot::channel();
@@ -2239,6 +2286,7 @@ mod tests {
             installation_closed: Arc::new(AtomicBool::new(false)),
             closed: AtomicBool::new(false),
             deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
+            continuous: Mutex::new(None),
             changed: tokio::sync::Notify::new(),
         });
         let server_gate = gate.clone();

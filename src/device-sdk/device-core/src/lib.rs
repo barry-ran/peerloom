@@ -1,6 +1,7 @@
 //! SDK 的可独立测试基础规则；尚不提供注册、网络连接或可靠字节流协议。
 //! 队列容量限制的是排队消息数量和有效载荷字节，不代表整个进程内存上限。
 
+mod continuous_clock;
 pub mod identity;
 pub mod lease;
 pub mod outbound;

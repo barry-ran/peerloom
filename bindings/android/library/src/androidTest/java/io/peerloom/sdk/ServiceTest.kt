@@ -297,6 +297,13 @@ class ServiceTest {
                         as ByteStream
                 val remoteStream = next(targetQueue, 12).channel as ByteStream
                 val pendingReverse = stream.read(4093)
+                // A future continuation runs inline before the old read's delivery unwinds.
+                // It must admit the next read, not report BUSY or release the new read's guard.
+                val nextReverse =
+                    pendingReverse.completion.thenApply { payload ->
+                        assertArrayEquals(message, payload)
+                        stream.read(4093)
+                    }
                 assertEquals(
                     message.size,
                     stream.write(message).completion.get(30, TimeUnit.SECONDS),
@@ -317,7 +324,10 @@ class ServiceTest {
                     message.size,
                     remoteStream.write(message).completion.get(30, TimeUnit.SECONDS),
                 )
-                assertArrayEquals(message, stream.read(4093).completion.get(30, TimeUnit.SECONDS))
+                assertArrayEquals(
+                    message,
+                    nextReverse.get(30, TimeUnit.SECONDS).completion.get(30, TimeUnit.SECONDS),
+                )
                 await(remoteStream.finishWrite())
                 assertEquals(0, stream.read(4093).completion.get(30, TimeUnit.SECONDS).size)
                 await(typed.close())

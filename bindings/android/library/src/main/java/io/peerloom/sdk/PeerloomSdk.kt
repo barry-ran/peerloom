@@ -354,6 +354,9 @@ private constructor(
         operation.completion.whenComplete { completion, error ->
             try {
                 applicationExecutor.execute {
+                    // The native read is finished. Permit a continuation to start the next read,
+                    // but retain this result's reservation and close barrier until delivery ends.
+                    synchronized(operationLock) { readingChannels.remove(channel) }
                     try {
                         if (error != null) throw error
                         if (completion.status != 0) throw PeerloomException(completion.status)
@@ -363,13 +366,14 @@ private constructor(
                         completion?.payload?.fill(0)
                         result.completeExceptionally(failure)
                     } finally {
-                        releaseRead(operation.requestId, channel)
+                        releaseRead(operation.requestId)
                         finishReleaseIfDrained()
                     }
                 }
             } catch (failure: RejectedExecutionException) {
                 completion?.payload?.fill(0)
-                releaseRead(operation.requestId, channel)
+                synchronized(operationLock) { readingChannels.remove(channel) }
+                releaseRead(operation.requestId)
                 result.completeExceptionally(failure)
                 close()
                 finishReleaseIfDrained()
@@ -391,11 +395,8 @@ private constructor(
         )
     }
 
-    private fun releaseRead(request: Long, channel: Long) {
-        synchronized(operationLock) {
-            operationReservations.remove(request)?.close()
-            readingChannels.remove(channel)
-        }
+    private fun releaseRead(request: Long) {
+        synchronized(operationLock) { operationReservations.remove(request)?.close() }
         hostReads.decrementAndGet()
     }
 

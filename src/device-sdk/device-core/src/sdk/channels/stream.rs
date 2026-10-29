@@ -408,4 +408,74 @@ mod tests {
         assert_eq!(budget.usage(), (0, 0));
         assert!(first.await.is_err());
     }
+    #[tokio::test]
+    async fn continuous_suspend_blocks_buffered_stream_bytes_and_writes() {
+        let (mut stream, worker, _budget, parent) = fixture();
+        let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let reading = ticks.clone();
+        test_continuous_grant(&parent, move || {
+            Ok(Duration::from_secs(reading.load(Ordering::SeqCst)))
+        });
+        worker.received.try_send(b"old".to_vec()).unwrap();
+        let mut output = [0; 1];
+        assert_eq!(stream.read(&mut output).await, Ok(1));
+        assert_eq!(output, [b'o']);
+        // The remaining bytes are already in the reader's private pending buffer.
+        ticks.store(120, Ordering::SeqCst);
+        assert!(Instant::now() < parent.deadline.lock().unwrap().unwrap());
+        assert!(!stream.validity().is_valid());
+        output = [0x55];
+        assert_eq!(
+            stream.read(&mut output).await,
+            Err(SdkError::AuthorizationExpired)
+        );
+        assert_eq!(output, [0x55]);
+        assert_eq!(
+            stream.write(b"new").await,
+            Err(SdkError::AuthorizationExpired)
+        );
+        assert_eq!(
+            stream.shutdown_write().await,
+            Err(SdkError::AuthorizationExpired)
+        );
+    }
+
+    #[tokio::test]
+    async fn continuous_expiry_is_rechecked_after_select_dequeues_stream_chunk() {
+        let (mut stream, worker, _budget, parent) = fixture();
+        worker.received.try_send(b"old".to_vec()).unwrap();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        test_continuous_grant(&parent, move || {
+            let read = reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Duration::from_secs(if read < 2 { 0 } else { 120 }))
+        });
+        let mut output = [0x55; 3];
+        assert_eq!(
+            stream.read(&mut output).await,
+            Err(SdkError::AuthorizationExpired)
+        );
+        assert_eq!(output, [0x55; 3]);
+        assert!(stream.reader.received.is_empty());
+        assert!(Instant::now() < parent.deadline.lock().unwrap().unwrap());
+    }
+
+    #[tokio::test]
+    async fn continuous_suspend_invalidates_pending_stream_write_without_timer_expiry() {
+        let (stream, worker, budget, parent) = fixture();
+        let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let reading = ticks.clone();
+        test_continuous_grant(&parent, move || {
+            Ok(Duration::from_secs(reading.load(Ordering::SeqCst)))
+        });
+        let writing = stream.write(b"queued");
+        pin_mut!(writing);
+        assert!(poll!(&mut writing).is_pending());
+        ticks.store(120, Ordering::SeqCst);
+        assert!(!stream.validity().is_valid());
+        assert_eq!(writing.await, Err(SdkError::Closed));
+        // An uncertain write retains its charge until the worker is destroyed.
+        assert_eq!(budget.usage(), (6, 1));
+        drop(worker);
+        assert_eq!(budget.usage(), (0, 0));
+    }
 }
