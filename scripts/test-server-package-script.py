@@ -154,8 +154,10 @@ class ControllerTests(unittest.TestCase):
             calls.append(args)
             if 'config' in args:
                 package = str(Path(args[args.index('-f') + 1]).parent.parent)
+                # Real Compose config omits services assigned to inactive profiles.
+                names = ('device-server', 'migrate') if '--profile' in args and args[args.index('--profile') + 1] == 'tools' else ('device-server',)
                 return json.dumps({'services': {n: {'build': {'context': package}}
-                                                for n in ('device-server', 'migrate')}}).encode()
+                                                for n in names}}).encode()
             if args[:3] == ['docker', 'run', '--rm']:
                 probe_name = args[args.index('--name') + 1]
                 os.kill(os.getpid(), signal.SIGTERM)
@@ -183,6 +185,8 @@ class ControllerTests(unittest.TestCase):
                 with patch.object(m, 'invoke', run), self.assertRaises(m.Failure):
                     m.execute(payload, client)
             self.assertIn(['docker', 'container', 'rm', '-f', probe_name], calls)
+            rendered = next(c for c in calls if 'config' in c)
+            self.assertEqual(rendered[rendered.index('--profile') + 1], 'tools')
             self.assertTrue(any('down' in c and '--volumes' in c for c in calls))
             self.assertTrue(any(c[:3] == ['docker', 'image', 'rm'] for c in calls))
         finally:

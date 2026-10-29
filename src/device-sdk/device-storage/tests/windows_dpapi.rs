@@ -4,19 +4,12 @@ use device_storage::{
     IdentityScope, IdentityStore, SecretString, StorageError, StoredIdentity, WindowsDpapiStore,
 };
 use std::{path::PathBuf, process::Command, time::Duration};
+#[path = "support/fixture_directory.rs"]
+mod fixture_directory;
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let suffix = format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        let path = std::env::temp_dir().join(format!("peerloom-dpapi-{suffix}"));
-        std::fs::create_dir(&path).unwrap();
+        let path = fixture_directory::new_directory().unwrap();
         Self(path)
     }
     fn path(&self) -> PathBuf {

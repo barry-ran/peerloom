@@ -226,7 +226,9 @@ def execute(payload, client=None):
                 command += ['--entrypoint', entrypoint]
             return run(command + [service] + arguments, data=data, capture=capture)
         try:
-            rendered = run(compose + ['config', '--format', 'json'], capture=True)
+            # Include the tools-profile migrate service for the two-context security assertion.
+            # Normal up still names only runtime services; this flag affects config inspection only.
+            rendered = run(compose + ['--profile', 'tools', 'config', '--format', 'json'], capture=True)
             client.validate_rendered(rendered)
             config = json.loads(rendered)
             for name in ('device-server', 'migrate'):

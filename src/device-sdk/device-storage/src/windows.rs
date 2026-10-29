@@ -242,6 +242,10 @@ fn decode(bytes: &[u8], hash: &str) -> Result<Snapshot, StorageError> {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/fixture_directory.rs"]
+mod test_fixture_directory;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn scope() -> IdentityScope {
@@ -275,15 +279,7 @@ mod tests {
     }
     #[test]
     fn committed_replace_before_journal_clear_crash_stays_fail_closed() {
-        let root = std::env::temp_dir().join(format!(
-            "peerloom-crash-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = test_fixture_directory::new_directory().unwrap();
         let path = root.join("private");
         let hash = scope_hash(&scope()).unwrap();
         transaction(
