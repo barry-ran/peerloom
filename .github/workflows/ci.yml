@@ -162,7 +162,9 @@ jobs:
       - name: 安装固定 Rust 工具链
         run: rustup toolchain install 1.99.1 --profile minimal
       - name: 容量运行器安全回归
-        run: python3 scripts/test-capacity-ci.py
+        run: |
+          python3 scripts/test-capacity-ci.py
+          python3 scripts/test-exclusive-controller.py
       - name: 准备隔离固定依赖缓存
         id: capacity-cache
         run: |
@@ -172,7 +174,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/peerloom-capacity-deps
           key: ${{ steps.capacity-cache.outputs.key }}
-      - name: 真实 500 SDK 同时连接、续租、消息与资源回收
+      - name: 真实 500 SDK 容量与独占会话接管
         run: |
           python3 scripts/run-capacity-ci.py \
             --cache "$RUNNER_TEMP/peerloom-capacity-deps" \
@@ -188,3 +190,4 @@ jobs:
             ${{ runner.temp }}/peerloom-capacity-evidence/dependency-provenance.json
             ${{ runner.temp }}/peerloom-capacity-evidence/capacity-result.json
             ${{ runner.temp }}/peerloom-capacity-evidence/resource-samples.json
+            ${{ runner.temp }}/peerloom-capacity-evidence/exclusive-result.json

@@ -23,11 +23,13 @@ public final class PeerloomChannel: @unchecked Sendable {
     public let handle: UInt64
     public let mode: PeerloomChannelMode
     public let label: String
+    public let targetEpoch: String?
     init(core: NativeCore, connection: UInt64, handle: UInt64, metadata: Data) throws {
         struct Metadata: Decodable { let mode: PeerloomChannelMode; let label: String }
         let value = try JSONDecoder().decode(Metadata.self, from: metadata)
         self.core = core; self.connection = connection; self.handle = handle
         self.mode = value.mode; self.label = value.label
+        self.targetEpoch = try decodeTargetEpoch(metadata)
     }
     public var isValid: Bool { core.channelIsValid(connection: connection, channel: handle) }
     /// Local send/drop disposition, never peer business receipt.

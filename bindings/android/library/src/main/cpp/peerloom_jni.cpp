@@ -385,3 +385,7 @@ extern "C" JNIEXPORT jint JNICALL Java_io_peerloom_sdk_Native_liveClients(JNIEnv
     return static_cast<jint>(std::min(clients.size(),
         static_cast<size_t>(std::numeric_limits<jint>::max())));
 }
+
+extern "C" JNIEXPORT jlong JNICALL Java_io_peerloom_sdk_Native_capabilities(JNIEnv *, jclass) {
+    return static_cast<jlong>(dp_capabilities());
+}

@@ -58,6 +58,7 @@ type KeyResult struct {
 }
 
 type ApplicationInput struct {
+	ExclusiveTarget       bool   `json:"exclusive_target"`
 	Name                  string `json:"name"`
 	RegistrationMode      string `json:"registration_mode,omitempty"`
 	RequireTargetApproval bool   `json:"require_target_approval"`
@@ -65,6 +66,7 @@ type ApplicationInput struct {
 }
 
 type Application struct {
+	ExclusiveTarget       bool      `json:"exclusive_target"`
 	ID                    string    `json:"id"`
 	TenantID              string    `json:"tenant_id"`
 	Name                  string    `json:"name"`

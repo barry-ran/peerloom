@@ -1,3 +1,15 @@
+/// 独占epoch跨JSON边界使用规范十进制字符串；不与协商代次混同。
+pub fn parse_target_epoch(value: &str) -> Option<u64> {
+    if value.is_empty()
+        || value.len() > 19
+        || value.starts_with('0')
+        || !value.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    value.parse::<u64>().ok().filter(|n| *n <= i64::MAX as u64)
+}
+
 /// Largest negotiation generation exactly representable by all JSON clients.
 pub const MAX_NEGOTIATION_GENERATION: u64 = 9_007_199_254_740_991;
 

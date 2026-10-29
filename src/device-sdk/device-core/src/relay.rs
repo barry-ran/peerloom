@@ -26,6 +26,8 @@ struct WireServer {
 struct WireResponse {
     session_id: String,
     negotiation_generation: u64,
+    #[serde(default)]
+    target_epoch: Option<String>,
     ice_servers: Vec<WireServer>,
 }
 
@@ -59,15 +61,26 @@ fn parse(
     parse_generation(data, session_id, 1, now)
 }
 
+#[cfg(test)]
 fn parse_generation(
     data: &[u8],
     session_id: &str,
     generation: u64,
     now: OffsetDateTime,
 ) -> Result<ManagedIceServers, IdentityError> {
+    parse_generation_epoch(data, session_id, generation, now, None)
+}
+fn parse_generation_epoch(
+    data: &[u8],
+    session_id: &str,
+    generation: u64,
+    now: OffsetDateTime,
+    epoch: Option<u64>,
+) -> Result<ManagedIceServers, IdentityError> {
     let wire: WireResponse =
         serde_json::from_slice(data).map_err(|_| IdentityError::InvalidResponse)?;
-    if wire.session_id != session_id
+    if wire.target_epoch.as_deref() != epoch.map(|value| value.to_string()).as_deref()
+        || wire.session_id != session_id
         || wire.negotiation_generation != generation
         || !(1..=MAX_NEGOTIATION_GENERATION).contains(&generation)
         || wire.ice_servers.len() > 4
@@ -170,6 +183,16 @@ impl IdentityClient {
         credential: &SecretString,
         generation: u64,
     ) -> Result<ManagedIceServers, IdentityError> {
+        self.session_ice_servers_generation_epoch(session_id, credential, generation, None)
+            .await
+    }
+    pub(crate) async fn session_ice_servers_generation_epoch(
+        &self,
+        session_id: &str,
+        credential: &SecretString,
+        generation: u64,
+        epoch: Option<u64>,
+    ) -> Result<ManagedIceServers, IdentityError> {
         if !(1..=MAX_NEGOTIATION_GENERATION).contains(&generation) {
             return Err(IdentityError::InvalidRequest);
         }
@@ -185,16 +208,23 @@ impl IdentityClient {
         let id = uuid::Uuid::parse_str(session_id).map_err(|_| IdentityError::InvalidRequest)?;
         let session_id = id.to_string();
         let bytes = self
-            .request(
+            .request_epoch(
                 Method::GET,
                 &format!("/v1/device-sessions/{session_id}/ice-servers"),
                 Some(credential),
                 None,
                 None,
                 200,
+                epoch,
             )
             .await?;
-        parse_generation(&bytes, &session_id, generation, OffsetDateTime::now_utc())
+        parse_generation_epoch(
+            &bytes,
+            &session_id,
+            generation,
+            OffsetDateTime::now_utc(),
+            epoch,
+        )
     }
 }
 
@@ -212,6 +242,21 @@ mod tests {
             "credential":"abcdefghijklmnopqrstuvwxyza=",
             "expires_at":expiry.format(&Rfc3339).unwrap()
         }]})
+    }
+    #[test]
+    fn exclusive_ice_response_is_bound_to_exact_epoch() {
+        let now = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
+        let mut value = response(now);
+        value["target_epoch"] = json!("9223372036854775807");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(parse_generation_epoch(&bytes, ID, 1, now, Some(i64::MAX as u64)).is_ok());
+        assert!(parse_generation_epoch(&bytes, ID, 1, now, None).is_err());
+        assert!(parse_generation_epoch(&bytes, ID, 1, now, Some(1)).is_err());
+        value.as_object_mut().unwrap().remove("target_epoch");
+        assert!(
+            parse_generation_epoch(&serde_json::to_vec(&value).unwrap(), ID, 1, now, Some(1))
+                .is_err()
+        );
     }
     #[test]
     fn managed_configuration_is_bounded_and_session_scoped() {

@@ -164,7 +164,10 @@ fn mode(channel: &SdkChannel) -> ChannelKind {
         _ => ChannelKind::ReliableMessage,
     }
 }
-fn channel_info(channel: &SdkChannel) -> (device_core::sdk::ChannelValidity, Vec<u8>) {
+fn channel_info(
+    channel: &SdkChannel,
+    epoch: Option<u64>,
+) -> (device_core::sdk::ChannelValidity, Vec<u8>) {
     let (validity, label, session, generation, mode) = match channel {
         SdkChannel::Message(value) => (
             value.validity(),
@@ -181,18 +184,17 @@ fn channel_info(channel: &SdkChannel) -> (device_core::sdk::ChannelValidity, Vec
             ChannelMode::ReliableStream,
         ),
     };
-    (
-        validity,
-        json!({"label":label,"mode":mode_name(mode),"session_id":session,"generation":generation})
-            .to_string()
-            .into_bytes(),
-    )
+    let mut metadata =
+        json!({"label":label,"mode":mode_name(mode),"session_id":session,"generation":generation});
+    exclusive_metadata(&mut metadata, epoch);
+    (validity, metadata.to_string().into_bytes())
 }
 fn spawn_channel(
     instance: Arc<Instance>,
     parent: u64,
     channel: SdkChannel,
     ttl: Option<Duration>,
+    epoch: Option<u64>,
 ) -> Result<(u64, Gate, Vec<u8>, Task), u32> {
     let kind = mode(&channel);
     let closed = instance.reserve_lifecycle(if kind == ChannelKind::ReliableStream {
@@ -200,7 +202,7 @@ fn spawn_channel(
     } else {
         0
     })?;
-    let (validity, payload) = channel_info(&channel);
+    let (validity, payload) = channel_info(&channel, epoch);
     let (id, gate) = {
         let mut handles = instance.handles.lock().map_err(|_| INTERNAL)?;
         let id = handles
@@ -546,6 +548,7 @@ pub fn spawn_connection(
     gate: Gate,
     mut connection: Connection,
 ) -> Result<Task, u32> {
+    let epoch = connection.target_epoch();
     let closed = instance.reserve_lifecycle(1)?;
     let mut incoming = connection.take_incoming_channels().map_err(error)?;
     let default_sender = connection.default_sender();
@@ -599,7 +602,7 @@ pub fn spawn_connection(
                                 } else {
                                     SdkChannel::Message(connection.open_message(&request.label, request.mode, queue).await.map_err(error)?)
                                 };
-                                spawn_channel(instance.clone(), id, channel, Some(queue.ttl))
+                                spawn_channel(instance.clone(), id, channel, Some(queue.ttl), epoch)
                             }.await;
                             match result {
                                 Ok((channel, validity, payload, task)) => { children.insert(channel, task); guard.opened(channel, payload, validity); },
@@ -618,7 +621,7 @@ pub fn spawn_connection(
                     Err(_) => break,
                 },
                 received = incoming.receive() => match received {
-                    Ok(channel) => match spawn_channel(instance.clone(), id, channel, None) {
+                    Ok(channel) => match spawn_channel(instance.clone(), id, channel, None, epoch) {
                         Ok((channel, validity, payload, task)) => {
                             children.insert(channel, task);
                             let mut event = Event::new(12, 0, id, OK, payload);
@@ -690,8 +693,28 @@ fn read_overflow<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Overflow
     }
 }
 
+/// Read-only authority metadata; omitted entirely for legacy non-exclusive sessions.
+pub(crate) fn exclusive_metadata(value: &mut serde_json::Value, epoch: Option<u64>) {
+    if let Some(epoch) = epoch {
+        value["exclusive_target"] = json!(true);
+        value["exclusive_protocol_version"] = json!(1);
+        value["target_epoch"] = json!(epoch.to_string());
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exclusive_metadata_is_versioned_and_absent_for_legacy_sessions() {
+        let mut legacy = serde_json::json!({"generation": 1});
+        super::exclusive_metadata(&mut legacy, None);
+        assert_eq!(legacy, serde_json::json!({"generation": 1}));
+        super::exclusive_metadata(&mut legacy, Some(i64::MAX as u64));
+        assert_eq!(legacy["exclusive_target"], true);
+        assert_eq!(legacy["exclusive_protocol_version"], 1);
+        assert_eq!(legacy["target_epoch"], "9223372036854775807");
+    }
+
     use super::*;
     #[test]
     fn wire_modes_are_strict_and_stream_rejects_message_drop_options() {

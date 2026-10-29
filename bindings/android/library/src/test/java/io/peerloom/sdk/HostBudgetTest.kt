@@ -1,7 +1,9 @@
 package io.peerloom.sdk
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HostBudgetTest {
@@ -111,5 +113,18 @@ class HostBudgetTest {
         assertEquals(65L, budget.usage()[1])
         closes.forEach { it.close() }
         assertEquals(listOf(0L, 0L, 0L, 0L), budget.usage())
+    }
+
+    @Test
+    fun exclusiveEpochAndCapabilityAreStrictWithoutChangingBudgetPolicy() {
+        for (value in listOf("1", "9223372036854775807")) assertTrue(canonicalTargetEpoch(value))
+        for (value in listOf("", "0", "01", "+1", "-1", "1.0", "9223372036854775808")) assertFalse(
+            canonicalTargetEpoch(value)
+        )
+        assertEquals(
+            7,
+            assertThrows(PeerloomException::class.java) { requireExclusiveCapability(255) }.status,
+        )
+        requireExclusiveCapability(511)
     }
 }

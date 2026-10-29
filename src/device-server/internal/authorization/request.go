@@ -55,6 +55,16 @@ func (s *Service) Request(ctx context.Context, actor identity.Device, targetID, 
 	if err = validatePeers(from, to, true); err != nil {
 		return Session{}, err
 	}
+	if to.exclusive {
+		return Session{}, failure("EXCLUSIVE_PREPARE_REQUIRED", 409)
+	}
+	var occupied bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM exclusive_targets WHERE tenant_id=$1 AND target_device_id=$2 AND session_id IS NOT NULL AND NOT target_fenced AND release_not_before>clock_timestamp())`, actor.TenantID, targetID).Scan(&occupied); err != nil {
+		return Session{}, databaseError(err)
+	}
+	if occupied {
+		return Session{}, failure("TARGET_OCCUPIED", 409)
+	}
 	online, err := s.presence.Online(ctx, actor.TenantID, targetID)
 	if err != nil {
 		return Session{}, failure("PRESENCE_UNAVAILABLE", 503)

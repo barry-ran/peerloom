@@ -36,7 +36,7 @@ SERVER_DEPLOY = frozenset('deploy/' + name for name in (
 SERVER_SQL = frozenset('infra/migrations/' + name + '.' + direction + '.sql'
                       for name in ('000001_initial', '000002_identity_replay', '000003_session_authorization',
                                    '000004_tenant_management', '000005_managed_relay', '000006_browser_administration',
-                                   '000007_direct_registration', '000008_session_recovery', '000009_webhook_delivery', '000010_optional_capacity')
+                                   '000007_direct_registration', '000008_session_recovery', '000009_webhook_delivery', '000010_optional_capacity', '000011_exclusive_sessions')
                       for direction in ('up', 'down'))
 SERVER_DOCS = frozenset(('docs/部署指南.md', 'deploy/README.md'))
 SERVER_BINARIES = frozenset('bin/' + name for name in SERVER_COMMANDS)

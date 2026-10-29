@@ -33,13 +33,13 @@ func normalizeApplication(input ApplicationInput) (ApplicationInput, error) {
 	return input, nil
 }
 
-const applicationColumns = "id::text,tenant_id::text,name,registration_mode,require_target_approval,max_connections,enabled,created_at"
+const applicationColumns = "id::text,tenant_id::text,name,registration_mode,require_target_approval,max_connections,enabled,created_at,exclusive_target"
 
 type scanner interface{ Scan(...any) error }
 
 func scanApplication(row scanner) (Application, error) {
 	var result Application
-	err := row.Scan(&result.ID, &result.TenantID, &result.Name, &result.RegistrationMode, &result.RequireTargetApproval, &result.MaxConnections, &result.Enabled, &result.CreatedAt)
+	err := row.Scan(&result.ID, &result.TenantID, &result.Name, &result.RegistrationMode, &result.RequireTargetApproval, &result.MaxConnections, &result.Enabled, &result.CreatedAt, &result.ExclusiveTarget)
 	return result, err
 }
 
@@ -61,8 +61,8 @@ func (s *Service) CreateApplication(ctx context.Context, p Principal, input Appl
 	if found {
 		return result, nil
 	}
-	result, err = scanApplication(tx.QueryRow(ctx, `INSERT INTO applications(tenant_id,name,registration_mode,require_target_approval,max_connections)
-VALUES($1,$2,$3,$4,$5) RETURNING `+applicationColumns, p.tenantID, input.Name, input.RegistrationMode, input.RequireTargetApproval, *input.MaxConnections))
+	result, err = scanApplication(tx.QueryRow(ctx, `INSERT INTO applications(tenant_id,name,registration_mode,require_target_approval,max_connections,exclusive_target)
+VALUES($1,$2,$3,$4,$5,$6) RETURNING `+applicationColumns, p.tenantID, input.Name, input.RegistrationMode, input.RequireTargetApproval, *input.MaxConnections, input.ExclusiveTarget))
 	if err != nil {
 		return Application{}, fail("DATABASE_UNAVAILABLE", 503)
 	}

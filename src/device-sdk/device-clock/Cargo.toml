@@ -1,0 +1,16 @@
+[package]
+name = "device-clock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+[lints.clippy]
+all = "warn"
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"

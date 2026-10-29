@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/barry-ran/peerloom/src/device-server/internal/authorization"
 	"github.com/barry-ran/peerloom/src/device-server/internal/identity"
 	"github.com/barry-ran/peerloom/src/device-server/internal/presence"
 	"github.com/coder/websocket"
@@ -267,6 +268,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		actionCtx, actionCancel := context.WithTimeout(ctx, 5*time.Second)
+		actionCtx = authorization.WithExclusiveFenceCheck(actionCtx, func(check context.Context) error {
+			if err := s.presence.Renew(check, device.TenantID, device.ID, lease); err != nil {
+				if errors.Is(err, presence.ErrFenced) {
+					return &authorization.Error{Code: "EXCLUSIVE_FENCE_STALE", Status: 409}
+				}
+				return &authorization.Error{Code: "PRESENCE_UNAVAILABLE", Status: 503}
+			}
+			return nil
+		})
 		deliveries, actionErr := s.dispatch(context.WithValue(actionCtx, bearerContextKey{}, token), current, e)
 		actionCancel()
 

@@ -2213,6 +2213,18 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "X-Peerloom-Target-Epoch",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "maxLength": 19,
+              "description": "规范十进制 epoch，运行时额外强制不大于 9223372036854775807；不能当 JSON number。"
+            },
+            "description": "exclusive会话必须单值且匹配当前epoch，非exclusive省略；服务端在签发事务中检查。"
           }
         ],
         "responses": {
@@ -4866,6 +4878,84 @@
         ],
         "x-required-admin-scope": "admin"
       }
+    },
+    "/v1/exclusive-sessions/prepare": {
+      "post": {
+        "summary": "原子准备同租户目标独占会话",
+        "tags": [
+          "租户管理"
+        ],
+        "security": [
+          {
+            "TenantServiceCredential": []
+          }
+        ],
+        "x-required-service-scope": "admin",
+        "description": "仅 admin 租户服务凭证。原子创建方向 grant、prepared session 和递增 epoch；30 秒建立窗口。相同 principal/key/参数返回同一 session 的当前状态（包括终态），异参409。非秘密幂等摘要暂无自动GC，至少保留24小时；不能复用旧key。source关闭不提前释放，目标原accept运行时的fence ACK或最大发行双端截止+2秒后释放。",
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExclusiveSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ManagementError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ManagementError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "同 principal 下参数指纹绑定原 session，不使用普通管理接口的10分钟响应密文缓存。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExclusivePrepareInput"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5137,6 +5227,11 @@
             "maximum": 2147483647,
             "default": -1,
             "description": "-1 表示不限；0 明确禁止新连接；正整数为并发上限。设备 null 继承应用策略。"
+          },
+          "exclusive_target": {
+            "type": "boolean",
+            "default": false,
+            "description": "目标独占，默认关闭。启用前拒绝仍可能有效的旧非独占会话。关闭该设置也不绕过已有独占占用。"
           }
         },
         "required": [
@@ -5206,6 +5301,11 @@
               }
             ],
             "description": "非null时明确切换；null与其他可空属性一样不修改，不能单独构成有效PATCH。切回grant会拒绝direct旧回执读取。"
+          },
+          "exclusive_target": {
+            "type": "boolean",
+            "default": false,
+            "description": "目标独占，默认关闭。启用前拒绝仍可能有效的旧非独占会话。关闭该设置也不绕过已有独占占用。"
           }
         },
         "required": [],
@@ -5313,6 +5413,11 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "exclusive_target": {
+            "type": "boolean",
+            "default": false,
+            "description": "目标独占，默认关闭。启用前拒绝仍可能有效的旧非独占会话。关闭该设置也不绕过已有独占占用。"
           }
         },
         "required": [
@@ -5786,6 +5891,42 @@
           "lease_generation": {
             "type": "integer",
             "minimum": 0
+          },
+          "exclusive_target": {
+            "const": true
+          },
+          "exclusive_protocol_version": {
+            "const": 1
+          },
+          "target_epoch": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "maxLength": 19,
+            "description": "规范十进制 epoch，运行时额外强制不大于 9223372036854775807；不能当 JSON number。"
+          },
+          "prepared": {
+            "type": "boolean"
+          },
+          "connect_deadline": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "exclusive_release_state": {
+            "enum": [
+              "held",
+              "closing",
+              "released"
+            ]
+          },
+          "release_not_before": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fence_required": {
+            "type": "boolean"
+          },
+          "target_fenced": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -5799,6 +5940,28 @@
           "target_lease_expires_at",
           "created_at",
           "lease_generation"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "exclusive_target"
+              ]
+            },
+            "then": {
+              "required": [
+                "exclusive_target",
+                "exclusive_protocol_version",
+                "target_epoch",
+                "prepared",
+                "connect_deadline",
+                "exclusive_release_state",
+                "release_not_before",
+                "fence_required",
+                "target_fenced"
+              ]
+            }
+          }
         ]
       },
       "ManagementClosedSession": {
@@ -5861,6 +6024,42 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
+          },
+          "exclusive_target": {
+            "const": true
+          },
+          "exclusive_protocol_version": {
+            "const": 1
+          },
+          "target_epoch": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "maxLength": 19,
+            "description": "规范十进制 epoch，运行时额外强制不大于 9223372036854775807；不能当 JSON number。"
+          },
+          "prepared": {
+            "type": "boolean"
+          },
+          "connect_deadline": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "exclusive_release_state": {
+            "enum": [
+              "held",
+              "closing",
+              "released"
+            ]
+          },
+          "release_not_before": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fence_required": {
+            "type": "boolean"
+          },
+          "target_fenced": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -5878,6 +6077,28 @@
           "target_connected",
           "source_offer_seen",
           "target_answer_seen"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "exclusive_target"
+              ]
+            },
+            "then": {
+              "required": [
+                "exclusive_target",
+                "exclusive_protocol_version",
+                "target_epoch",
+                "prepared",
+                "connect_deadline",
+                "exclusive_release_state",
+                "release_not_before",
+                "fence_required",
+                "target_fenced"
+              ]
+            }
+          }
         ]
       },
       "ManagementRevocation": {
@@ -6318,6 +6539,12 @@
             "items": {
               "$ref": "#/components/schemas/SessionICEServer"
             }
+          },
+          "target_epoch": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "maxLength": 19,
+            "description": "规范十进制 epoch，运行时额外强制不大于 9223372036854775807；不能当 JSON number。"
           }
         }
       },
@@ -6522,6 +6749,182 @@
             "items": {
               "$ref": "#/components/schemas/ManagementWebhookEndpoint"
             }
+          }
+        }
+      },
+      "ExclusiveSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "source_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "target_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "authorizing",
+              "connecting",
+              "connected",
+              "reconnecting",
+              "closed"
+            ]
+          },
+          "close_reason": {
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source_lease_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "target_lease_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lease_generation": {
+            "type": "integer"
+          },
+          "source_connected": {
+            "type": "boolean"
+          },
+          "target_connected": {
+            "type": "boolean"
+          },
+          "source_offer_seen": {
+            "type": "boolean"
+          },
+          "target_answer_seen": {
+            "type": "boolean"
+          },
+          "negotiation_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "exclusive_target": {
+            "const": true
+          },
+          "exclusive_protocol_version": {
+            "const": 1
+          },
+          "target_epoch": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "maxLength": 19,
+            "description": "规范十进制 epoch，运行时额外强制不大于 9223372036854775807；不能当 JSON number。"
+          },
+          "prepared": {
+            "type": "boolean"
+          },
+          "connect_deadline": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "exclusive_release_state": {
+            "enum": [
+              "held",
+              "closing",
+              "released"
+            ]
+          },
+          "release_not_before": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fence_required": {
+            "type": "boolean"
+          },
+          "target_fenced": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "tenant_id",
+          "source_device_id",
+          "target_device_id",
+          "grant_id",
+          "state",
+          "lease_expires_at",
+          "source_lease_expires_at",
+          "target_lease_expires_at",
+          "lease_generation",
+          "source_connected",
+          "target_connected",
+          "source_offer_seen",
+          "target_answer_seen",
+          "exclusive_target",
+          "exclusive_protocol_version",
+          "target_epoch",
+          "prepared",
+          "connect_deadline",
+          "exclusive_release_state",
+          "release_not_before",
+          "fence_required",
+          "target_fenced"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "exclusive_target"
+              ]
+            },
+            "then": {
+              "required": [
+                "exclusive_target",
+                "exclusive_protocol_version",
+                "target_epoch",
+                "prepared",
+                "connect_deadline",
+                "exclusive_release_state",
+                "release_not_before",
+                "fence_required",
+                "target_fenced"
+              ]
+            }
+          }
+        ]
+      },
+      "ExclusivePrepareInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_device_id",
+          "target_device_id",
+          "expires_in_seconds"
+        ],
+        "properties": {
+          "source_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "target_device_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2592000
           }
         }
       }

@@ -49,6 +49,8 @@ pub struct Envelope {
     pub fencing_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negotiation_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_epoch: Option<String>,
     pub seq: u64,
     pub sent_at: String,
     pub payload: Value,
@@ -74,6 +76,7 @@ impl Envelope {
             connection_generation: None,
             fencing_token: None,
             negotiation_generation: None,
+            target_epoch: None,
             seq: 0,
             sent_at: timestamp()?,
             payload,
@@ -102,6 +105,10 @@ impl Envelope {
             || self
                 .negotiation_generation
                 .is_some_and(|g| g == 0 || g > MAX_SEQ)
+            || self
+                .target_epoch
+                .as_deref()
+                .is_some_and(|value| device_protocol::parse_target_epoch(value).is_none())
             || self
                 .fencing_token
                 .as_ref()
@@ -183,6 +190,8 @@ impl SignalClient {
             }
             _ => SignalError::Transport,
         })?;
+        let continuous_clock = device_clock::ContinuousClock::system();
+        let continuous_started = continuous_clock.now().ok();
         let hello_started = std::time::Instant::now();
         let hello = Envelope::new("hello", json!({}))?;
         write(&mut socket, &hello).await?;
@@ -198,7 +207,8 @@ impl SignalClient {
             return Err(SignalError::InvalidMessage);
         }
         let clock = crate::lease::ServerClockBound::from_hello(&ack.sent_at, hello_started)
-            .map_err(|_| SignalError::InvalidMessage)?;
+            .map_err(|_| SignalError::InvalidMessage)?
+            .with_continuous(continuous_clock, continuous_started);
         let heartbeat = ack
             .payload
             .get("heartbeat_interval_seconds")
@@ -257,6 +267,17 @@ impl SignalClient {
         payload: Value,
         generation: u64,
     ) -> Result<String, SignalError> {
+        self.send_generation_epoch(kind, session_id, payload, generation, None)
+            .await
+    }
+    pub(crate) async fn send_generation_epoch(
+        &self,
+        kind: &str,
+        session_id: Option<&str>,
+        payload: Value,
+        generation: u64,
+        epoch: Option<u64>,
+    ) -> Result<String, SignalError> {
         if !(1..=MAX_SEQ).contains(&generation) {
             return Err(SignalError::InvalidMessage);
         }
@@ -271,12 +292,15 @@ impl SignalClient {
                 | "session.reconnecting"
                 | "session.renew"
                 | "session.terminate"
+                | "session.connect_prepared"
+                | "session.fence_ack"
                 | "sync.request"
         ) {
             return Err(SignalError::InvalidMessage);
         }
         let mut envelope = Envelope::new(kind, payload)?;
         envelope.session_id = session_id.map(str::to_owned);
+        envelope.target_epoch = epoch.map(|value| value.to_string());
         if session_id.is_some() {
             envelope.negotiation_generation = Some(generation);
         }

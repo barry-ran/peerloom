@@ -200,11 +200,59 @@ class CapacityCI(unittest.TestCase):
         self.assertNotIn('ulimit ',workflow)
         upload=workflow.split('path: |',1)[1]
         self.assertNotIn('*',upload)
-        self.assertEqual(len([x for x in upload.splitlines() if x.strip()]),4)
+        self.assertEqual(len([x for x in upload.splitlines() if x.strip()]),5)
+        self.assertIn('exclusive-result.json', upload)
         source=(HERE/'run-capacity-ci.py').read_text(encoding='utf-8')
         self.assertIn("'--peers', '500'",source)
         self.assertIn("'--features', 'test-diagnostics'",source)
         self.assertNotIn('setrlimit',source)
+
+
+class ExclusiveControllerTests(unittest.TestCase):
+    def test_exact_case_binding_and_only_fixed_evidence_is_exported(self):
+        for mutation in (None, 'unknown', 'wrong_binary', 'short_hold', 'not_reaped'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / 'out'; output.mkdir()
+                binary = root / 'sdk'; binary.write_bytes(b'fixture')
+                bins = root / 'bin'; bins.mkdir()
+                for name in ('device-server', 'device-admin', 'device-migrate'):
+                    (bins / name).write_bytes(name.encode())
+                manifest = root / 'source.json'; manifest.write_text('{}')
+                item = {'reason': 'compiler-artifact', 'target': {'name': 'sdk_exclusive', 'kind': ['test']}, 'executable': str(binary)}
+                listing = b'prepared_target_competition_renewal_fence_and_handoff: test\n'
+                def controller(args):
+                    runtime = Path(args[args.index('--output') + 1]); runtime.mkdir()
+                    value = {'status': 'passed', 'case': 'exclusive', 'sdk_test_sha256': m.digest(binary),
+                             'binary_sha256': {name: m.digest(bins / name) for name in ('device-server', 'device-admin', 'device-migrate')},
+                             'owned_processes_reaped': True, 'physical_android_devices': False,
+                             'registered_sdk_identities': 3, 'lease_hold_seconds': 65, 'elapsed_seconds': 128.0, 'new_wss_deadline_fallback': True}
+                    if mutation == 'unknown': value['unapproved'] = 'never export'
+                    if mutation == 'wrong_binary': value['sdk_test_sha256'] = 'wrong'
+                    if mutation == 'short_hold': value['elapsed_seconds'] = 1
+                    if mutation == 'not_reaped': value['owned_processes_reaped'] = False
+                    (runtime / 'exclusive-result.json').write_text(json.dumps(value))
+                    (runtime / 'private-secret.log').write_text('never export')
+                with mock.patch.object(m, 'command', side_effect=[json.dumps(item).encode(), listing]), mock.patch.object(m, 'run_controller', side_effect=controller):
+                    args = (root, root, bins, {'postgresql': root, 'redis': root}, manifest, output)
+                    if mutation is None:
+                        m.run_exclusive(*args)
+                        result = json.loads((output / 'exclusive-result.json').read_text())
+                        self.assertEqual(result['status'], 'passed')
+                        self.assertEqual(result['source_manifest_sha256'], m.digest(manifest))
+                    else:
+                        with self.assertRaises(ValueError): m.run_exclusive(*args)
+                self.assertFalse((output / 'private-secret.log').exists())
+
+    def test_missing_result_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / 'sdk'; binary.write_bytes(b'test')
+            item = {'reason': 'compiler-artifact', 'target': {'name': 'sdk_exclusive', 'kind': ['test']}, 'executable': str(binary)}
+            listing = b'prepared_target_competition_renewal_fence_and_handoff: test\n'
+            with mock.patch.object(m, 'command', side_effect=[json.dumps(item).encode(), listing]), mock.patch.object(m, 'run_controller'):
+                with self.assertRaisesRegex(ValueError, 'did not pass'):
+                    m.run_exclusive(root, root, root, {'postgresql': root, 'redis': root}, root, root)
 
 
 if __name__ == '__main__': unittest.main()

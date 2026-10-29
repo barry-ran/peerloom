@@ -15,6 +15,7 @@ pub enum LeaseError {
 pub struct ServerClockBound {
     server_at_hello: OffsetDateTime,
     hello_started: Instant,
+    continuous: Option<(device_clock::ContinuousClock, Duration)>,
 }
 impl ServerClockBound {
     /// sent_at 由通过 TLS 与 hello correlation 验证的服务器 ack 提供。
@@ -24,7 +25,41 @@ impl ServerClockBound {
             server_at_hello: OffsetDateTime::parse(sent_at, &Rfc3339)
                 .map_err(|_| LeaseError::InvalidUpdate)?,
             hello_started,
+            continuous: None,
         })
+    }
+    pub(crate) fn with_continuous(
+        mut self,
+        clock: device_clock::ContinuousClock,
+        started: Option<Duration>,
+    ) -> Self {
+        self.continuous = started.map(|started| (clock, started));
+        self
+    }
+    pub(crate) fn continuous_deadline(
+        &self,
+        expires: OffsetDateTime,
+    ) -> Result<(device_clock::ContinuousClock, Duration), LeaseError> {
+        let (clock, started) = self.continuous.as_ref().ok_or(LeaseError::Expired)?;
+        let now = clock.now().map_err(|_| LeaseError::Expired)?;
+        let elapsed = now.checked_sub(*started).ok_or(LeaseError::Expired)?;
+        let upper = self
+            .server_at_hello
+            .checked_add(time::Duration::try_from(elapsed).map_err(|_| LeaseError::InvalidUpdate)?)
+            .ok_or(LeaseError::InvalidUpdate)?;
+        let remaining = Duration::try_from(expires - upper)
+            .map_err(|_| LeaseError::Expired)?
+            .checked_sub(MARGIN)
+            .ok_or(LeaseError::Expired)?
+            .min(CAP);
+        if remaining.is_zero() {
+            return Err(LeaseError::Expired);
+        }
+        Ok((
+            clock.clone(),
+            now.checked_add(remaining)
+                .ok_or(LeaseError::InvalidUpdate)?,
+        ))
     }
     pub(crate) fn remaining_until(
         &self,
@@ -63,6 +98,17 @@ impl ServerClockBound {
             .ok_or(LeaseError::InvalidUpdate)
     }
 }
+#[derive(Clone)]
+pub(crate) struct ContinuousGrant {
+    pub epoch: u64,
+    clock: device_clock::ContinuousClock,
+    deadline: Duration,
+}
+impl ContinuousGrant {
+    pub fn is_valid(&self) -> bool {
+        self.clock.now().is_ok_and(|now| now < self.deadline)
+    }
+}
 struct PendingRenewal {
     request_id: String,
     generation_at_request: u64,
@@ -77,6 +123,9 @@ pub struct LeaseGuard {
     closed: bool,
     pending_renewal: Option<PendingRenewal>,
     latest_snapshot_bound: Option<Instant>,
+    exclusive_epoch: Option<u64>,
+    continuous: Option<ContinuousGrant>,
+    latest_continuous_bound: Option<Duration>,
 }
 impl LeaseGuard {
     pub fn new(session_id: String, source: String, target: String) -> Result<Self, LeaseError> {
@@ -109,6 +158,9 @@ impl LeaseGuard {
             closed: false,
             pending_renewal: None,
             latest_snapshot_bound: None,
+            exclusive_epoch: None,
+            continuous: None,
+            latest_continuous_bound: None,
         })
     }
     /// 只标记已经由信令客户端提交的 session.renew 请求 UUID；发送本身不能延长期限。
@@ -142,7 +194,13 @@ impl LeaseGuard {
         {
             return Err(LeaseError::InvalidUpdate);
         }
-        if self.deadline.is_some_and(|d| received >= d) {
+        let exclusive =
+            crate::exclusive::ExclusiveSnapshot::parse(envelope)?.map(|value| value.epoch);
+        if self.exclusive_epoch.is_some() && self.exclusive_epoch != exclusive {
+            return Err(LeaseError::InvalidUpdate);
+        }
+        self.exclusive_epoch = exclusive;
+        if self.expired(received) {
             #[cfg(feature = "test-diagnostics")]
             self.trace_failure(
                 "expired-before-update",
@@ -189,6 +247,7 @@ impl LeaseGuard {
             .map_err(|_| LeaseError::InvalidUpdate)?;
             expiry = Some(expiry.map_or(value, |old: OffsetDateTime| old.min(value)));
         }
+        let expiry = expiry.ok_or(LeaseError::InvalidUpdate)?;
         let stale = generation < self.generation;
         let own_renewal = self.matches_renewal(envelope)
             && self
@@ -196,7 +255,14 @@ impl LeaseGuard {
                 .as_ref()
                 .is_some_and(|pending| generation > pending.generation_at_request)
             && state != "authorizing";
-        let deadline = match clock.deadline(expiry.ok_or(LeaseError::InvalidUpdate)?, received) {
+        let (deadline, continuous) = match clock.deadline(expiry, received).and_then(|deadline| {
+            let continuous = if exclusive.is_some() {
+                Some(clock.continuous_deadline(expiry)?)
+            } else {
+                None
+            };
+            Ok((deadline, continuous))
+        }) {
             Ok(value) => value,
             Err(LeaseError::Expired) if stale => {
                 // A fully parsed older live snapshot can expire while a newer
@@ -227,8 +293,30 @@ impl LeaseGuard {
                 _ => deadline,
             });
         }
+        if let Some((_, bound)) = &continuous
+            && !stale
+        {
+            self.latest_continuous_bound = Some(match self.latest_continuous_bound {
+                Some(old) if generation == self.generation => old.min(*bound),
+                _ => *bound,
+            });
+        }
         if stale && !own_renewal {
             return Ok(());
+        }
+        if let Some((clock, bound)) = continuous {
+            let deadline = if own_renewal {
+                bound.min(self.latest_continuous_bound.unwrap_or(bound))
+            } else {
+                self.continuous
+                    .as_ref()
+                    .map_or(bound, |old| old.deadline.min(bound))
+            };
+            self.continuous = Some(ContinuousGrant {
+                epoch: exclusive.expect("exclusive clock"),
+                clock,
+                deadline,
+            });
         }
         if own_renewal {
             self.deadline = Some(deadline.min(self.latest_snapshot_bound.unwrap_or(deadline)));
@@ -280,7 +368,131 @@ impl LeaseGuard {
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
+    pub(crate) fn bind_exclusive_epoch(&mut self, epoch: Option<u64>) -> Result<(), LeaseError> {
+        if self.exclusive_epoch.is_some() && self.exclusive_epoch != epoch {
+            return Err(LeaseError::InvalidUpdate);
+        }
+        self.exclusive_epoch = epoch;
+        Ok(())
+    }
+    pub(crate) fn target_epoch(&self) -> Option<u64> {
+        self.exclusive_epoch
+    }
+    pub(crate) fn continuous_grant(&self) -> Option<ContinuousGrant> {
+        self.continuous.clone()
+    }
+    pub(crate) fn expired(&self, now: Instant) -> bool {
+        self.deadline.is_some_and(|deadline| now >= deadline)
+            || self
+                .continuous
+                .as_ref()
+                .is_some_and(|grant| !grant.is_valid())
+    }
     pub fn is_authorized(&self, now: Instant) -> bool {
-        !self.closed && self.active && self.deadline.is_some_and(|deadline| now < deadline)
+        !self.closed && self.active && !self.expired(now) && self.deadline.is_some()
+    }
+}
+
+#[cfg(test)]
+mod exclusive_tests {
+    use super::*;
+    fn guard(message: &Envelope) -> LeaseGuard {
+        LeaseGuard::new(
+            message.payload["session_id"].as_str().unwrap().into(),
+            message.payload["source_device_id"].as_str().unwrap().into(),
+            message.payload["target_device_id"].as_str().unwrap().into(),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn exclusive_late_own_ack_is_bounded_by_latest_continuous_authority() {
+        let mut message = crate::exclusive::tests::message();
+        message.payload["prepared"] = serde_json::json!(false);
+        message.payload["state"] = serde_json::json!("connecting");
+        let now = Instant::now();
+        let system = device_clock::ContinuousClock::default();
+        let started = system.now().unwrap();
+        let clock = ServerClockBound::from_hello(&message.sent_at, now)
+            .unwrap()
+            .with_continuous(system, Some(started));
+        let mut guard = guard(&message);
+        guard.apply(&message, &clock, now).unwrap();
+        let request = uuid::Uuid::new_v4().to_string();
+        guard.renewal_requested(request.clone()).unwrap();
+        let mut newer = message.clone();
+        newer.kind = "session.updated".into();
+        newer.payload["lease_generation"] = serde_json::json!(3);
+        for key in [
+            "lease_expires_at",
+            "source_lease_expires_at",
+            "target_lease_expires_at",
+        ] {
+            newer.payload[key] = serde_json::json!("2026-10-29T12:00:20Z");
+        }
+        guard.apply(&newer, &clock, now).unwrap();
+        let bound = guard.latest_continuous_bound.unwrap();
+        let mut own = message.clone();
+        own.kind = "session.updated".into();
+        own.request_id = Some(request);
+        own.payload["lease_generation"] = serde_json::json!(2);
+        for key in [
+            "lease_expires_at",
+            "source_lease_expires_at",
+            "target_lease_expires_at",
+        ] {
+            own.payload[key] = serde_json::json!("2026-10-29T12:00:50Z");
+        }
+        guard.apply(&own, &clock, now).unwrap();
+        assert_eq!(guard.generation, 3);
+        assert!(guard.continuous.as_ref().unwrap().deadline <= bound);
+        let deadline = guard.continuous.as_ref().unwrap().deadline;
+        guard.apply(&own, &clock, now).unwrap();
+        assert_eq!(guard.continuous.as_ref().unwrap().deadline, deadline);
+    }
+    #[test]
+    fn exclusive_requires_continuous_clock_and_stable_epoch() {
+        let message = crate::exclusive::tests::message();
+        let now = Instant::now();
+        let clock = ServerClockBound::from_hello(&message.sent_at, now).unwrap();
+        assert_eq!(
+            guard(&message).apply(&message, &clock, now),
+            Err(LeaseError::Expired)
+        );
+        let system = device_clock::ContinuousClock::default();
+        let started = system.now().unwrap();
+        let clock = clock.with_continuous(system, Some(started));
+        let mut guard = guard(&message);
+        guard.apply(&message, &clock, now).unwrap();
+        assert_eq!(guard.target_epoch(), Some(i64::MAX as u64));
+        let mut changed = message.clone();
+        changed.target_epoch = Some("1".into());
+        changed.payload["target_epoch"] = serde_json::json!("1");
+        assert_eq!(
+            guard.apply(&changed, &clock, now),
+            Err(LeaseError::InvalidUpdate)
+        );
+    }
+    #[test]
+    fn continuous_expiry_blocks_renewal_even_when_instant_has_not_advanced() {
+        let mut message = crate::exclusive::tests::message();
+        message.payload["prepared"] = serde_json::json!(false);
+        message.payload["state"] = serde_json::json!("connecting");
+        let now = Instant::now();
+        let system = device_clock::ContinuousClock::default();
+        let started = system.now().unwrap();
+        let clock = ServerClockBound::from_hello(&message.sent_at, now)
+            .unwrap()
+            .with_continuous(system.clone(), Some(started));
+        let mut guard = guard(&message);
+        guard.apply(&message, &clock, now).unwrap();
+        assert!(guard.is_authorized(now));
+        // Model resume after the signed continuous deadline while the wake-up
+        // scheduler's Instant remains unchanged. No wall time participates.
+        guard.continuous.as_mut().unwrap().deadline = system.now().unwrap();
+        assert!(guard.deadline().unwrap() > now);
+        assert!(!guard.is_authorized(now));
+        assert_eq!(guard.apply(&message, &clock, now), Err(LeaseError::Expired));
+        guard.continuous.as_mut().unwrap().deadline += Duration::from_secs(60);
+        assert!(!guard.is_authorized(now), "expired guard cannot revive");
     }
 }

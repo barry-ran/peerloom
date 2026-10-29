@@ -213,7 +213,7 @@ func run(logger *slog.Logger) error {
 	defer func() { managementCancel(); <-managementDone }()
 	api := http.NewServeMux()
 	managementHandler := management.NewHandler(administration, signalingServer.NotifySession)
-	for _, resource := range []string{"applications", "registration-grants", "devices", "connection-grants", "sessions", "audit-events", "relay-nodes", "webhook-endpoints"} {
+	for _, resource := range []string{"applications", "registration-grants", "devices", "connection-grants", "sessions", "audit-events", "relay-nodes", "webhook-endpoints", "exclusive-sessions"} {
 		api.Handle("/v1/"+resource, managementHandler)
 		api.Handle("/v1/"+resource+"/", managementHandler)
 	}

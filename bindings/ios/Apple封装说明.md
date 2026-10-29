@@ -119,3 +119,12 @@ Linux 可运行 `python3 bindings/ios/scripts/test-static.py`，只覆盖打包�
 关键分区 R 内再分为管理操作/存储回复与生命周期通知各半；每个登记对象预留一个 Closed ticket，不能耗用管理操作计数或管理字节。最终空 payload shutdown 通知有独立保证路径，不因缩容或旧宿主票据未消费而丢失；存储回调预算失败会明确回复失败，不把未回复 CAS 当作完成或回滚。
 
 RESET 另有唯一 pending 紧急槽，不受旧 CLOSE completion 仍占用且 C/S 已缩小的 M 计数阻断，但仍受管理字节预算限制。只在对应 native 终态到达或受理失败时释放该槽；旧结果字节仍归原 ticket，直到宿主消费才释放，旧清理不能清除较新的 reset 槽。native 可以抑制已经失效的 Ready/OPEN birth 后仍送 Closed；未向宿主发布的句柄终态使用有界生命周期备用预算，不凭空创建连接/流，也不因此停止其他兄弟连接。
+
+
+## 独占准备会话
+
+Swift `connectPrepared(sessionID:)` 只提交可信服务已创建的 session ID，先查询实际 C 库 capability 256；旧库明确 Unsupported。不会把服务管理凭证或调用方提供的 epoch 传给设备 SDK。原 `connect(to:)` 与 handle API 保留。
+
+`readyConnection(from:)` 仅消费 CONNECTION_READY，返回只读 `PeerloomConnectionInfo`（handle/sessionID/peerDeviceID/generation/targetEpoch）。它使用已有 `consumePayload`，在最终同步消费点重新核 native validity；retained event 在 epoch/lease 失效后不能变成有效 ConnectionInfo。调用一次即消费，与直接读取 payload 共用相同单次所有权。
+
+`PeerloomChannel.targetEpoch` 同样只作描述。独占字段必须同时为 `exclusive_target=true`、`exclusive_protocol_version=1` 和 1..9223372036854775807 的规范十进制字符串，未知版本、前导零或溢出拒绝；非独占省略。包装层不复制 native 租约时钟、不用墙钟恢复权限；所有流最终交付仍调用 native gate。source close 不等于目标安全释放，target barrier/fence ACK 由 native 与服务端执行。原动态预算、共享 close、紧急 reset 和宿主消费前 READ 校验不变。

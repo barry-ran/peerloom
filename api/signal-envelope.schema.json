@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "原生 WSS 信令信封",
-  "description": "GET /v1/device-signal，Authorization Bearer；native-only，不接受Origin或URL凭证。单节点路由。客户端hello seq0后严格递增；除hello均需服务器发行的generation与fence。SDP仅完整ICE，negotiation_generation为1..9007199254740991；session.reconnecting以当前代请求CAS后重建PeerConnection/Channel，不支持trickle或原地ICE restart。旧connected省略代号仅按1处理。运行时每帧128KiB硬上限、服务端重新鉴权与授权。",
+  "description": "GET /v1/device-signal，Authorization Bearer；native-only，不接受Origin或URL凭证。单节点路由。客户端hello seq0后严格递增；除hello均需服务器发行的generation与fence。SDP仅完整ICE，negotiation_generation为1..9007199254740991；session.reconnecting以当前代请求CAS后重建PeerConnection/Channel，不支持trickle或原地ICE restart。旧connected省略代号仅按1处理。运行时每帧128KiB硬上限、服务端重新鉴权与授权。 独占会话初次sync可省target_epoch但只读；其他独占变更必须canonical epoch且事务内匹配。connect_prepared仅预留source，fence_ack仅原accept的当前WSS运行时在关闭所有gate/流之后提交。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -36,7 +36,9 @@
         "session.terminated",
         "sync.request",
         "sync.snapshot",
-        "error"
+        "error",
+        "session.connect_prepared",
+        "session.fence_ack"
       ]
     },
     "id": {
@@ -79,6 +81,12 @@
     "payload": {
       "type": "object",
       "maxProperties": 32
+    },
+    "target_epoch": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "maxLength": 19,
+      "description": "规范十进制 epoch，运行时额外强制不大于 9223372036854775807；不能当 JSON number。"
     }
   },
   "allOf": [
@@ -177,6 +185,33 @@
         ],
         "properties": {
           "payload": {
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "session.connect_prepared",
+              "session.fence_ack"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "session_id",
+          "target_epoch"
+        ],
+        "properties": {
+          "payload": {
+            "type": "object",
             "maxProperties": 0
           }
         }

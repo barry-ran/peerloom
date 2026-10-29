@@ -185,6 +185,60 @@ def run_cases(root, private, binaries, selected, built, manifest_path, output):
     write_results(output, results, samples, complete=True)
 
 
+def run_exclusive(root, private, binaries, selected, manifest_path, output):
+    # Reuse fixed dependencies and compiled Go tools, but separate databases and
+    # credentials. This is a three-SDK protocol acceptance, NOT a 500-peer case.
+    target = 'sdk_exclusive'
+    test_name = 'prepared_target_competition_renewal_fence_and_handoff'
+    executable = select_executable(command([
+        'cargo', 'test', '--locked', '-p', 'device-core', '--test', target,
+        '--no-run', '--message-format=json'], root / 'src/device-sdk'), target)
+    listing = command([str(executable), '--list', '--format', 'terse'], root, timeout=30).decode('utf-8')
+    if [line.removesuffix(': test') for line in listing.splitlines() if line.endswith(': test')] != [test_name]:
+        raise ValueError('exclusive executable must expose exactly the expected real test')
+    runtime = private / 'runtime-exclusive'
+    passed = False
+    try:
+        run_controller(['python3', str(root / 'scripts/test-exclusive.py'),
+                        '--root', str(root), '--pg-bin', str(selected['postgresql']),
+                        '--redis-bin', str(selected['redis']), '--server-bin', str(binaries),
+                        '--sdk-test', str(executable), '--output', str(runtime)])
+    finally:
+        result_file = runtime / 'exclusive-result.json'
+        if result_file.is_file() and not result_file.is_symlink():
+            raw = result_file.read_bytes()
+            if len(raw) > 16384:
+                raise ValueError('exclusive evidence bound')
+            value = json.loads(raw)
+            allowed = {'status', 'case', 'sdk_test_sha256', 'binary_sha256',
+                       'physical_android_devices', 'owned_processes_reaped',
+                       'elapsed_seconds', 'registered_sdk_identities', 'lease_hold_seconds',
+                       'failure_stage', 'failure_type', 'new_wss_deadline_fallback'}
+            if set(value) - allowed:
+                raise ValueError('unexpected exclusive evidence fields')
+            # Reconstruct exported fields, never recursively copy private files.
+            safe = {'case': 'exclusive', 'status': 'failed',
+                    'source_manifest_sha256': digest(manifest_path),
+                    'sdk_test_sha256': digest(executable)}
+            passed = (value.get('status') == 'passed' and value.get('case') == 'exclusive'
+                      and value.get('sdk_test_sha256') == digest(executable)
+                      and value.get('binary_sha256') == {name: digest(binaries / name) for name in ('device-server', 'device-admin', 'device-migrate')}
+                      and value.get('owned_processes_reaped') is True
+                      and value.get('physical_android_devices') is False
+                      and value.get('registered_sdk_identities') == 3
+                      and value.get('lease_hold_seconds') == 65
+                      and value.get('new_wss_deadline_fallback') is True
+                      and isinstance(value.get('elapsed_seconds'), (int, float))
+                      and 65 <= value['elapsed_seconds'] < 300)
+            if passed:
+                safe.update(status='passed', registered_sdk_identities=3,
+                            lease_hold_seconds=65, elapsed_seconds=value['elapsed_seconds'],
+                            owned_processes_reaped=True, physical_android_devices=False,
+                            new_wss_deadline_fallback=True)
+            (output / 'exclusive-result.json').write_text(json.dumps(safe, sort_keys=True)+'\n', encoding='utf-8')
+    if not passed:
+        raise ValueError('exclusive acceptance did not pass')
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
@@ -210,6 +264,7 @@ def main():
         manifest['case_builds'] = {case: binding for case, (_, binding) in built.items()}
         manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2)+'\n', encoding='utf-8')
         run_cases(root, private, binaries, selected, built, manifest_path, args.output)
+        run_exclusive(root, private, binaries, selected, manifest_path, args.output)
 
 
 if __name__ == '__main__':

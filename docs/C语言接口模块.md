@@ -55,6 +55,7 @@ unsafe 仅限 `boundary.rs` 的 C 指针/导出边界；Rust core/storage/transp
 |---|---|
 | START | `{}` 从存储加载；或传 `registration` 与 `idempotency_key` 注册。成功 completion 返回 device_id，不返回凭证 |
 | CONNECT | `{"target_device_id":"UUID"}`；completion 只表示请求已提交，等待 CONNECTION_READY 才可发送 |
+| CONNECT_PREPARED（9） | `{"session_id":"UUID"}`；需 capability 256，先读取并验证已准备会话再接入；completion 不是 Ready，不由调用方选择 epoch |
 | RESPOND | `{"session_id":"UUID","accept":true}`；服务端仍决定权威授权状态 |
 | SEND | connection handle 与二进制；成功仅表示本地发送队列接受，不是远端业务确认 |
 | REFRESH | 空输入；使用身份模块串行轮换与恢复逻辑，并重新认证 WSS |
@@ -165,3 +166,5 @@ fixture 必须为 0600；runner 自动生成并删除 0600 临时 C 输入，不
 ### 多通道联合验证
 
 `TEST_MULTICONNECTION_FIXTURE_FILE` 指向管理 HTTP 创建的 source/target/third 三设备新 0600 fixture，配合 `TEST_IDENTITY_BASE_URL` 运行 `python3 src/device-sdk/device-ffi/tests/run-channels.py`。测试覆盖两条跨应用授权连接、三类通道、256KiB 部分读写、同时双向流、FIN、跨父句柄拒绝和兄弟连接存活；真实低延迟链路不承诺全部消息必达。原 service.c 洪泛与 reset 测试继续保留，含无秘密阶段/计数诊断；本地通过不解释此前远端偶发洪泛超时，精确 CI 仍必须通过。
+
+独占 Ready/Channel 元数据附带 `exclusive_target=true`、`exclusive_protocol_version=1`、`target_epoch`（规范十进制字符串）；非独占省略。capability 按位判断，ABI 仍为 1。持续时钟、目标 fence ACK 与安全交接边界见[独占会话模块](独占会话模块.md)。

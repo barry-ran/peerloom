@@ -126,3 +126,12 @@ ABI1 的 void callback 没有消费 ACK：未请求的 push 消息超过宿主�
 关键分区 R 内再分为管理操作/存储回复与生命周期通知各半；每个登记对象预留一个 Closed ticket，不能耗用管理操作计数或管理字节。最终空 payload shutdown 通知有独立保证路径，不因缩容或旧宿主票据未消费而丢失；存储回调预算失败会明确回复失败，不把未回复 CAS 当作完成或回滚。
 
 RESET 另有唯一 pending 紧急槽，不受旧 CLOSE completion 仍占用且 C/S 已缩小的 M 计数阻断，但仍受管理字节预算限制。只在对应 native 终态到达或受理失败时释放该槽；旧结果字节仍归原 ticket，直到宿主消费才释放，旧清理不能清除较新的 reset 槽。native 可以抑制已经失效的 Ready/OPEN birth 后仍送 Closed；未向宿主发布的句柄终态使用有界生命周期备用预算，不凭空创建连接/流，也不因此停止其他兄弟连接。
+
+
+## 独占准备会话
+
+`connectPrepared(sessionId)` 对接可信服务已准备的 session，提交前查询实际 native capability 256；旧库返回 Unsupported，不尝试未知 op9。客户端不传方向 grant、epoch 或租户管理秘密。普通 `connect` 和非独占应用保持原行为。
+
+Ready 的 `Connection.targetEpoch` 及 `Channel.targetEpoch` 是可选只读描述：独占元数据必须同时具备 `exclusive_target=true`、`exclusive_protocol_version=1` 和规范十进制 epoch 字符串（1..9223372036854775807）；非独占省略这组字段。未知版本或混合形状拒绝，不将 Number 转换为 epoch。epoch 不能作为可转移授权凭证。
+
+实际权限继续由 native 包含休眠的时钟、epoch/lease gate 判定。排队 Ready/Message/ChannelMessage 在宿主 listener 消费前调用 native validity，READ 在宿主 executor 返回前重验；包装层不拿墙钟延长授权。source close 不代表服务端独占立即释放，target worker barrier/fence ACK 和高水位由 native/服务端负责。动态预算、紧急 reset、单流一个 READ 及关闭的既有语义不变。

@@ -48,6 +48,7 @@ async fn target_terminal_session_ignores_late_snapshot_and_offer(reject: bool) {
         .insert_incoming(
             session_id.clone(),
             Session {
+                fence_safe: true,
                 id: session_id.clone(),
                 initial_request_id: None,
                 source: source.clone(),
@@ -146,6 +147,7 @@ async fn queued_local_description_rechecks_generation_lease_and_reset_gate() {
             .insert_incoming(
                 session_id.clone(),
                 Session {
+                    fence_safe: true,
                     id: session_id.clone(),
                     initial_request_id: None,
                     source: source.clone(),
@@ -214,7 +216,7 @@ async fn queued_local_description_rechecks_generation_lease_and_reset_gate() {
     }
 }
 
-async fn capacity_actor(
+pub(super) async fn capacity_actor(
     limit: usize,
 ) -> (
     Actor,

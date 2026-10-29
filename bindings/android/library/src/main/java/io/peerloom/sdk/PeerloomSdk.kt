@@ -36,7 +36,13 @@ internal constructor(
     fun cancelQueued(): Int = sdk.cancel(requestId)
 }
 
-class Connection internal constructor(private val sdk: PeerloomSdk, internal val handle: Long) {
+class Connection
+internal constructor(
+    private val sdk: PeerloomSdk,
+    internal val handle: Long,
+    /** Descriptive owner epoch, never a substitute for isValid(). */
+    val targetEpoch: String? = null,
+) {
     fun isValid(): Boolean = sdk.valid(handle)
 
     fun send(data: ByteArray): Operation = sdk.submit(4, handle, data)
@@ -76,9 +82,11 @@ private constructor(
     private val operationReservations = HashMap<Long, HostBudget.Ticket>()
     private val readingChannels = HashSet<Long>()
     private val activeConnections = HashSet<Long>()
+    private val connectionEpochs = HashMap<Long, String?>()
     private val connectionClosed = HashMap<Long, HostBudget.Ticket>()
     private val channelClosed = HashMap<Long, HostBudget.Ticket>()
     private val hostReads = AtomicLong(0)
+    private val hostStorageJobs = AtomicLong(0)
     private val channels = HashMap<Long, Channel>()
     private val closing = AtomicBoolean(false)
     private val released = CompletableFuture<Unit>()
@@ -212,6 +220,19 @@ private constructor(
             0,
             JSONObject().put("target_device_id", targetDeviceId).toString().toByteArray(UTF_8),
         )
+
+    /** Uses a trusted-service prepared session; never sends a grant or chooses its epoch. */
+    fun connectPrepared(sessionId: String): Operation {
+        val capabilities =
+            try {
+                Native.capabilities()
+            } catch (_: UnsatisfiedLinkError) {
+                // Older JNI libraries cannot promise the append-only prepared operation.
+                throw PeerloomException(7)
+            }
+        requireExclusiveCapability(capabilities)
+        return submit(9, 0, JSONObject().put("session_id", sessionId).toString().toByteArray(UTF_8))
+    }
 
     fun respond(sessionId: String, accept: Boolean): Operation =
         submit(
@@ -567,34 +588,44 @@ private constructor(
                 val storageReservation = copiedEventReservation
                 copiedEventReservation = null
                 val sdk = handle
+                // Native timeout/release does not end a host CAS or its owned buffers.
+                hostStorageJobs.incrementAndGet()
                 try {
                     work.execute {
-                        var replyStatus = 0
-                        val reply =
-                            try {
-                                store
-                                    .execute(JSONObject(String(payload, UTF_8)))
-                                    .toString()
-                                    .toByteArray(UTF_8)
-                            } catch (_: IdentityStore.Conflict) {
-                                replyStatus = 11
-                                byteArrayOf()
-                            } catch (_: Exception) {
-                                replyStatus = 255
-                                byteArrayOf()
-                            }
+                        var reply = byteArrayOf()
                         try {
+                            var replyStatus = 0
+                            reply =
+                                try {
+                                    store
+                                        .execute(JSONObject(String(payload, UTF_8)))
+                                        .toString()
+                                        .toByteArray(UTF_8)
+                                } catch (_: IdentityStore.Conflict) {
+                                    replyStatus = 11
+                                    byteArrayOf()
+                                } catch (_: Exception) {
+                                    replyStatus = 255
+                                    byteArrayOf()
+                                }
                             Native.storageComplete(sdk, request, replyStatus, reply)
                         } finally {
                             payload.fill(0)
                             reply.fill(0)
                             storageReservation?.close()
+                            hostStorageJobs.decrementAndGet()
+                            finishReleaseIfDrained()
                         }
                     }
                 } catch (_: RejectedExecutionException) {
-                    Native.storageComplete(sdk, request, 255, byteArrayOf())
-                    payload.fill(0)
-                    storageReservation?.close()
+                    try {
+                        Native.storageComplete(sdk, request, 255, byteArrayOf())
+                    } finally {
+                        payload.fill(0)
+                        storageReservation?.close()
+                        hostStorageJobs.decrementAndGet()
+                        finishReleaseIfDrained()
+                    }
                 }
             }
             9 -> onNativeFinal(status)
@@ -603,6 +634,8 @@ private constructor(
                     synchronized(operationLock) {
                         when (kind) {
                             5 -> {
+                                connectionEpochs[connection] =
+                                    targetEpoch(JSONObject(String(payload, UTF_8)))
                                 activeConnections.add(connection)
                                 updatePopulation()
                                 null
@@ -623,7 +656,13 @@ private constructor(
                 deliver(
                     Event(
                         kind,
-                        if (connection == 0L) null else Connection(this, connection),
+                        if (connection == 0L) null
+                        else
+                            Connection(
+                                this,
+                                connection,
+                                synchronized(operationLock) { connectionEpochs[connection] },
+                            ),
                         status,
                         payload,
                         scopedChannel,
@@ -714,6 +753,7 @@ private constructor(
                 if (event.kind == 7)
                     event.connection?.let { parent ->
                         activeConnections.remove(parent.handle)
+                        connectionEpochs.remove(parent.handle)
                         channels.entries.removeAll { it.value.parent == parent.handle }
                     }
                 updatePopulation()
@@ -738,7 +778,11 @@ private constructor(
     private fun finishReleaseIfDrained() {
         val done =
             synchronized(eventLock) {
-                nativeReleased.get() && hostReads.get() == 0L && events.isEmpty() && !scheduled
+                nativeReleased.get() &&
+                    hostReads.get() == 0L &&
+                    hostStorageJobs.get() == 0L &&
+                    events.isEmpty() &&
+                    !scheduled
             }
         if (done) {
             synchronized(operationLock) {
@@ -747,6 +791,7 @@ private constructor(
                 channelClosed.values.forEach { it.close() }
                 channelClosed.clear()
                 activeConnections.clear()
+                connectionEpochs.clear()
                 channels.clear()
                 finalReservation.close()
             }

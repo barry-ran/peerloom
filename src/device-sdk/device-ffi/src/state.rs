@@ -426,7 +426,7 @@ impl Instance {
         self.emit(event);
     }
     pub fn submit(&self, kind: u32, connection: u64, input: impl AsRef<[u8]>) -> Result<u64, u32> {
-        if !(1..=8).contains(&kind) {
+        if !(1..=9).contains(&kind) {
             return Err(UNSUPPORTED);
         }
         self.submit_scoped(kind, connection, 0, input.as_ref())
@@ -453,7 +453,7 @@ impl Instance {
         if self.shutting.load(Ordering::Acquire) {
             return Err(CLOSED);
         }
-        if !(1..=8).contains(&kind) && !(64..=68).contains(&kind) {
+        if !(1..=9).contains(&kind) && !(64..=68).contains(&kind) {
             return Err(UNSUPPORTED);
         }
         let mut ops = self.operations.lock().map_err(|_| INTERNAL)?;

@@ -119,6 +119,27 @@ class ContractTests(unittest.TestCase):
         for case in cases:
             self.assertFalse(check.is_valid(case))
 
+    def test_exclusive_prepare_and_epoch_contract(self):
+        api = json.loads((ROOT / 'api/openapi.json').read_text())
+        operation = api['paths']['/v1/exclusive-sessions/prepare']['post']
+        self.assertEqual(operation['security'], [{'TenantServiceCredential': []}])
+        self.assertEqual(operation['x-required-service-scope'], 'admin')
+        self.assertNotIn('/admin/api/v1/exclusive-sessions/prepare', api['paths'])
+        check = self.management_validator('ExclusivePrepareInput')
+        valid = {'source_device_id': '00000000-0000-4000-8000-000000000001',
+                 'target_device_id': '00000000-0000-4000-8000-000000000002',
+                 'expires_in_seconds': 3600}
+        self.assertTrue(check.is_valid(valid))
+        for bad in (dict(valid, expires_in_seconds=0), dict(valid, expires_in_seconds=2592001),
+                    dict(valid, target_epoch='1'), dict(valid, tenant_id=valid['source_device_id'])):
+            self.assertFalse(check.is_valid(bad))
+        header = next(p for p in api['paths']['/v1/device-sessions/{id}/ice-servers']['get']['parameters']
+                      if p['name'] == 'X-Peerloom-Target-Epoch')
+        self.assertEqual(header['in'], 'header')
+        self.assertEqual(header['schema']['type'], 'string')
+        for name in ('ManagementSession', 'ManagementClosedSession', 'ExclusiveSession'):
+            self.assertEqual(api['components']['schemas'][name]['properties']['target_epoch']['type'], 'string')
+
     def test_openapi_only_implemented_endpoints(self):
         api = json.loads((ROOT / 'api/openapi.json').read_text())
         expected = {
@@ -130,6 +151,7 @@ class ContractTests(unittest.TestCase):
             '/v1/registration-grants': {'post'}, '/v1/devices': {'get'},
             '/v1/devices/{id}': {'get', 'patch'}, '/v1/devices/{id}/revoke': {'post'},
             '/v1/connection-grants': {'get', 'post'},
+            '/v1/exclusive-sessions/prepare': {'post'},
             '/v1/connection-grants/{id}': {'get', 'delete'},
             '/v1/sessions': {'get'}, '/v1/sessions/{id}': {'get'},
             '/v1/sessions/{id}/terminate': {'post'}, '/v1/audit-events': {'get'},
@@ -200,7 +222,7 @@ class ContractTests(unittest.TestCase):
                     parameter = next(p for p in operation['parameters'] if p['in'] == 'path')
                     self.assertTrue(parameter['required'])
                     self.assertEqual(parameter['schema']['format'], 'uuid')
-        self.assertEqual(operations, 26)
+        self.assertEqual(operations, 27)
 
     def test_browser_cookie_csrf_and_role_contracts(self):
         api = json.loads((ROOT / 'api/openapi.json').read_text())

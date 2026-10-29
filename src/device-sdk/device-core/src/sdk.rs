@@ -3,6 +3,7 @@
 mod channels;
 #[cfg(test)]
 mod multiconnection_tests;
+mod prepared;
 mod reset;
 mod session_map;
 use crate::outbound::OutboundBudget;
@@ -119,6 +120,7 @@ struct Gate {
     installation_closed: Arc<AtomicBool>,
     closed: AtomicBool,
     deadline: Mutex<Option<Instant>>,
+    continuous: Mutex<Option<crate::lease::ContinuousGrant>>,
     changed: tokio::sync::Notify,
 }
 impl Gate {
@@ -126,11 +128,27 @@ impl Gate {
         if self.closed.load(Ordering::Acquire) || self.installation_closed.load(Ordering::Acquire) {
             return Err(SdkError::Closed);
         }
+        if self
+            .continuous
+            .lock()
+            .map_err(|_| SdkError::Closed)?
+            .as_ref()
+            .is_some_and(|grant| !grant.is_valid())
+        {
+            self.close();
+            return Err(SdkError::AuthorizationExpired);
+        }
         let deadline = *self.deadline.lock().map_err(|_| SdkError::Closed)?;
         if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
             return Err(SdkError::AuthorizationExpired);
         }
         Ok(())
+    }
+    fn update_guard(&self, guard: &LeaseGuard) {
+        if let Ok(mut value) = self.continuous.lock() {
+            *value = guard.continuous_grant();
+        }
+        self.update(guard.deadline());
     }
     fn update(&self, deadline: Option<Instant>) {
         if let Ok(mut value) = self.deadline.lock() {
@@ -172,6 +190,13 @@ impl ConnectionValidity {
     }
 }
 impl Connection {
+    pub fn target_epoch(&self) -> Option<u64> {
+        self.gate
+            .continuous
+            .lock()
+            .ok()
+            .and_then(|grant| grant.as_ref().map(|value| value.epoch))
+    }
     pub fn validity(&self) -> ConnectionValidity {
         ConnectionValidity(self.gate.clone())
     }
@@ -349,6 +374,21 @@ impl DeviceSdk {
             .map_err(|_| SdkError::QueueFull)?;
         rx.await.map_err(|_| SdkError::Closed)?
     }
+    /// Validates a prepared session through correlated authenticated sync before
+    /// submitting its epoch-bound connect. Returns correlation, not readiness.
+    pub async fn connect_prepared(&self, session_id: &str) -> Result<String, SdkError> {
+        if self.reset_started {
+            return Err(SdkError::Closed);
+        }
+        let id = uuid::Uuid::parse_str(session_id)
+            .map_err(|_| SdkError::InvalidConfiguration)?
+            .to_string();
+        let (tx, rx) = oneshot::channel();
+        self.commands
+            .try_send(Command::ConnectPrepared(id, tx))
+            .map_err(|_| SdkError::QueueFull)?;
+        rx.await.map_err(|_| SdkError::Closed)?
+    }
     pub async fn accept(&self, session_id: &str) -> Result<(), SdkError> {
         self.respond(session_id, true).await
     }
@@ -409,6 +449,7 @@ impl Drop for DeviceSdk {
 }
 enum Command {
     Connect(String, oneshot::Sender<Result<String, SdkError>>),
+    ConnectPrepared(String, oneshot::Sender<Result<String, SdkError>>),
     Respond(String, bool, oneshot::Sender<Result<(), SdkError>>),
     CloseConnection(String, u64, Option<oneshot::Sender<()>>),
     Refresh(oneshot::Sender<Result<(), SdkError>>),
@@ -437,6 +478,8 @@ struct PendingAuthority {
     offer: Option<Envelope>,
 }
 struct Session {
+    // Sticky false after an incomplete worker barrier; never ACK an unproven fence.
+    fence_safe: bool,
     id: String,
     initial_request_id: Option<String>,
     source: String,
@@ -479,6 +522,7 @@ struct Actor {
     control_cursor: Option<String>,
     control_remaining: usize,
     sessions: SessionMap<Session>,
+    prepared: std::collections::HashMap<String, prepared::PendingPrepared>,
     internal_tx: mpsc::Sender<Internal>,
     internal_rx: mpsc::Receiver<Internal>,
 }
@@ -498,6 +542,7 @@ impl Actor {
         Self {
             outbound: OutboundBudget::new(config.outbound_max_bytes, config.outbound_max_messages)
                 .expect("validated outbound budget"),
+            prepared: Default::default(),
             control_cursor: None,
             control_remaining: 0,
             sessions: SessionMap::new(config.max_connections)
@@ -702,6 +747,7 @@ impl Actor {
             signal.close().await;
         }
         self.emit(SdkEvent::Offline)?;
+        self.clear_prepared();
         for (target_device_id, request_id) in self.sessions.drain_pending() {
             let Some(request_id) = request_id else {
                 continue;
@@ -756,11 +802,30 @@ impl Actor {
         payload: serde_json::Value,
         generation: u64,
     ) -> Result<String, SdkError> {
+        if !matches!(
+            kind,
+            "session.terminate" | "session.fence_ack" | "sync.request"
+        ) && session
+            .and_then(|id| self.sessions.get(id))
+            .is_some_and(|value| {
+                value.guard.target_epoch().is_some() && value.guard.expired(Instant::now())
+            })
+        {
+            return Err(SdkError::AuthorizationExpired);
+        }
         let request = self
             .signal
             .as_ref()
             .ok_or(SdkError::Offline)?
-            .send_generation(kind, session, payload, generation)
+            .send_generation_epoch(
+                kind,
+                session,
+                payload,
+                generation,
+                session
+                    .and_then(|id| self.sessions.get(id))
+                    .and_then(|value| value.guard.target_epoch()),
+            )
             .await
             .map_err(SdkError::Signal)?;
         if let Some(value) = session.and_then(|id| self.sessions.get_mut(id)) {
@@ -775,6 +840,7 @@ impl Actor {
     }
 
     async fn tick(&mut self) -> Result<(), SdkError> {
+        self.expire_prepared();
         let now = Instant::now();
         if self
             .online_since
@@ -841,10 +907,7 @@ impl Actor {
                 self.request_authority(&id).await;
                 continue;
             }
-            let expired = session
-                .guard
-                .deadline()
-                .is_some_and(|deadline| now >= deadline);
+            let expired = session.guard.expired(now);
             let closed = session.gate.closed.load(Ordering::Acquire) && session.worker.is_none();
             if expired || closed {
                 #[cfg(feature = "test-diagnostics")]
@@ -934,6 +997,7 @@ impl Actor {
                     }
                 }
             }
+            Command::ConnectPrepared(id, result) => self.begin_prepared(id, result).await,
             Command::Connect(target, result) => {
                 let outcome = if target == self.stored.device_id {
                     Err(SdkError::InvalidConfiguration)
@@ -972,6 +1036,7 @@ impl Actor {
             Command::Respond(id, accept, result) => {
                 let outcome = if self.sessions.get(&id).is_none_or(|session| {
                     session.target != self.stored.device_id
+                        || session.guard.expired(Instant::now())
                         || session.closing
                         || session.authority.is_some()
                 }) {
@@ -1078,6 +1143,9 @@ impl Actor {
         }
     }
     async fn message(&mut self, message: Envelope) -> Result<(), SdkError> {
+        if self.prepared_message(&message).await {
+            return Ok(());
+        }
         let mut buffered_offer = None;
         if message.kind == "error" {
             let Some(request) = message.request_id.as_deref() else {
@@ -1211,6 +1279,13 @@ impl Actor {
             {
                 return Err(SdkError::Signal(SignalError::InvalidMessage));
             }
+            let exclusive = crate::exclusive::ExclusiveSnapshot::parse(&message)
+                .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?;
+            if let Some(session) = self.sessions.get(&id)
+                && session.guard.target_epoch() != exclusive.as_ref().map(|value| value.epoch)
+            {
+                return Err(SdkError::Signal(SignalError::InvalidMessage));
+            }
             // A server terminal is authoritative. Forgetting it is safe because
             // every future unsolicited admission must obtain a fresh correlated Get.
             if message.kind == "session.terminated" || message.payload["state"] == "closed" {
@@ -1229,6 +1304,14 @@ impl Actor {
                         false,
                     )
                     .await;
+                    if target == self.stored.device_id
+                        && exclusive.as_ref().is_some_and(|value| value.fence_required)
+                        && self.sessions.get(&id).is_some_and(|value| value.fence_safe)
+                    {
+                        // Only a tracked epoch may confirm its own gate/worker barrier.
+                        // Already-delivered host work is outside SDK revocation scope.
+                        let _ = self.send("session.fence_ack", Some(&id), json!({})).await;
+                    }
                     self.sessions.remove(&id);
                 }
                 return Ok(());
@@ -1302,6 +1385,9 @@ impl Actor {
                 }
                 let mut guard = LeaseGuard::new(id.clone(), source.clone(), target.clone())
                     .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?;
+                guard
+                    .bind_exclusive_epoch(exclusive.as_ref().map(|value| value.epoch))
+                    .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?;
                 if outgoing {
                     let clock = self
                         .signal
@@ -1313,6 +1399,7 @@ impl Actor {
                     }
                 }
                 let session = Session {
+                    fence_safe: true,
                     id: id.clone(),
                     initial_request_id: if outgoing {
                         request.map(str::to_owned)
@@ -1409,7 +1496,7 @@ impl Actor {
                 .await;
                 return Ok(());
             }
-            session.gate.update(session.guard.deadline());
+            session.gate.update_guard(&session.guard);
             if message.kind == "sync.snapshot" {
                 session.sync_pending = false;
                 session.sync_requested = false;
@@ -1436,6 +1523,15 @@ impl Actor {
             };
             if session.closing {
                 return Ok(());
+            }
+            if message.target_epoch.as_deref()
+                != session
+                    .guard
+                    .target_epoch()
+                    .map(|value| value.to_string())
+                    .as_deref()
+            {
+                return Err(SdkError::Signal(SignalError::InvalidMessage));
             }
             if session.authority.is_some() {
                 if message.kind == "session.offer"
@@ -1630,12 +1726,14 @@ impl Actor {
             if let Some(stop) = worker.stop.take() {
                 let _ = stop.send(());
             }
-            if tokio::time::timeout(Duration::from_secs(5), &mut worker.task)
-                .await
-                .is_err()
-            {
-                worker.task.abort();
-                let _ = (&mut worker.task).await;
+            match tokio::time::timeout(Duration::from_secs(5), &mut worker.task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => session.fence_safe = false,
+                Err(_) => {
+                    session.fence_safe = false;
+                    worker.task.abort();
+                    let _ = (&mut worker.task).await;
+                }
             }
         }
     }
@@ -1646,7 +1744,7 @@ impl Actor {
             installation_closed: self.installation_closed.clone(),
             ..Gate::default()
         });
-        session.gate.update(session.guard.deadline());
+        session.gate.update_guard(&session.guard);
         session.ready = false;
         session.recovery_at = Some(Instant::now() + backoff(session.recovery_attempt));
         self.emit(SdkEvent::ConnectionClosed {
@@ -1663,7 +1761,7 @@ impl Actor {
             installation_closed: self.installation_closed.clone(),
             ..Gate::default()
         });
-        session.gate.update(session.guard.deadline());
+        session.gate.update_guard(&session.guard);
         session.ready = false;
         session.recovery_at = None;
         // Old-generation error replies cannot terminate the newly authorized handle.
@@ -1693,12 +1791,12 @@ impl Actor {
             authority.request = None;
         }
         let generation = session.generation;
+        self.stop_generation(id).await;
         if notify {
             let _ = self
                 .send_generation("session.terminate", Some(id), json!({}), generation)
                 .await;
         }
-        self.stop_generation(id).await;
         self.sessions.retire(id);
         if announced {
             let _ = self.emit(SdkEvent::ConnectionClosed {
@@ -1708,6 +1806,7 @@ impl Actor {
         }
     }
     async fn close_all(&mut self) {
+        self.clear_prepared();
         self.outbound.close();
         self.sessions.close_admission();
         self.sessions.drain_pending();
@@ -1865,7 +1964,15 @@ async fn transport_worker(
             gate.check()?;
             let configuration = relay
                 .client
-                .session_ice_servers_generation(&id, &relay.credential, generation)
+                .session_ice_servers_generation_epoch(
+                    &id,
+                    &relay.credential,
+                    generation,
+                    gate.continuous
+                        .lock()
+                        .ok()
+                        .and_then(|grant| grant.as_ref().map(|value| value.epoch)),
+                )
                 .await
                 .map_err(SdkError::Identity)?;
             gate.check()?;
@@ -1913,6 +2020,7 @@ async fn transport_worker(
             return;
         }
     };
+    let mut channel_tasks = channels::WorkerTasks::default();
     let operation = async {
         gate.check()?;
         let mut channel: MessageChannel = if let Some(offer) = offer {
@@ -2005,6 +2113,7 @@ async fn transport_worker(
             sdk,
             peer_device_id,
             request_id,
+            &mut channel_tasks,
         )
         .await
     };
@@ -2016,6 +2125,7 @@ async fn transport_worker(
     #[cfg(feature = "test-diagnostics")]
     diagnostic.enter("closing");
     gate.close();
+    channel_tasks.shutdown().await;
     let _ = peer.close().await;
     if let Some(result) = result {
         report_worker_closed(
@@ -2174,6 +2284,7 @@ mod tests {
                 installation_closed: Arc::new(AtomicBool::new(false)),
                 closed: AtomicBool::new(false),
                 deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
+                continuous: Mutex::new(None),
                 changed: tokio::sync::Notify::new(),
             });
             let (stop, stopped) = oneshot::channel();
@@ -2239,6 +2350,7 @@ mod tests {
             installation_closed: Arc::new(AtomicBool::new(false)),
             closed: AtomicBool::new(false),
             deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
+            continuous: Mutex::new(None),
             changed: tokio::sync::Notify::new(),
         });
         let server_gate = gate.clone();

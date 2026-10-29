@@ -31,6 +31,9 @@ func (s *Service) operate(ctx context.Context, actor identity.Device, id string,
 	if actor.ID != value.SourceDeviceID && actor.ID != value.TargetDeviceID {
 		return Session{}, failure("SESSION_NOT_FOUND", 404)
 	}
+	if err = checkExclusiveAuthority(ctx, value, allowClosed); err != nil {
+		return Session{}, err
+	}
 	if value.State == "closed" {
 		if allowClosed {
 			return value, nil
@@ -96,6 +99,12 @@ func (s *Service) Respond(ctx context.Context, actor identity.Device, id string,
 		if actor.ID != value.TargetDeviceID {
 			return Session{}, failure("TARGET_ONLY", 403)
 		}
+		if value.Prepared {
+			return Session{}, failure("EXCLUSIVE_PREPARE_REQUIRED", 409)
+		}
+		if value.ExclusiveTarget && (value.ConnectDeadline == nil || !value.ConnectDeadline.After(at)) && value.State == "authorizing" {
+			return Session{}, failure("PREPARED_EXPIRED", 409)
+		}
 		if value.State != "authorizing" {
 			if err := accepted(value); err != nil {
 				return Session{}, err
@@ -106,7 +115,25 @@ func (s *Service) Respond(ctx context.Context, actor identity.Device, id string,
 		if !g.expires.After(at) {
 			return Session{}, failure("GRANT_EXPIRED", 403)
 		}
-		deadline := leaseDeadline(g, at, s.options.LeaseTTL)
+		if value.ExclusiveTarget {
+			authority, _ := ctx.Value(exclusiveAuthorityKey{}).(exclusiveAuthority)
+			if len(authority.fenceHash) != 32 {
+				return Session{}, failure("EXCLUSIVE_PROTOCOL_REQUIRED", 409)
+			}
+			if _, err := tx.Exec(ctx, `UPDATE sessions SET target_accept_fence_hash=$3 WHERE tenant_id=$1 AND id=$2`, value.TenantID, value.ID, authority.fenceHash); err != nil {
+				return Session{}, databaseError(err)
+			}
+		}
+		if value.ExclusiveTarget {
+			if err := verifyCurrentExclusiveFence(ctx); err != nil {
+				return Session{}, err
+			}
+		}
+		ttl := s.options.LeaseTTL
+		if value.ExclusiveTarget && ttl > 60*time.Second {
+			ttl = 60 * time.Second
+		}
+		deadline := leaseDeadline(g, at, ttl)
 		result, err := scanSession(tx.QueryRow(ctx, `UPDATE sessions SET state='connecting',source_lease_expires_at=$1,
 target_lease_expires_at=$1,lease_generation=lease_generation+1 WHERE tenant_id=$2 AND id=$3 RETURNING `+sessionColumns, deadline, value.TenantID, value.ID))
 		if err != nil {
@@ -121,7 +148,11 @@ func (s *Service) Renew(ctx context.Context, actor identity.Device, id string) (
 		if err := accepted(value); err != nil {
 			return Session{}, err
 		}
-		deadline := leaseDeadline(g, at, s.options.LeaseTTL)
+		ttl := s.options.LeaseTTL
+		if value.ExclusiveTarget && ttl > 60*time.Second {
+			ttl = 60 * time.Second
+		}
+		deadline := leaseDeadline(g, at, ttl)
 		column := "source_lease_expires_at"
 		if actor.ID == value.TargetDeviceID {
 			column = "target_lease_expires_at"
@@ -258,6 +289,9 @@ func (s *Service) close(ctx context.Context, actor identity.Device, id, reason s
 	}
 	if actor.ID != value.SourceDeviceID && actor.ID != value.TargetDeviceID {
 		return Session{}, failure("SESSION_NOT_FOUND", 404)
+	}
+	if err = checkExclusiveAuthority(ctx, value, false); err != nil {
+		return Session{}, err
 	}
 	if targetOnly && actor.ID != value.TargetDeviceID {
 		return Session{}, failure("TARGET_ONLY", 403)
