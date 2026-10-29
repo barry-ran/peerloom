@@ -811,6 +811,49 @@ class ReleaseTests(unittest.TestCase):
             self.assertIs(plan['final_scope_accepted'], True)
             self.assertEqual(set(plan['artifacts']), set(P.PLATFORMS))
 
+class RedactedApiFailureTests(unittest.TestCase):
+    def failure(self, suffix, method='GET', stderr='gh: private response (HTTP 403)'):
+        from unittest.mock import Mock, patch
+        response = Mock(returncode=1, stdout='secret-response-body', stderr=stderr)
+        with patch.object(A.subprocess, 'run', return_value=response) as process:
+            with self.assertRaises(P.Rejected) as raised:
+                A.GitHub().call('/repos/' + P.REPO + suffix, method, {'secret': 'request-secret'})
+        self.assertEqual(process.call_count, 1)  # Diagnostic only; no retry.
+        message = str(raised.exception)
+        for secret in ('private response', 'secret-response-body', 'request-secret', suffix, 'token-value'):
+            self.assertNotIn(secret, message)
+        return message
+
+    def test_fixed_operations_and_numeric_status_only(self):
+        for path, method, category in (
+            ('/git/refs', 'POST', 'create_git_ref'),
+            ('/releases', 'POST', 'create_release'),
+            ('/releases/123', 'PATCH', 'update_release'),
+            ('/git/ref/tags/private-tag', 'GET', 'read_git_ref'),
+            ('/actions/artifacts/123', 'GET', 'read_artifact'),
+            ('/actions/runs/123', 'GET', 'read_workflow'),
+            ('/compare/private...private', 'GET', 'read_compare'),
+            ('/contents/private-file', 'GET', 'read_contents'),
+            ('/releases/tags/private-tag', 'GET', 'read_release'),
+            ('/unknown/private', 'GET', 'other'),
+        ):
+            with self.subTest(path=path, method=method):
+                self.assertEqual(self.failure(path, method),
+                                 f'GITHUB_API_FAILED operation={category} method={method} http_status=403')
+
+    def test_missing_or_ambiguous_status_is_zero_without_raw_error(self):
+        for stderr in ('token-value authentication failed', 'private (HTTP 403) and (HTTP 422)',
+                       '(HTTP token-value)', '(HTTP 999)', '(HTTP 4030)'):
+            with self.subTest(stderr=stderr):
+                self.assertTrue(self.failure('/git/refs', 'POST', stderr).endswith('http_status=0'))
+
+    def test_expected_missing_404_behavior_is_unchanged(self):
+        from unittest.mock import Mock, patch
+        with patch.object(A.subprocess, 'run', return_value=Mock(returncode=1, stdout='private', stderr='private (HTTP 404)')):
+            self.assertIsNone(A.GitHub().call('/repos/' + P.REPO + '/git/ref/tags/missing', missing=True))
+        self.assertTrue(self.failure('/git/ref/tags/missing', stderr='private (HTTP 404)').endswith('http_status=404'))
+
+
 class ExtraBoundaryTests(unittest.TestCase):
     def test_workflow_permission_isolation(self):
         root = Path(__file__).resolve().parents[1]

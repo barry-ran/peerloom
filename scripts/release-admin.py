@@ -41,13 +41,42 @@ REVIEWED_BOOTSTRAP_BLOBS = {'.github/workflows/admin-web.yml': {'after_blob': 'd
                    'before_blob': '72eb9acfff21a3da61c4648e74c461cfa5556022'},
  'scripts/release-policy.py': {'after_blob': '377fdbcbfdd1dbb165c8878aa7fa28d80857cd79',
                                'before_blob': '47bd8640145af0ab2b44d3ce56c8f290e797acaf'},
- 'scripts/test-release-admin.py': {'after_blob': 'bb742104bd4d206e1568725c9c4b20c7b9434b33',
+ 'scripts/test-release-admin.py': {'after_blob': '2ca4a972ffb492d2257e4e681437630de5bead5c',
                                    'before_blob': '8d50e4dab2d81c7fb3dfafbe094e4703fc0bcebc'},
  'scripts/test-workflow-triggers.py': {'after_blob': '0d313f72f1e76b4afc57317c1f2eae299c399533',
                                        'before_blob': None}}
 
 class Pending(P.Rejected):
     pass
+
+def api_failure_code(endpoint, method, stderr):
+    # Only fixed categories and numeric status may cross the diagnostic boundary.
+    # Never include request paths, ref names, response bodies or CLI stderr text.
+    path = endpoint.split('?', 1)[0].removeprefix('/repos/' + P.REPO)
+    if method == 'POST' and path == '/git/refs':
+        operation = 'create_git_ref'
+    elif method == 'POST' and path == '/releases':
+        operation = 'create_release'
+    elif method == 'PATCH' and re.fullmatch(r'/releases/[0-9]+', path):
+        operation = 'update_release'
+    elif method == 'GET' and path.startswith('/git/ref/'):
+        operation = 'read_git_ref'
+    elif method == 'GET' and path.startswith('/actions/artifacts/'):
+        operation = 'read_artifact'
+    elif method == 'GET' and path.startswith('/actions/'):
+        operation = 'read_workflow'
+    elif method == 'GET' and path.startswith('/compare/'):
+        operation = 'read_compare'
+    elif method == 'GET' and path.startswith('/contents/'):
+        operation = 'read_contents'
+    elif method == 'GET' and path.startswith('/releases'):
+        operation = 'read_release'
+    else:
+        operation = 'other'
+    statuses = set(re.findall(r'\(HTTP ([1-5][0-9]{2})\)', stderr))
+    status = next(iter(statuses)) if len(statuses) == 1 else '0'
+    return f'GITHUB_API_FAILED operation={operation} method={method} http_status={status}'
+
 
 class GitHub:
     def call(self, endpoint, method='GET', data=None, missing=False):
@@ -61,7 +90,8 @@ class GitHub:
                                 text=True, capture_output=True, timeout=120)
         if missing and result.returncode and '(HTTP 404)' in result.stderr:
             return None
-        P.require(result.returncode == 0, 'GITHUB_API_FAILED')
+        if result.returncode != 0:
+            raise P.Rejected(api_failure_code(endpoint, method, result.stderr))
         return json.loads(result.stdout) if result.stdout.strip() else None
 
     def pages(self, endpoint, key):
