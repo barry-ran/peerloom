@@ -108,6 +108,20 @@ impl<V: Validity> HandleRegistry<V> {
         );
         Ok(id)
     }
+    pub fn capacity_counts(&self) -> Result<(usize, usize), HandleError> {
+        let mut connections = 0usize;
+        let mut streams = 0usize;
+        for connection in self.connections.values() {
+            connections = connections.checked_add(1).ok_or(HandleError::Full)?;
+            for channel in connection.channels.values() {
+                if channel.kind == ChannelKind::ReliableStream {
+                    streams = streams.checked_add(1).ok_or(HandleError::Full)?;
+                }
+            }
+        }
+        Ok((connections, streams))
+    }
+
     pub fn connection(&self, id: u64) -> Result<ScopedValidity<V>, HandleError> {
         let entry = self
             .connections

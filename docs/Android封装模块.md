@@ -46,7 +46,7 @@ flowchart LR
 
 每次普通调用返回 `Operation(requestId, completion)`；`cancelQueued()` 仅取消尚未开始的工作。运行中的变更与关闭返回 Busy，不冒称回滚。不要在同步 completion continuation 中长时间阻塞原生 callback；使用显式异步 continuation/executor。
 
-应用事件队列最多 32 项，最多一个 drain task 投递给应用 executor。Ready/Message 在真正交给应用前调用只读 `dp_connection_is_valid`，防止 C callback 时仍有效但在 Java 队列等待期间已过期/撤销。查询不能续租、不暴露 transport；旧、释放或错误父句柄都不能变为有效。已开始的应用 callback 不能追回；若它不返回，wrapper close 也不能声称已经静止。
+宿主容量自动随实际连接 C、字节流 S 增长：数据/操作槽为 `64+8*C+2*S`，独立管理槽为 `64+C+S`；不按可选连接上限预分配。`ffi_resource_budget_bytes` 默认 128 MiB、最小 2 MiB，native 与宿主各自计费，不代表进程总 RSS。宿主预算保留关键区 `R=max(256 KiB, B/8)`，其余用于数据；每个 reservation 另计 256 字节元数据。关闭通知消费前保留相应生命周期计数，缩容不撤销已受理终态。最多一个 drain task 投递给应用 executor。Ready/Message 在真正交给应用前调用只读 `dp_connection_is_valid`，防止 C callback 时仍有效但在 Java 队列等待期间已过期/撤销。查询不能续租、不暴露 transport；旧、释放或错误父句柄都不能变为有效。已开始的应用 callback 不能追回；若它不返回，wrapper close 也不能声称已经静止。
 
 ## 安全存储
 
@@ -116,3 +116,13 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 CI 只对本次 Compose 项目的 gateway 短暂停止/重启，形成真实 WSS 控制面断连。APK 通过固定阶段标记请求，host 控制器核验 CI、精确 emulator serial/AVD、专属 Compose 名称与时间上限，finally 恢复自己的 gateway。健康 P2P 与未过期租约应保留原句柄；恢复 Online 后继续双向消息，不把该用例称为底层 ICE restart 或数据路径故障重建。
 
 随后暂停接收端应用 executor，确认精确 payload/connection 已排队，由 host 经真实管理 HTTP 撤销本次 pair 的唯一有效定向 grant，并核对持久化 session 的关闭原因确为 `GRANT_REVOKED`。恢复 executor 后不得交付旧 payload；两个旧连接句柄都失效，各端 CONNECTION_CLOSED 仅一次，整个 SDK 关闭后复核计数。管理员凭证仅存在 host 新建 0600 文件，不传入 APK、ADB 参数或日志。此新增真实撤销/恢复门禁需在两个页大小的 emulator CI 上通过后才能声明验收；旧主动 close 证据不能替代它。
+
+### 宿主复制与消费边界
+
+JNI 在创建 Java 字节数组前向宿主申请预算，completion 使用受理时已预留的 ticket，不在回调重新争抢额度。每条 stream 只有一个未消费 READ；READ 预算保持到应用 executor 实际执行并重新检查 gate，普通 `Operation.completion` 在 future 完成时将 payload 所有权交给调用者，调用者后续保留或异步排队不属于 SDK 可观测内存。事件保留到 listener 返回，存储请求保留到异步回复结束。
+
+ABI1 的 void callback 没有消费 ACK：未请求的 push 消息超过宿主资源预算会产生可观察资源失败并停止实例，不能默默丢可靠数据，也不声称提供跨 native/宿主的端到端消费反压。字节长度、每 stream 单 READ、queued cancel / running READ Busy、WRITE 未知结果和 reset fence 语义不变。
+
+关键分区 R 内再分为管理操作/存储回复与生命周期通知各半；每个登记对象预留一个 Closed ticket，不能耗用管理操作计数或管理字节。最终空 payload shutdown 通知有独立保证路径，不因缩容或旧宿主票据未消费而丢失；存储回调预算失败会明确回复失败，不把未回复 CAS 当作完成或回滚。
+
+RESET 另有唯一 pending 紧急槽，不受旧 CLOSE completion 仍占用且 C/S 已缩小的 M 计数阻断，但仍受管理字节预算限制。只在对应 native 终态到达或受理失败时释放该槽；旧结果字节仍归原 ticket，直到宿主消费才释放，旧清理不能清除较新的 reset 槽。native 可以抑制已经失效的 Ready/OPEN birth 后仍送 Closed；未向宿主发布的句柄终态使用有界生命周期备用预算，不凭空创建连接/流，也不因此停止其他兄弟连接。

@@ -97,9 +97,21 @@ private let callback: NativeCallback = { context, pointer in
           let length = Int(exactly: event.payload_len), length >= 0, length <= 65536, length == 0 || event.payload != nil else {
         core.fail(PeerloomError.invalidEvent); return
     }
+    // Final notification has no payload and must not compete with outstanding actor credits.
+    if event.kind == 9 {
+        guard length == 0, event.connection == 0, event.channel == 0 else { core.fail(PeerloomError.invalidEvent); return }
+        core.receive(kind: 9, request: event.request_id, connection: 0, status: event.status, payload: Data())
+        return
+    }
     // No borrowed C pointer escapes this stack frame.
-    let payload = length == 0 ? Data() : Data(bytes: event.payload!, count: length)
-    core.receive(kind: event.kind, request: event.request_id, connection: event.connection, status: event.status, payload: payload, channel: event.channel)
+    do {
+        let reservation = try core.reservePayload(kind: event.kind, request: event.request_id, connection: event.connection, channel: event.channel, length: length)
+        let payload = length == 0 ? Data() : Data(bytes: event.payload!, count: length)
+        core.receive(kind: event.kind, request: event.request_id, connection: event.connection, status: event.status, payload: payload, channel: event.channel, reservation: reservation)
+    } catch {
+        if event.kind == 10 { core.rejectStorage(request: event.request_id) }
+        core.fail(error)
+    }
 }
 
 private final class Ticket: @unchecked Sendable {
@@ -124,9 +136,19 @@ final class NativeCore: @unchecked Sendable {
     private var nativeFinal = false
     private var timer: DispatchSourceTimer?
     private var pending: [UInt64: CheckedContinuation<NativeCompletion, Error>] = [:]
+    private var pendingOpens: Set<UInt64> = []
+    private var urgentReset: HostReservation?
     private var admitted = 0
+    private var budget = try! HostBudget()
+    private var reservations: [UInt64: HostReservation] = [:]
+    private var readChannels: Set<UInt64> = []
+    private var activeConnections: Set<UInt64> = []
+    private var activeStreams: [UInt64: UInt64] = [:]
+    private var connectionClosed: [UInt64: HostReservation] = [:]
+    private var channelClosed: [UInt64: HostReservation] = [:]
     private var storageJobs = 0
     private var closeWaiters: [CheckedContinuation<Void, Error>] = []
+    private var closeTask: Task<Void, Error>?
     private var events: [PeerloomEvent] = []
     private var dataEvents = 0
     private var controlEvents = 0
@@ -137,7 +159,11 @@ final class NativeCore: @unchecked Sendable {
     init(store: IdentityStore, api: NativeAPI = CNativeAPI()) { self.store = store; self.api = api }
     func create(_ config: Data) throws {
         // Called on a worker queue; serialize an unusually early callback against installation.
+        struct ResourceConfig: Decodable { let ffi_resource_budget_bytes: Int? }
+        let resourceConfig = try JSONDecoder().decode(ResourceConfig.self, from: config)
+        let configuredBudget = try HostBudget(bytes: resourceConfig.ffi_resource_budget_bytes ?? 134217728)
         lock.lock()
+        budget = configuredBudget
         let retained = Unmanaged.passRetained(self)
         context = UInt64(UInt(bitPattern: retained.toOpaque()))
         let result = api.create(config, callback: callback, context: context)
@@ -154,17 +180,36 @@ final class NativeCore: @unchecked Sendable {
     func performDetailed(operation: UInt32, connection: UInt64, channel: UInt64? = nil, input: Data, isolation: isolated (any Actor)? = #isolation) async throws -> NativeCompletion {
         lock.lock()
         guard !stopping, !released else { lock.unlock(); throw PeerloomError.native(5) }
-        guard admitted < 32 else { lock.unlock(); throw PeerloomError.native(6) }
+        let isRead = channel != nil && operation == 2
+        if isRead, let channel, readChannels.contains(channel) { lock.unlock(); throw PeerloomError.native(11) }
+        let critical = channel == nil ? [5, 6, 7].contains(operation) : [4, 5].contains(operation)
+        let resetting = channel == nil && operation == 7
+        if resetting && urgentReset != nil { lock.unlock(); throw PeerloomError.native(11) }
+        let reservation: HostReservation
+        do {
+            reservation = try resetting ? budget.acquireUrgentReset(bytes: input.count + 256)
+                : budget.acquire(bytes: input.count + (critical ? 256 : 65536), critical: critical)
+        }
+        catch { lock.unlock(); throw error }
+        if resetting { urgentReset = reservation }
+        if isRead, let channel { readChannels.insert(channel) }
         admitted += 1
         lock.unlock()
-        // Retain the host-delivery credit until this executor actually consumes the reply.
-        defer { lock.lock(); admitted -= 1; lock.unlock() }
+        // Credit remains owned while a completed continuation waits for its caller actor.
+        defer {
+            reservation.release()
+            lock.lock(); admitted -= 1
+            if urgentReset === reservation { urgentReset = nil }
+            if isRead, let channel { readChannels.remove(channel) }
+            lock.unlock()
+        }
         let ticket = Ticket()
         let value: NativeCompletion = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 io.async { [self] in
                     lock.lock()
                     if stopping || ticket.isCancelled {
+                        if urgentReset === reservation { urgentReset = nil }
                         lock.unlock()
                         continuation.resume(throwing: ticket.isCancelled ? CancellationError() : PeerloomError.native(5))
                         return
@@ -176,9 +221,12 @@ final class NativeCore: @unchecked Sendable {
                         result = api.submit(handle, operation: operation, connection: connection, data: input)
                     }
                     if result.0 != 0 {
+                        if urgentReset === reservation { urgentReset = nil }
                         lock.unlock(); continuation.resume(throwing: PeerloomError.native(result.0)); return
                     }
+                    if channel == nil && operation == 8 { pendingOpens.insert(result.1) }
                     pending[result.1] = continuation
+                    reservations[result.1] = reservation
                     let cancelled = ticket.install(result.1)
                     let sdk = handle
                     lock.unlock()
@@ -214,43 +262,111 @@ final class NativeCore: @unchecked Sendable {
     }
     private func currentHandle() -> UInt64 { lock.lock(); defer { lock.unlock() }; return handle }
 
-    func receive(kind: UInt32, request: UInt64, connection: UInt64, status: UInt32, payload: Data, channel: UInt64 = 0) {
+    func reservePayload(kind: UInt32, request: UInt64, connection: UInt64, channel: UInt64, length: Int) throws -> HostReservation? {
+        lock.lock(); defer { lock.unlock() }
+        guard (0...65536).contains(length) else { throw PeerloomError.invalidEvent }
+        if kind == 1 {
+            guard let ticket = reservations[request], ticket.permits(bytes: length) else { throw PeerloomError.invalidEvent }
+            return nil // Existing admission reservation owns this copy through actor consumption.
+        }
+        if kind == 7 && connection != 0 || kind == 13 {
+            let lifecycle = kind == 7 ? connectionClosed.removeValue(forKey: connection) : channelClosed.removeValue(forKey: channel)
+            if let lifecycle {
+                guard lifecycle.permits(bytes: length) else { throw PeerloomError.eventOverflow }
+                return lifecycle
+            }
+            // Native may suppress an invalid birth while still delivering its terminal event.
+            // This bounded fallback must not invent a connection/channel or stop siblings.
+            do { return try budget.acquireLifecycle(bytes: length) }
+            catch { throw PeerloomError.eventOverflow }
+        }
+        do {
+            if kind == 10 { return try budget.acquire(bytes: length + 16384, critical: true) }
+            if ![4, 5, 6, 12, 14].contains(kind) { return try budget.acquireLifecycle(bytes: length) }
+            return try budget.acquire(bytes: length, critical: false)
+        }
+        catch { throw PeerloomError.eventOverflow }
+    }
+    private func recordPopulation(kind: UInt32, connection: UInt64, channel: UInt64, payload: Data) throws {
+        if kind == 5 {
+            if connectionClosed[connection] == nil { connectionClosed[connection] = try budget.acquireLifecycle() }
+            activeConnections.insert(connection)
+        }
+        if kind == 12, channel != 0, channelClosed[channel] == nil {
+            channelClosed[channel] = try budget.acquireLifecycle()
+        }
+        if kind == 12, channel != 0, let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+           object["mode"] as? String == "reliable_stream" { activeStreams[channel] = connection }
+        try budget.population(connections: activeConnections.count, streams: activeStreams.count)
+    }
+    private func consumedEvent(kind: UInt32, connection: UInt64, channel: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        if kind == 13 { activeStreams.removeValue(forKey: channel) }
+        if kind == 7 {
+            activeConnections.remove(connection)
+            activeStreams = activeStreams.filter { $0.value != connection }
+        }
+        try? budget.population(connections: activeConnections.count, streams: activeStreams.count)
+    }
+    func receive(kind: UInt32, request: UInt64, connection: UInt64, status: UInt32, payload: Data, channel: UInt64 = 0, reservation: HostReservation? = nil) {
         if kind == 1 {
             lock.lock()
             let completion = pending.removeValue(forKey: request)
+            let completedReservation = reservations.removeValue(forKey: request)
+            if let completedReservation, urgentReset === completedReservation { urgentReset = nil }
+            let opened = pendingOpens.remove(request) != nil
+            if status == 0 && opened {
+                do { try recordPopulation(kind: 12, connection: connection, channel: channel, payload: payload) }
+                catch { lock.unlock(); completion?.resume(throwing: error); fail(error); return }
+            }
             lock.unlock()
-            guard let completion else { fail(PeerloomError.invalidEvent); return }
+            guard let completion else {
+                lock.lock(); let stopped = stopping; lock.unlock()
+                if !stopped { fail(PeerloomError.invalidEvent) }
+                return
+            }
             if status == 0 { completion.resume(returning: NativeCompletion(channel: channel, payload: payload)) }
             else if status == 9 { completion.resume(throwing: CancellationError()) }
             else { completion.resume(throwing: PeerloomError.native(status)) }
             return
         }
-        if kind == 10 { storageRequest(request, payload: payload); return }
+        if kind == 10 { storageRequest(request, payload: payload, reservation: reservation); return }
         if kind == 9 {
             lock.lock(); nativeFinal = true; stopping = true
+            connectionClosed.values.forEach { $0.release() }; connectionClosed.removeAll()
+            channelClosed.values.forEach { $0.release() }; channelClosed.removeAll()
             let waiter = eventWaiter; eventWaiter = nil
             lock.unlock(); waiter?.resume()
             schedulePoll()
             return
         }
         lock.lock()
-        if stopping && [5, 6, 12, 14].contains(kind) { lock.unlock(); return }
-        let isData = kind == 6 || kind == 14
-        guard (isData ? dataEvents : controlEvents) < 32 else {
-            lock.unlock(); fail(PeerloomError.eventOverflow); return
-        }
+        if stopping && [4, 5, 6, 12, 14].contains(kind) { lock.unlock(); return }
+        let isData = [4, 5, 6, 12, 14].contains(kind)
+        let eventReservation: HostReservation
+        do {
+            eventReservation = try reservation ?? (isData ? budget.acquire(bytes: payload.count, critical: false) : budget.acquireLifecycle(bytes: payload.count))
+            try recordPopulation(kind: kind, connection: connection, channel: channel, payload: payload)
+        } catch { lock.unlock(); fail(PeerloomError.eventOverflow); return }
         if isData { dataEvents += 1 } else { controlEvents += 1 }
         let owned = EventPayload(payload, valid: { [weak self] in
             guard let self else { return false }
             if kind == 5 || kind == 6 { return self.connectionIsValid(connection) }
             if kind == 12 || kind == 14 { return self.channelIsValid(connection: connection, channel: channel) }
             return true
-        }, release: { [weak self] in self?.releaseEventCredit(isData: isData) })
+        }, release: { [weak self] in
+            eventReservation.release()
+            self?.releaseEventCredit(isData: isData)
+            self?.io.async { [weak self] in self?.consumedEvent(kind: kind, connection: connection, channel: channel) }
+        })
         events.append(PeerloomEvent(kind: kind, connection: connection, status: status, channel: channel, owned: owned))
         let waiter = eventWaiter; eventWaiter = nil
         lock.unlock(); waiter?.resume()
     }
-    private func storageRequest(_ request: UInt64, payload: Data) {
+    func rejectStorage(request: UInt64) {
+        _ = api.storage(currentHandle(), request: request, status: 255, data: Data())
+    }
+    private func storageRequest(_ request: UInt64, payload: Data, reservation: HostReservation?) {
         lock.lock()
         let sdk = handle
         guard storageJobs < 8, !released else {
@@ -259,6 +375,7 @@ final class NativeCore: @unchecked Sendable {
         storageJobs += 1
         lock.unlock()
         storageIO.async { [self] in
+            defer { reservation?.release() }
             var status: UInt32 = 0
             var response = Data()
             do {
@@ -272,9 +389,12 @@ final class NativeCore: @unchecked Sendable {
         }
     }
     func fail(_ error: Error) {
-        lock.lock(); eventError = error; events.removeAll()
+        lock.lock(); if eventError == nil { eventError = error }; events.removeAll()
+        let completions = pending; pending.removeAll(); pendingOpens.removeAll(); reservations.removeAll(); urgentReset = nil
         let waiter = eventWaiter; eventWaiter = nil
-        lock.unlock(); waiter?.resume(); requestShutdown()
+        lock.unlock()
+        completions.values.forEach { $0.resume(throwing: error) }
+        waiter?.resume(); requestShutdown()
     }
     func requestShutdown() {
         lock.lock()
@@ -286,10 +406,20 @@ final class NativeCore: @unchecked Sendable {
         else { schedulePoll() }
     }
     func close() async throws {
+        lock.lock()
+        let task: Task<Void, Error>
+        if let existing = closeTask { task = existing }
+        else {
+            task = Task { [self] in try await waitForClose() }
+            closeTask = task
+        }
+        lock.unlock()
+        try await task.value
+    }
+    private func waitForClose() async throws {
         try await withCheckedThrowingContinuation { continuation in
             lock.lock()
             if released { lock.unlock(); continuation.resume(); return }
-            guard closeWaiters.count < 32 else { lock.unlock(); continuation.resume(throwing: PeerloomError.native(6)); return }
             closeWaiters.append(continuation)
             lock.unlock()
             requestShutdown()

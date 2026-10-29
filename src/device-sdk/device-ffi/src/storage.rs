@@ -58,6 +58,9 @@ impl ExternalStore {
             if pending.len() >= 8 {
                 return Err(StorageError::Unavailable);
             }
+            pending
+                .try_reserve(1)
+                .map_err(|_| StorageError::Unavailable)?;
             pending.insert(id, tx);
         }
         let _pending = Pending {
@@ -152,14 +155,19 @@ mod tests {
         Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize},
     };
-    fn setup() -> (Arc<Instance>, std::sync::mpsc::Receiver<Event>) {
-        let (commands, _) = tokio::sync::mpsc::channel(32);
-        let (events, rx) = std::sync::mpsc::sync_channel(97);
+    fn setup() -> (Arc<Instance>, crate::queue::Receiver<Event>) {
+        let budget = crate::budget::Budget::new(crate::budget::DEFAULT_BYTES).unwrap();
+        let (commands, _) = crate::queue::channel(budget.clone());
+        let (events, rx) = crate::queue::channel(budget.clone());
+        let shutdown_terminal = Mutex::new(Some(events.try_reserve(true).unwrap()));
         (
             Arc::new(Instance {
                 commands,
                 events,
+                budget,
+                shutdown_terminal,
                 operations: Mutex::new(Default::default()),
+                object_counts: Arc::new(ObjectCounts::default()),
                 storage: Mutex::new(Default::default()),
                 shutting: AtomicBool::new(false),
                 stop: Default::default(),
@@ -171,8 +179,7 @@ mod tests {
                 device_id: Mutex::new(None),
                 resetting: AtomicBool::new(false),
                 reset_active: AtomicBool::new(false),
-                data_count: AtomicUsize::new(0),
-                control_count: AtomicUsize::new(0),
+                reading_count: AtomicUsize::new(0),
                 threads: Mutex::new(Vec::new()),
             }),
             rx,
@@ -191,7 +198,7 @@ mod tests {
             expires_at: "2030-01-01T00:00:00Z".into(),
         }
     }
-    async fn event(rx: &std::sync::mpsc::Receiver<Event>) -> Event {
+    async fn event(rx: &crate::queue::Receiver<Event>) -> Event {
         for _ in 0..1000 {
             if let Ok(e) = rx.try_recv() {
                 return e;
@@ -200,7 +207,7 @@ mod tests {
         }
         panic!("storage event deadline");
     }
-    fn reply(instance: &Instance, event: &Event, status: u32, json: &str) {
+    fn reply(instance: &Instance, event: Event, status: u32, json: &str) {
         instance
             .storage
             .lock()
@@ -224,7 +231,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&e.payload).unwrap();
         assert_eq!(body["operation"], "load");
         assert_eq!(body["scope"]["application_id"], scope().application_id);
-        reply(&i, &e, OK, r#"{"revision":0,"identity":null}"#);
+        reply(&i, e, OK, r#"{"revision":0,"identity":null}"#);
         assert_eq!(t.await.unwrap().unwrap().revision, 0);
         let s = store.clone();
         let t = tokio::spawn(async move { s.save(&scope(), 0, identity()).await });
@@ -232,7 +239,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&e.payload).unwrap();
         assert_eq!(body["operation"], "save");
         assert_eq!(body["expected_revision"], 0);
-        reply(&i, &e, OK, r#"{"revision":1}"#);
+        reply(&i, e, OK, r#"{"revision":1}"#);
         assert_eq!(t.await.unwrap(), Ok(1));
         let s = store.clone();
         let t = tokio::spawn(async move { s.delete(&scope(), 1).await });
@@ -241,12 +248,12 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&e.payload).unwrap()["operation"],
             "delete"
         );
-        reply(&i, &e, OK, r#"{"revision":2}"#);
+        reply(&i, e, OK, r#"{"revision":2}"#);
         assert_eq!(t.await.unwrap(), Ok(2));
         let s = store.clone();
         let t = tokio::spawn(async move { s.save(&scope(), 0, identity()).await });
         let e = event(&rx).await;
-        reply(&i, &e, BUSY, "{}");
+        reply(&i, e, BUSY, "{}");
         assert_eq!(t.await.unwrap(), Err(StorageError::Conflict));
     }
     #[tokio::test]
@@ -256,7 +263,7 @@ mod tests {
             let store = ExternalStore(Arc::downgrade(&i));
             let t = tokio::spawn(async move { store.delete(&scope(), 1).await });
             let e = event(&rx).await;
-            reply(&i, &e, OK, &format!(r#"{{"revision":{revision}}}"#));
+            reply(&i, e, OK, &format!(r#"{{"revision":{revision}}}"#));
             assert_eq!(t.await.unwrap(), Err(StorageError::Unavailable));
         }
     }
@@ -282,6 +289,6 @@ mod tests {
         let _ = t.await;
         assert!(!i.storage.lock().unwrap().contains_key(&e.request));
         // The host may already have atomically committed: dropping this wait does not roll it back.
-        i.release_credit(&e);
+        i.release_credit(e);
     }
 }

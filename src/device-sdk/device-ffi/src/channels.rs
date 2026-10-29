@@ -2,6 +2,7 @@
 use crate::{
     bridge::error,
     handles::{ChannelKind, ScopedValidity},
+    queue,
     state::*,
 };
 use device_core::{
@@ -17,26 +18,30 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::{mpsc, watch},
+    sync::watch,
     task::{JoinHandle, JoinSet},
 };
 
 type Gate = ScopedValidity<Authority>;
 pub struct Task {
-    pub commands: mpsc::Sender<Queued>,
+    pub commands: queue::Sender<Queued>,
+    pub closed: Option<LifecycleTicket>,
     stop: watch::Sender<bool>,
     join: JoinHandle<()>,
 }
 impl Task {
     pub fn route(&self, instance: &Arc<Instance>, operation: Operation) {
+        let critical = critical_operation(operation.kind);
         if let Err(reason) = self.commands.try_send(Queued {
             instance: instance.clone(),
             operation: Some(operation),
         }) {
-            let status = match &reason {
-                mpsc::error::TrySendError::Full(_) => FULL,
-                _ => CLOSED,
-            };
+            let status = FULL;
+            // A failed critical route must still wake all pending READs under
+            // this task; its local fence has already made rollback impossible.
+            if critical {
+                self.stop.send_replace(true);
+            }
             instance.finish(reason.into_inner().take(), status, Vec::new());
         }
     }
@@ -64,6 +69,16 @@ pub struct Queued {
     instance: Arc<Instance>,
     operation: Option<Operation>,
 }
+impl queue::Item for Queued {
+    fn key(&self) -> u64 {
+        self.operation.as_ref().map_or(0, |op| op.connection)
+    }
+    fn critical(&self) -> bool {
+        self.operation
+            .as_ref()
+            .is_some_and(|op| critical_operation(op.kind))
+    }
+}
 impl Queued {
     fn take(mut self) -> Operation {
         self.operation.take().expect("queued operation")
@@ -81,7 +96,7 @@ impl Drop for Queued {
         }
     }
 }
-fn drain(instance: &Instance, commands: &mut mpsc::Receiver<Queued>) -> Vec<Operation> {
+fn drain(instance: &Instance, commands: &mut queue::Receiver<Queued>) -> Vec<Operation> {
     commands.close();
     let mut irreversible = Vec::new();
     while let Ok(queued) = commands.try_recv() {
@@ -115,6 +130,7 @@ struct Registration {
     parent: u64,
     channel: Option<u64>,
     status: u32,
+    closed: Option<LifecycleTicket>,
 }
 impl Drop for Registration {
     fn drop(&mut self) {
@@ -133,7 +149,9 @@ impl Drop for Registration {
         if let Some(channel) = self.channel {
             let mut event = Event::new(13, 0, self.parent, self.status, Vec::new());
             event.channel = channel;
-            self.instance.emit(event);
+            if let Some(ticket) = self.closed.take() {
+                ticket.send(&self.instance, event);
+            }
         }
     }
 }
@@ -177,6 +195,11 @@ fn spawn_channel(
     ttl: Option<Duration>,
 ) -> Result<(u64, Gate, Vec<u8>, Task), u32> {
     let kind = mode(&channel);
+    let closed = instance.reserve_lifecycle(if kind == ChannelKind::ReliableStream {
+        2
+    } else {
+        0
+    })?;
     let (validity, payload) = channel_info(&channel);
     let (id, gate) = {
         let mut handles = instance.handles.lock().map_err(|_| INTERNAL)?;
@@ -192,7 +215,7 @@ fn spawn_channel(
         }
         (id, handles.channel(parent, id).map_err(handle_error)?)
     };
-    let (sender, receiver) = mpsc::channel(32);
+    let (sender, receiver) = queue::channel(instance.budget.clone());
     let (stop, stopped) = watch::channel(false);
     let worker_gate = gate.clone();
     let registration = Registration {
@@ -200,6 +223,7 @@ fn spawn_channel(
         parent,
         channel: Some(id),
         status: UNKNOWN,
+        closed: Some(closed),
     };
     let join = tokio::spawn(async move {
         let mut registration = registration;
@@ -236,6 +260,7 @@ fn spawn_channel(
         gate,
         payload,
         Task {
+            closed: None,
             commands: sender,
             stop,
             join,
@@ -248,7 +273,7 @@ async fn message_worker(
     id: u64,
     gate: Gate,
     mut channel: SdkMessageChannel,
-    mut commands: mpsc::Receiver<Queued>,
+    mut commands: queue::Receiver<Queued>,
     mut stop: watch::Receiver<bool>,
 ) {
     let sender = channel.sender();
@@ -309,12 +334,40 @@ async fn message_worker(
     }
 }
 
+struct ReadScope {
+    instance: Arc<Instance>,
+    entered: bool,
+}
+impl ReadScope {
+    fn new(instance: Arc<Instance>) -> Self {
+        Self {
+            instance,
+            entered: false,
+        }
+    }
+    fn enter(&mut self) {
+        if !self.entered {
+            self.instance.reading_count.fetch_add(1, Ordering::AcqRel);
+            self.entered = true;
+        }
+    }
+}
+impl Drop for ReadScope {
+    fn drop(&mut self) {
+        if self.entered {
+            self.instance.reading_count.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
 async fn stream_read(
     reader: &mut device_core::sdk::SdkStreamReader,
-    pending: &mut Option<(CompletionGuard, Vec<u8>)>,
+    pending: &mut Option<(Vec<u8>, ReadScope, CompletionGuard)>,
 ) -> Result<usize, device_core::sdk::SdkError> {
     match pending {
-        Some((_, buffer)) => reader.read(buffer).await,
+        Some((buffer, scope, _)) => {
+            scope.enter();
+            reader.read(buffer).await
+        }
         None => std::future::pending().await,
     }
 }
@@ -324,11 +377,11 @@ async fn stream_worker(
     _id: u64,
     gate: Gate,
     channel: SdkByteStream,
-    mut commands: mpsc::Receiver<Queued>,
+    mut commands: queue::Receiver<Queued>,
     mut stop: watch::Receiver<bool>,
 ) {
     let (mut reader, writer) = channel.split();
-    let (write_tx, mut write_rx) = mpsc::channel::<Queued>(32);
+    let (write_tx, mut write_rx) = queue::channel::<Queued>(instance.budget.clone());
     let writer_instance = instance.clone();
     let writer_gate = gate.clone();
     let mut writer_stop = stop.clone();
@@ -393,10 +446,11 @@ async fn stream_worker(
                 let Some(guard) = CompletionGuard::start(instance.clone(), queued.take()) else { continue };
                 match guard.operation().kind {
                     65 if reading.is_none() => {
-                        #[derive(Deserialize)]
-                        struct Read { max_bytes: usize }
-                        let request: Read = serde_json::from_slice(&guard.operation().input).expect("admission validates read");
-                        reading = Some((guard, vec![0; request.max_bytes]));
+                        let mut guard = guard;
+                        let buffer = guard.take_read_buffer();
+                        // Buffer precedes guard so abort drops memory before its
+                        // UNKNOWN terminal can return the byte reservation.
+                        reading = Some((buffer, ReadScope::new(instance.clone()), guard));
                     }
                     65 => guard.finish(BUSY, Vec::new(), None),
                     68 => { close = Some(guard); break; }
@@ -404,17 +458,20 @@ async fn stream_worker(
                 }
             },
             received = stream_read(&mut reader, &mut reading) => {
-                let (guard, mut buffer) = reading.take().expect("only enabled for active read");
+                let (mut buffer, scope, guard) = reading.take().expect("only enabled for active read");
+                drop(scope);
                 match received {
                     Ok(bytes) => { buffer.truncate(bytes); guard.finish(OK, buffer, Some(gate.clone())); },
-                    Err(reason) => guard.finish(error(reason), Vec::new(), None),
+                    Err(reason) => { drop(buffer); guard.finish(error(reason), Vec::new(), None); },
                 }
             }
         }
     }
     let pending = drain(&instance, &mut commands);
-    if let Some((guard, mut buffer)) = reading.take() {
+    if let Some((mut buffer, scope, guard)) = reading.take() {
+        drop(scope);
         buffer.fill(0);
+        drop(buffer);
         guard.finish(CLOSED, Vec::new(), None);
     }
     drop(write_tx);
@@ -489,15 +546,17 @@ pub fn spawn_connection(
     gate: Gate,
     mut connection: Connection,
 ) -> Result<Task, u32> {
+    let closed = instance.reserve_lifecycle(1)?;
     let mut incoming = connection.take_incoming_channels().map_err(error)?;
     let default_sender = connection.default_sender();
-    let (sender, mut commands) = mpsc::channel::<Queued>(32);
+    let (sender, mut commands) = queue::channel::<Queued>(instance.budget.clone());
     let (stop, mut stopped) = watch::channel(false);
     let registration = Registration {
         instance: instance.clone(),
         parent: id,
         channel: None,
         status: UNKNOWN,
+        closed: None,
     };
     let join = tokio::spawn(async move {
         let _registration = registration;
@@ -600,6 +659,7 @@ pub fn spawn_connection(
         }
     });
     Ok(Task {
+        closed: Some(closed),
         commands: sender,
         stop,
         join,

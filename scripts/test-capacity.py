@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # MIT — Copyright (c) 2026 Peerloom contributors.
-"""独占本机 PG/Redis/Go + 单 PC/500 原生模拟 SDK 的真实容量验收，不下载、不改系统设置。"""
+"""独占本机 PG/Redis/Go + 单 PC 的 core/FFI 500 原生模拟 SDK 的真实容量验收，不下载、不改系统设置。"""
 import argparse
 import base64
 import contextlib
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -106,7 +107,7 @@ def safe_progress(path):
     # when teardown emits hundreds of subsequent per-connection notifications.
     from collections import deque
     first, important, phases_seen, failures, tail = [], [], [], [], deque(maxlen=64)
-    phases = r'(?:register|authorize|connect|baseline|hold|renewal-proof|pc-wss-reconnect|manual-new-sessions|explicit-session-close|shutdown)'
+    phases = r'(?:register|authorize|connect|baseline|hold|renewal-proof|pc-wss-reconnect|manual-new-sessions|explicit-session-close|ffi-bulk|ffi-terminate|ffi-fin|ffi-reset|shutdown)'
     unsigned, signed = r'[0-9]{1,16}', r'-?[0-9]{1,16}'
     patterns = (
         rf'capacity (?:ready_pairs=[0-9]{{1,3}}|phase={phases}(?: elapsed_ms={unsigned})?)',
@@ -122,8 +123,8 @@ def safe_progress(path):
                 if len(text) <= 2048 and any(re.fullmatch(pattern, text) for pattern in patterns):
                     accepted = text
                 elif 'panicked at ' in text:
-                    location = re.search(r'\bsdk_scale\.rs:([0-9]{1,6}):([0-9]{1,6})', text)
-                    accepted = 'Rust assertion failed at sdk_scale.rs:' + ':'.join(location.groups()) if location else 'Rust assertion failed; private panic details withheld'
+                    location = re.search(r'\b(sdk_scale|ffi_scale)\.rs:([0-9]{1,6}):([0-9]{1,6})', text)
+                    accepted = 'Rust assertion failed at ' + location.group(1) + '.rs:' + ':'.join(location.groups()[1:]) if location else 'Rust assertion failed; private panic details withheld'
                 else:
                     continue
                 item = (index, accepted)
@@ -267,14 +268,67 @@ def create_fixture(client, admin, peers, directory, origin):
             'directory': str(directory), 'peer_count': peers, 'hold_seconds': 120}
 
 
+CASE_TESTS = {
+    'core': 'one_pc_five_hundred_real_native_peers',
+    'ffi': 'one_c_pc_five_hundred_real_native_streams',
+}
+
+
+def verify_sdk_proof(proof, case, peers, debug_close_only=False):
+    require(proof.get('status') == ('debug-only' if debug_close_only else 'passed')
+            and proof.get('simultaneous_ready') == peers, 'missing real capacity proof')
+    if not debug_close_only:
+        require(proof.get('hold_seconds', 0) >= 120
+                and proof.get('all_initial_dual_deadlines_crossed_and_renewed') is True,
+                'missing real lease crossing proof')
+    if case == 'ffi':
+        expected = {
+            'case': 'ffi', 'peer_count': peers, 'pc_identity_count': 1, 'pc_sdk_instances': 1,
+            'native_simulated_peer_instances': peers, 'pc_c_abi_instances': 1,
+            'c_adapter_validated': True, 'ffi_streams_ready': peers, 'peak_pending_reads': peers,
+            'all_500_reads_accepted_before_peer_payload': peers == 500, 'read_reservation_bytes': 65536,
+            'resource_budget_bytes': 134217728, 'bulk_bytes_per_peer_per_direction': 262144,
+            'bulk_send_window': 8, 'bulk_bytes_total': 2 * peers * 262144,
+            'queued_cancel_verified': True, 'running_read_cancel_busy': True,
+            'terminated_pending_reads': min(peers - 1, 20), 'siblings_survive_termination': True,
+            'partial_read_verified': True, 'partial_write_verified': True, 'fin_half_close_verified': True,
+            'reset_verified': True, 'exactly_once_completions': True, 'no_callbacks_after_shutdown': True,
+            'real_registration': True, 'real_webrtc_bidirectional_unique_payloads': True,
+            'all_session_rows_closed': True, 'all_local_gates_closed': True,
+            'explicit_session_close_before_sdk_shutdown': True, 'errors': 0, 'manual_new_session_count': 0, 'pending_reads_after_reset': 0,
+        }
+        require(all(type(proof.get(key)) is type(value) and proof.get(key) == value for key, value in expected.items()),
+                'missing exact FFI C-ABI stream/cancellation/reset proof')
+        read_bytes, critical_bytes = proof.get('pending_read_charged_bytes'), proof.get('pending_critical_charged_bytes')
+        require(type(read_bytes) is int and type(critical_bytes) is int
+                and read_bytes >= peers * 65536 and critical_bytes >= 0
+                and read_bytes + critical_bytes <= proof['resource_budget_bytes'],
+                'missing bounded logical FFI resource charge proof')
+        accepted, completed = proof.get('ffi_operations_accepted'), proof.get('ffi_operation_completions')
+        require(type(accepted) is int and type(completed) is int
+                and accepted >= peers and completed == accepted,
+                'missing nonempty exactly-once FFI terminal completion counts')
+
+        for name in ('bulk_elapsed_seconds', 'bulk_bytes_per_second'):
+            value = proof.get(name)
+            require(type(value) in (int, float) and math.isfinite(value) and value > 0,
+                    'invalid measured bulk timing; no throughput threshold is imposed')
+
+
+
+def expected_sessions(case, peers):
+    return peers + min(peers, 20) if case == 'core' else peers
+
+
 def main():
     global STAGE
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--case', choices=tuple(CASE_TESTS), default='core')
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument('--pg-bin', type=Path, required=True)
     parser.add_argument('--redis-bin', type=Path, required=True)
     parser.add_argument('--server-bin', type=Path, required=True, help='already-built device-server/device-migrate/device-admin directory')
-    parser.add_argument('--sdk-test', type=Path, required=True, help='already-built sdk_scale integration-test executable; no cargo build here')
+    parser.add_argument('--sdk-test', type=Path, required=True, help='already-built case-specific sdk_scale/ffi_scale integration-test executable; no cargo build here')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--debug-close-only', action='store_true', help='<=20 peers, skips lease hold; never acceptance or a 500 pass')
     parser.add_argument('--source-manifest', type=Path, help='coordinator combined-tree manifest; recorded by digest, not claimed as a clean commit')
@@ -283,6 +337,8 @@ def main():
     require(sys.platform == 'linux' and os.getuid() != 0, 'unprivileged Linux required')
     require(1 <= args.peers <= 500, 'peer count bound')
     require(not args.debug_close_only or args.peers <= 20, 'debug-only mode cannot be a 500 acceptance')
+    require(not args.debug_close_only or args.case == 'core', 'FFI case has no debug acceptance mode')
+    require(args.case == 'core' or args.peers >= 2, 'FFI termination proof requires at least one surviving peer')
     root, pg, redis, binaries, sdk_test = (path.resolve(strict=True) for path in (args.root, args.pg_bin, args.redis_bin, args.server_bin, args.sdk_test))
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     require(soft >= 4096, 'insufficient existing file-descriptor limit; no system changes made')
@@ -295,12 +351,14 @@ def main():
     management = importlib.util.module_from_spec(spec); spec.loader.exec_module(management)
     env = clean_env(); children, logs, samples = [], [], []
     started = None; cpu_seconds = 0.0; peak = {'rss': 0, 'fds': 0, 'threads': 0}
-    result = {'status': 'failed', 'requested_peers': args.peers, 'physical_android_devices': False,
+    result = {'status': 'failed', 'case': args.case, 'requested_peers': args.peers, 'physical_android_devices': False,
               'sdk_test_sha256': digest(sdk_test), 'tested_source_status': 'combined-working-tree-not-claimed-clean-commit',
               'source_manifest_sha256': digest(args.source_manifest.resolve(strict=True)) if args.source_manifest else None,
               'cpu_count': os.cpu_count(), 'nofile_soft': soft, 'nofile_hard': hard, 'rss_measurement': 'sum of owned process RSS; shared pages may be counted more than once',
-              'source_inputs': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in ('src/device-sdk/Cargo.lock', 'src/device-server/go.sum', 'src/device-sdk/device-core/src/sdk.rs', 'src/device-sdk/device-core/tests/sdk_scale.rs')},
+              'source_inputs': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in ('src/device-sdk/Cargo.lock', 'src/device-server/go.sum', 'src/device-sdk/device-core/src/sdk.rs', ('src/device-sdk/device-core/tests/sdk_scale.rs' if args.case == 'core' else 'src/device-sdk/device-ffi/tests/ffi_scale.rs'))},
               'binary_sha256': {name: digest(binaries / name) for name in ('device-server', 'device-admin', 'device-migrate')}}
+    if args.case == 'ffi':
+        result['c_adapter_source_sha256'] = digest(root / 'src/device-sdk/device-ffi/tests/capacity_host.c')
     with private_workspace(output) as private_dir:
         def launch(command, label, selected_env=env):
             stream = (private_dir / (label + '.log')).open('xb'); os.fchmod(stream.fileno(), 0o600); logs.append(stream)
@@ -355,7 +413,7 @@ def main():
             private(private_dir / 'fixture.json', json.dumps(fixture))
             STAGE = 'real-sdk-capacity'
             test_env = sdk_environment(private_dir / 'fixture.json')
-            sdk = launch([str(sdk_test), '--ignored', '--exact', 'one_pc_five_hundred_real_native_peers', '--nocapture'], 'sdk', test_env)
+            sdk = launch([str(sdk_test), '--ignored', '--exact', CASE_TESTS[args.case], '--nocapture'], 'sdk', test_env)
             started = time.monotonic(); previous = {}; cpu_seconds = 0.0; peak = {'rss': 0, 'fds': 0, 'threads': 0}
             baseline_presence_checked = False
             while sdk.poll() is None:
@@ -371,18 +429,18 @@ def main():
                 samples.append({'elapsed_seconds': round(time.monotonic() - started, 3), **measured, 'cpu_seconds': round(cpu_seconds, 3)})
                 require(measured['rss'] <= 7 * 1024**3 and memory_available() >= 512 * 1024**2, 'resource watchdog: memory bound')
                 time.sleep(1)
-            require(sdk.returncode == 0, 'sdk_scale exit ' + str(sdk.returncode))
+            require(sdk.returncode == 0, 'capacity test exit ' + str(sdk.returncode))
+            require('test result: ok. 1 passed; 0 failed;' in (private_dir / 'sdk.log').read_text(encoding='utf-8'),
+                    'exactly one actual capacity test must pass')
             require(baseline_presence_checked or args.debug_close_only, 'missing baseline online identity proof')
             STAGE = 'verify-closed-resources'
             proof = json.loads((output / 'sdk-proof.json').read_text())
-            require(proof.get('status') == ('debug-only' if args.debug_close_only else 'passed') and proof.get('simultaneous_ready') == args.peers, 'missing real capacity proof')
-            if not args.debug_close_only:
-                require(proof.get('hold_seconds', 0) >= 120 and proof.get('all_initial_dual_deadlines_crossed_and_renewed') is True, 'missing real lease crossing proof')
+            verify_sdk_proof(proof, args.case, args.peers, args.debug_close_only)
             # Snapshot directly from this new isolated database: never supplied DSN/production DB.
             pgenv = dict(clean_env(), PGHOST='127.0.0.1', PGPORT=str(pgport), PGUSER='peerloom_capacity', PGDATABASE='postgres', PGPASSFILE=str(private_dir / 'pgpass'))
             sql = "SELECT json_build_object('devices',(SELECT count(*) FROM devices),'sessions',(SELECT count(*) FROM sessions),'not_closed',(SELECT count(*) FROM sessions WHERE state <> 'closed'));"
             database = json.loads(run([str(pg / 'psql'), '-X', '-At', '-c', sql], env=pgenv))
-            require(database['devices'] == args.peers + 1 and database['sessions'] == args.peers + min(args.peers, 20) and database['not_closed'] == 0, 'database identity/session close evidence mismatch')
+            require(database['devices'] == args.peers + 1 and database['sessions'] == expected_sessions(args.case, args.peers) and database['not_closed'] == 0, 'database identity/session close evidence mismatch')
             # Only owned Redis is queried; generation counters are deliberately not active presence.
             deadline = time.monotonic() + 10
             while redis_command(redisport, redis_password, 'EVAL', PRESENCE_COUNT_SCRIPT, '0') != b':0\r\n':

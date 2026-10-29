@@ -18,8 +18,8 @@ namespace {
 std::mutex mutex;
 std::condition_variable changed;
 std::atomic<std::uint64_t> sdk{0};
-std::array<std::uint64_t, 32> accepted{};
-std::array<std::uint64_t, 32> completed{};
+std::array<std::uint64_t, 64> accepted{};
+std::array<std::uint64_t, 64> completed{};
 std::size_t admissions = 0, completions = 0, cancelled = 0, shutdowns = 0, reentrant_checks = 0;
 std::uint64_t storage_id = 0, terminal_id = 0;
 bool callback_blocked = true, callback_seen = false;
@@ -51,7 +51,7 @@ void callback(std::uint64_t context, const dp_event *event) noexcept {
         completed[completions++] = event->request_id;
         if (event->status == DP_CANCELLED) ++cancelled;
     } else if (event->kind == DP_EVENT_SHUTDOWN) {
-        CHECK(admissions == 32 && completions == admissions);
+        CHECK(admissions == 64 && completions == admissions);
         terminal_id = event->request_id;
         ++shutdowns;
     } else { CHECK(false); }
@@ -83,7 +83,7 @@ int main() {
     CHECK(dp_sdk_submit(handle, DP_OP_START, 0, input, 2, &first) == DP_OK); record(first);
     const auto storage = wait_storage();
     CHECK(dp_sdk_cancel(handle, first) == DP_BUSY);
-    for (unsigned i = 0; i < 31; ++i) {
+    for (unsigned i = 0; i < 63; ++i) {
         CHECK(dp_sdk_submit(handle, DP_OP_CONNECT, 0, input, 2, &operation) == DP_OK); record(operation);
         CHECK(dp_sdk_cancel(handle, operation) == DP_OK);
         CHECK(dp_sdk_cancel(handle, operation) == DP_OK);
@@ -102,7 +102,7 @@ int main() {
         std::unique_lock<std::mutex> guard(mutex);
         callback_blocked = false; changed.notify_all();
         CHECK(changed.wait_for(guard, std::chrono::seconds(10), [] { return shutdowns == 1; }));
-        CHECK(terminal_id == shutdown_id && cancelled == 31 && reentrant_checks == 34);
+        CHECK(terminal_id == shutdown_id && cancelled == 63 && reentrant_checks == 66);
     }
     auto released = DP_BUSY;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -115,6 +115,6 @@ int main() {
     CHECK(dp_sdk_state(handle) == 3);
     CHECK(dp_sdk_submit(handle, DP_OP_START, 0, nullptr, 0, &operation) == DP_INVALID_HANDLE && operation == 0);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    { std::lock_guard<std::mutex> guard(mutex); CHECK(shutdowns == 1 && completions == 32 && reentrant_checks == 34); }
-    std::puts("C++17 native ABI: accepted IDs, 32 exactly-once completions, cancellation, async storage, callback backpressure, reentry and quiescent release PASS");
+    { std::lock_guard<std::mutex> guard(mutex); CHECK(shutdowns == 1 && completions == 64 && reentrant_checks == 66); }
+    std::puts("C++17 native ABI: accepted IDs, 64 exactly-once completions, cancellation, async storage, callback backpressure, reentry and quiescent release PASS");
 }

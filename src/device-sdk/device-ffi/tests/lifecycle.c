@@ -12,7 +12,7 @@ _Static_assert(offsetof(dp_event, payload) == 32, "payload ABI");
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static uint64_t sdk, storage_id, terminal_id;
-static uint64_t completed[32];
+static uint64_t completed[64];
 static unsigned completions, cancelled, shutdowns, reentrant_checks;
 static int callback_blocked = 1;
 static pthread_t callback_thread;
@@ -30,12 +30,12 @@ static void callback(uint64_t context, const dp_event *event) {
         pthread_cond_broadcast(&changed);
         while (callback_blocked) pthread_cond_wait(&changed, &lock);
     } else if (event->kind == DP_EVENT_COMPLETE) {
-        assert(completions < 32);
+        assert(completions < 64);
         for (unsigned i = 0; i < completions; ++i) assert(completed[i] != event->request_id);
         completed[completions++] = event->request_id;
         if (event->status == DP_CANCELLED) ++cancelled;
     } else if (event->kind == DP_EVENT_SHUTDOWN) {
-        assert(completions == 32);
+        assert(completions == 64);
         terminal_id = event->request_id;
         ++shutdowns;
     } else assert(!"unexpected lifecycle event");
@@ -67,7 +67,7 @@ int main(void) {
     assert(dp_sdk_submit(sdk, DP_OP_START, 0, (const uint8_t *)"{}", 2, &first) == DP_OK);
     wait_storage();
     assert(dp_sdk_cancel(sdk, first) == DP_BUSY); /* running load is not fictitiously rolled back */
-    for (unsigned i = 0; i < 31; ++i) {
+    for (unsigned i = 0; i < 63; ++i) {
         assert(dp_sdk_submit(sdk, DP_OP_CONNECT, 0, (const uint8_t *)"{}", 2, &op) == DP_OK);
         assert(dp_sdk_cancel(sdk, op) == DP_OK);
         assert(dp_sdk_cancel(sdk, op) == DP_OK);
@@ -84,7 +84,7 @@ int main(void) {
     pthread_mutex_lock(&lock); callback_blocked = 0; pthread_cond_broadcast(&changed);
     struct timespec until; clock_gettime(CLOCK_REALTIME, &until); until.tv_sec += 10;
     while (!shutdowns) assert(!pthread_cond_timedwait(&changed, &lock, &until));
-    assert(terminal_id == shutdown_id && cancelled == 31 && reentrant_checks == 34);
+    assert(terminal_id == shutdown_id && cancelled == 63 && reentrant_checks == 66);
     pthread_mutex_unlock(&lock);
     uint32_t released = DP_BUSY;
     for (unsigned i = 0; i < 10000 && released == DP_BUSY; ++i) {
@@ -95,6 +95,6 @@ int main(void) {
     assert(dp_sdk_release(sdk) == DP_INVALID_HANDLE);
     assert(dp_sdk_state(sdk) == 3);
     assert(dp_sdk_submit(sdk, DP_OP_START, 0, NULL, 0, &op) == DP_INVALID_HANDLE && !op);
-    puts("C ABI lifecycle: 32 exactly-once completions, queued cancellation, async storage, stalled callback, reentry and safe release PASS");
+    puts("C ABI lifecycle: 64 exactly-once completions, queued cancellation, async storage, stalled callback, reentry and safe release PASS");
     return 0;
 }

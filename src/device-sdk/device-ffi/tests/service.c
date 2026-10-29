@@ -113,7 +113,7 @@ static uint64_t submit(host *h,uint32_t kind,uint64_t connection,const void *dat
             pthread_mutex_lock(&mutex); ++h->accepted_business; pthread_mutex_unlock(&mutex);
             return id;
         }
-        /* The concurrent flood deliberately fills all 32 operation credits. FULL with
+        /* The concurrent flood deliberately pressures the dynamic operation credits. FULL with
          * id=0 means not admitted, so retrying this call cannot replay a remote mutation.
          * Never retry an accepted ID, OutcomeUnknown, auth failure or other status. */
         if (status == DP_BUFFER_FULL && id == 0) {

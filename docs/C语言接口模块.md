@@ -1,6 +1,6 @@
 # C 语言接口模块
 
-`src/device-sdk/device-ffi` 提供当前 Rust `DeviceSdk` 的原生异步 C ABI。**本次多连接、三类通道扩展已在 Linux 通过真实 C/Go/WebRTC 联合测试；Kotlin/Swift 扩展仍需对应原生 CI，不能沿用旧单通道平台结果冒充本次五端验收。**
+`src/device-sdk/device-ffi` 提供当前 Rust `DeviceSdk` 的原生异步 C ABI。各平台与容量变更的实际验证范围见[开发与验收](开发与验收.md)；不能把既有连接测试当作新并发流读取或真实视频验收。
 
 唯一规范头文件是 [`device_sdk.h`](../src/device-sdk/device-ffi/include/device_sdk.h)。不要维护第二份手写声明。ABI 主版本为 1；事件携带 `abi_version`、`struct_size`，状态与事件种类使用固定宽度整数。C11 与 C++17 均已编译验证。
 
@@ -18,7 +18,7 @@
 | 数据传输失败后恢复 | Core 已实现重建 PeerConnection/Channel 的恢复路径，新增组合仍须精确 CI；不宣称原地 ICE restart |
 | Android JNI、Swift、Windows 封装及五端安全存储 | 沿用各平台 create/TLS/存储边界；本次新增接口须各平台精确 CI。Apple 签名生产 Keychain 与真机仍有独立验收条件 |
 
-`dp_capabilities()` 按位返回可靠消息、异步 CAS、显式内存存储、reset，以及新增多连接、typed channel、可靠字节流、低延迟消息能力；位定义只以规范头为准，不能把总和值当 ABI 版本。当前源码的连接与通道默认人工限额已取消（已发布 v0.1.1 资产不变）：`max_connections`、`max_channels_per_connection`（包含默认可靠消息通道）、`max_channel_creations_per_connection` 省略或为 `0` 表示不设对应人工上限；正数保留显式限额。只有两个通道限额均为正数时才要求 active ≤ creation；关闭不返还显式累计 DCEP 预算。进程不再固定最多 16 个实例，句柄表按实际接纳量增长，分配失败拒绝接纳，不按配置值预分配。SCTP stream-ID、系统内存/线程资源与独立有界队列仍有限；“不限数量”不是无限物理容量或吞吐 SLA。每实例仍最多 32 个待完成操作，宿主应持续消费 callback 并分批提交，不将背压信用误当连接总数限制。
+`dp_capabilities()` 按位返回可靠消息、异步 CAS、显式内存存储、reset，以及新增多连接、typed channel、可靠字节流、低延迟消息能力；位定义只以规范头为准，不能把总和值当 ABI 版本。当前源码的连接与通道默认人工限额已取消（已发布 v0.1.1 资产不变）：`max_connections`、`max_channels_per_connection`（包含默认可靠消息通道）、`max_channel_creations_per_connection` 省略或为 `0` 表示不设对应人工上限；正数保留显式限额。只有两个通道限额均为正数时才要求 active ≤ creation；关闭不返还显式累计 DCEP 预算。进程不再固定最多 16 个实例，句柄表按实际接纳量增长，分配失败拒绝接纳，不按配置值预分配。SCTP stream-ID、系统内存/线程资源与独立有界队列仍有限；“不限数量”不是无限物理容量或吞吐 SLA。待完成操作信用随实际连接与通道数自动增长，仍受独立字节预算与单流并发读取约束；宿主必须持续消费 callback。
 
 
 ## 线程与所有权
@@ -27,7 +27,7 @@
 flowchart LR
     Host[宿主调用线程] --> Boundary[长度检查与立即复制]
     Boundary --> Registry[整数句柄注册表]
-    Registry --> Commands[32个操作信用额]
+    Registry --> Commands[动态操作信用与字节预算]
     Commands --> Worker[实例专用runtime线程]
     Worker --> SDK[DeviceSdk / Connection]
     SDK --> Gate[共享授权守卫]
@@ -60,7 +60,11 @@ unsafe 仅限 `boundary.rs` 的 C 指针/导出边界；Rust core/storage/transp
 | REFRESH | 空输入；使用身份模块串行轮换与恢复逻辑，并重新认证 WSS |
 | CLOSE_CONNECTION | 空输入；接受后立即拒绝新增 send 与后续消息/Ready 回调，再等待实际资源清理 |
 
-立即失败时输出 request=0，不产生 completion。每个接受的普通操作预留一个终态事件信用额，最多 32 个；信用在终态 callback 返回后释放，确保慢 callback 不造成无限积压。消息最多 32 个、其他控制事件最多 32 个；shutdown 另有独立信用，底层事件队列总容量 97。非终态溢出会停止实例，不静默丢弃后继续声称健康。
+立即失败时输出 request=0，不产生 completion。受理前预留输入复制、最大 READ 回复、操作元数据及终态队列位置；每个受理操作恰好结算一次，信用持有至终态 callback 返回并销毁原生 payload。缩小当前对象数量只影响新接纳，不撤回已受理信用。
+
+设 C 为实际连接数、S 为实际可靠字节流数（含 Closed 尚未交付或丢弃的生命周期记录），普通操作额度为 `64 + 8*C + 2*S`，管理操作额度为 `64 + C + S`；采用 checked arithmetic 与按需分配，不按配置上限预分配。关闭/reset/storage 与普通数据使用独立队列和预算，管理批次有界，避免数据流占满后无法关闭。每个已发布对象预留其 Closed 通知；shutdown final 另有预留通道。非受理操作的主动推送仍可能因明确资源耗尽停止实例，不静默丢弃后继续声称健康，也不承诺任意慢消费者的无限可靠缓存。
+
+`ffi_resource_budget_bytes` 省略时为 134217728（128 MiB），最小 2097152（2 MiB），正数可配置；它是 FFI 自有缓冲、队列分配容量与声明元数据的逻辑预算，不是整个进程 RSS/allocator 的精确上限。预留 `R=max(256 KiB,B/8)`，其中一半专供管理操作及 storage，另一半供生命周期通知；普通数据不能借用 R。队列/表的已分配高水位持续计费，扩容时先为新旧缓冲同时存在预留预算。Core、平台运行库和宿主自行持有的数据各有独立资源边界。
 
 completion 可能早于 `submit` 返回；宿主应按 request ID 关联，不假设线程时序。连接 Ready 与消息在 callback 派发前再次检查只读 `ConnectionValidity`、本地关闭与 shutdown 状态。已经开始的 callback 或已经提交的网络发送不可追回。
 
@@ -68,13 +72,13 @@ completion 可能早于 `submit` 返回；宿主应按 request ID 关联，不�
 
 保留原操作 1..7 与 `dp_event` 原字段偏移；`channel` 只追加在结构末尾，读取前检查 `struct_size`。新增 `OPEN_CHANNEL` 返回 child handle；对端开通道通过 `CHANNEL_READY` 通知。Ready 包含 session/generation/peer DeviceID，源端保留 CONNECT 的 request 关联，失败不冒用另一个连接。 CONNECTION_READY 的 JSON 增加可选 `ice_gathering` 元数据（`complete`、`partial_at_deadline`，未完成时为 `pending`）；只描述本地 SDP 收集状态，不表示连接类型或绕过授权。旧字段与 C 结构布局不变；消费 JSON 的应用应忽略未知可选字段。Kotlin/Swift 包装继续传递受 gate 保护的 payload，不使用拒绝未知字段的 Ready 解码器。
 
-`dp_channel_submit(sdk, connection, channel, operation, ...)` 与旧 API 共享实例 32 个终态信用额：
+`dp_channel_submit(sdk, connection, channel, operation, ...)` 与旧 API 共用上述动态实例预算：
 
 - 消息 SEND 返回本地 `sent` 或明确策略 `dropped`，不是远端业务确认。发送队列按配置支持 Fail/DropOldest/DropNewest 与 TTL；从 ABI 受理开始计算绝对截止，不因转发 worker 重新起算。
 - 流 READ 的 `max_bytes` 为 1..65536，返回原始部分数据，零字节成功表示 EOF；单流最多一个 pending READ，但其反向 WRITE、其他通道与控制面继续运行。
 - WRITE 返回实际 `written`，调用方只推进该数量；不得自动重发未知结果。FIN 仅结束写半边，反向读仍可用。流拒绝消息 queue 配置；WRITE/FIN 当前固定 30 秒发送截止，包含 ABI 排队时间。超期关闭整个流，不跳过中间字节。接收端只有有界回压，没有新接收 TTL。
 - 关闭 child 不关闭兄弟；关闭父连接、租约失效、generation 替换或 reset 立即使子对象失效。FIN/close 接受后不可取消。READ 已接受后即使授权过期也必须结算一次：清除数据并返回 CLOSED，不能悄悄丢 completion。
-- native callback 与宿主实际消费时均重验 validity。Kotlin 的 READ 宿主交付另限 32 个；Swift READ 完整传递 caller isolation，在调用者 actor 恢复后重验并释放操作信用；旧系统 AsyncSequence 的事件不公开 Data，必须同步调用单次 `consumePayload()`，事件信用持有到消费或丢弃。库移交 Data 后，应用自行再次排队/复制不属于 SDK 可撤回范围。
+- native callback 与宿主实际消费时均重验 validity。Kotlin 的 READ 宿主交付使用独立动态信用与字节预算，直到 applicationExecutor 实际处理和 validity 检查后才释放；Swift READ 完整传递 caller isolation，在调用者 actor 恢复后重验并释放操作信用；旧系统 AsyncSequence 的事件不公开 Data，必须同步调用单次 `consumePayload()`，事件信用持有到消费或丢弃。native callback 返回不代表 UI 已消费。包装层自己的信用持有到实际交付；库移交 Data/完成 Future 后，应用自行再次排队、复制或长期持有不属于 SDK 可撤回或计费范围。
 
 Kotlin 暴露 MessageChannel/ByteStream、typed send disposition/partial-write count/read bytes、resetIdentity 与可注入异步 IdentityStorage（默认仍 Keystore）。Swift 对应 PeerloomChannel 的模式检查和 async read/write/FIN/reset；Swift 编译器最低为 Swift 6.0（当前 CI Xcode 16.4），语言模式保留 v5、最低系统仍 iOS 15/macOS 12；不依赖仅新系统可用的 AsyncIterator runtime。新增真实编译、暂停 actor 与消费信用测试必须由 Xcode CI 给出证据。
 
@@ -143,7 +147,7 @@ cargo clippy --locked -p device-ffi --all-targets -- -D warnings
 
 已实际验证：
 - Rust CAS load/save/delete、冲突、精确 revision、取消后的待定回复清理与错误分类单测。
-- C11/C++17 头编译，真实 `.so` 调用；32 个恰好一次终态、31 个 queued cancellation、running cancellation=Busy、卡住 callback 时不得 release、重入关闭检查、迟到回复和失效句柄拒绝。
+- C11/C++17 头编译，真实 `.so` 调用；动态信用下的恰好一次终态、queued cancellation、running cancellation=Busy、卡住 callback 时不得 release、重入关闭检查、迟到回复和失效句柄拒绝。
 - 真实 Go/PostgreSQL/Redis 管理接口生成同租户跨应用授权 pair，C 经外部存储加载身份、WSS 确认、真实 WebRTC 双向二进制消息、凭证旋转 CAS 与 WSS 恢复、跨父句柄拒绝、关闭立即 gate。
 - 持续命令洪泛期间 Ready/Message 仍取得进展；回调消费不被命令优先级永久饿死。
 - HTTPS/WSS 自签拒绝、受信任 CA 正确 SAN 连接、错误 SAN 拒绝；CA 测试用独立子进程隔离环境。

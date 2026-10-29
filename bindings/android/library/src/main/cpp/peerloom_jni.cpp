@@ -15,6 +15,9 @@ JavaVM *vm = nullptr;
 struct Client {
     jobject receiver = nullptr;
     jmethodID method = nullptr;
+    jmethodID reserve = nullptr;
+    jmethodID failed = nullptr;
+    jmethodID final = nullptr;
     uint64_t context = 0;
     std::atomic<uint64_t> sdk{0};
     std::mutex ready_mutex;
@@ -106,12 +109,47 @@ void callback(uint64_t context, const dp_event *event) noexcept {
         Attachment attachment;
         JNIEnv *env = attachment.env;
         if (!env || !event || event->abi_version != 1 || event->struct_size < sizeof(dp_event) ||
-            event->payload_len > 65536) {
+            event->payload_len > 65536 || (event->payload_len && !event->payload)) {
+            if (env) {
+                env->CallVoidMethod(client->receiver, client->failed);
+                clear_exception(env);
+            }
             stop(client);
+            return;
+        }
+        if (event->kind == DP_EVENT_SHUTDOWN) {
+            if (event->payload_len || event->connection || event->channel) {
+                env->CallVoidMethod(client->receiver, client->failed);
+            } else {
+                env->CallVoidMethod(client->receiver, client->final, static_cast<jint>(event->status));
+            }
+            if (clear_exception(env)) {
+                env->CallVoidMethod(client->receiver, client->failed);
+                clear_exception(env);
+                stop(client);
+            }
             return;
         }
         if (env->PushLocalFrame(8) != JNI_OK) {
             clear_exception(env);
+            if (event->kind == DP_EVENT_STORAGE_REQUEST) {
+                dp_storage_complete(client->sdk.load(), event->request_id, DP_INTERNAL, nullptr, 0);
+            }
+            env->CallVoidMethod(client->receiver, client->failed);
+            clear_exception(env);
+            stop(client);
+            return;
+        }
+        const jboolean reserved = env->CallBooleanMethod(client->receiver, client->reserve,
+            static_cast<jint>(event->kind), static_cast<jlong>(event->request_id),
+            static_cast<jlong>(event->connection), static_cast<jlong>(event->channel), static_cast<jlong>(event->payload_len));
+        if (clear_exception(env) || reserved != JNI_TRUE) {
+            if (event->kind == DP_EVENT_STORAGE_REQUEST) {
+                dp_storage_complete(client->sdk.load(), event->request_id, DP_INTERNAL, nullptr, 0);
+            }
+            env->CallVoidMethod(client->receiver, client->failed);
+            clear_exception(env);
+            env->PopLocalFrame(nullptr);
             stop(client);
             return;
         }
@@ -122,6 +160,11 @@ void callback(uint64_t context, const dp_event *event) noexcept {
         }
         const bool allocation_failed = clear_exception(env);
         if (!payload || allocation_failed) {
+            if (event->kind == DP_EVENT_STORAGE_REQUEST) {
+                dp_storage_complete(client->sdk.load(), event->request_id, DP_INTERNAL, nullptr, 0);
+            }
+            env->CallVoidMethod(client->receiver, client->failed);
+            clear_exception(env);
             env->PopLocalFrame(nullptr);
             stop(client);
             return;
@@ -133,6 +176,11 @@ void callback(uint64_t context, const dp_event *event) noexcept {
         const bool failed = clear_exception(env);
         env->PopLocalFrame(nullptr);
         if (failed) {
+            if (event->kind == DP_EVENT_STORAGE_REQUEST) {
+                dp_storage_complete(client->sdk.load(), event->request_id, DP_INTERNAL, nullptr, 0);
+            }
+            env->CallVoidMethod(client->receiver, client->failed);
+            clear_exception(env);
             stop(client);
         }
     } catch (...) {
@@ -207,8 +255,14 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_io_peerloom_sdk_Native_create(JNIEn
         }
         client->method = env->GetMethodID(type, "onNativeEvent", "(JIJJJI[B)V");
         failed = clear_exception(env);
+        if (!failed) client->reserve = env->GetMethodID(type, "reserveNativeEvent", "(IJJJJ)Z");
+        failed = clear_exception(env) || failed;
+        if (!failed) client->failed = env->GetMethodID(type, "failedNativeDelivery", "()V");
+        failed = clear_exception(env) || failed;
+        if (!failed) client->final = env->GetMethodID(type, "onNativeFinal", "(I)V");
+        failed = clear_exception(env) || failed;
         env->DeleteLocalRef(type);
-        if (!client->method || failed) {
+        if (!client->method || !client->reserve || !client->failed || !client->final || failed) {
             forget(client, env);
             return result(env, output, DP_INTERNAL, 0);
         }

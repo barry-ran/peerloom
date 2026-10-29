@@ -1,3 +1,4 @@
+use crate::queue;
 use crate::{state::*, storage::ExternalStore};
 use device_core::{
     identity::{IdempotencyKey, IdentityError, Platform, RegistrationRequest},
@@ -10,7 +11,6 @@ use std::{
     collections::HashMap,
     sync::{Arc, atomic::Ordering},
 };
-use tokio::sync::mpsc;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +29,11 @@ pub struct Config {
     pub max_channels_per_connection: usize,
     #[serde(default)]
     pub max_channel_creations_per_connection: usize,
+    #[serde(default = "default_ffi_budget")]
+    pub ffi_resource_budget_bytes: usize,
+}
+fn default_ffi_budget() -> usize {
+    crate::budget::DEFAULT_BYTES
 }
 fn yes() -> bool {
     true
@@ -36,6 +41,8 @@ fn yes() -> bool {
 impl Config {
     pub fn validate(&self) -> bool {
         self.abi_version == 1
+            && (crate::budget::MIN_BYTES..=isize::MAX as usize)
+                .contains(&self.ffi_resource_budget_bytes)
             && matches!(self.storage.as_str(), "memory" | "external")
             && (self.max_channels_per_connection == 0
                 || self.max_channel_creations_per_connection == 0
@@ -126,7 +133,11 @@ async fn close_connections(connections: &mut HashMap<u64, (String, crate::channe
     while closes.join_next().await.is_some() {}
 }
 
-pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Receiver<Operation>) {
+pub async fn run(
+    instance: Arc<Instance>,
+    config: Config,
+    mut commands: queue::Receiver<Operation>,
+) {
     #[cfg(feature = "test-diagnostics")]
     let _diagnostic = (std::env::var("TEST_C_SCHEDULER_PROBE").as_deref() == Ok("1"))
         .then(SchedulerDiagnostic::start);
@@ -212,8 +223,14 @@ pub async fn run(instance: Arc<Instance>, config: Config, mut commands: mpsc::Re
                     },
                     Some(SdkEvent::ConnectionClosed { session_id, reason }) => {
                         let id = connections.iter().find(|(_, (value, _))| value == &session_id).map(|(id, _)| *id).unwrap_or(0);
-                        if let Some((_, task)) = connections.remove(&id) { task.close().await; }
-                        instance.emit(Event::new(7, 0, id, error(reason), json!({"session_id":session_id}).to_string().into_bytes()));
+                        let ticket = if let Some((_, mut task)) = connections.remove(&id) {
+                            let ticket = task.closed.take();
+                            task.close().await;
+                            ticket
+                        } else { None };
+                        let event = Event::new(7, 0, id, error(reason), json!({"session_id":session_id}).to_string().into_bytes());
+                        if let Some(ticket) = ticket { ticket.send(&instance, event); }
+                        else { instance.emit(event); }
                     },
                     Some(SdkEvent::IdentityPersistencePending) => { instance.emit(Event::new(8, 0, 0, NOT_READY, Vec::new())); },
                     Some(SdkEvent::Stopped(reason)) => { instance.emit(Event::new(11, 0, 0, error(reason), Vec::new())); instance.stop(); },
@@ -365,7 +382,7 @@ async fn execute(
     Ok(Vec::new())
 }
 
-pub fn runtime(instance: Arc<Instance>, config: Config, commands: mpsc::Receiver<Operation>) {
+pub fn runtime(instance: Arc<Instance>, config: Config, commands: queue::Receiver<Operation>) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -384,7 +401,7 @@ pub fn runtime(instance: Arc<Instance>, config: Config, commands: mpsc::Receiver
         .map(|ops| {
             ops.iter()
                 .filter(|(_, p)| p.load(Ordering::Acquire) != 3)
-                .map(|(id, p)| (*id, p.clone()))
+                .map(|(id, p)| (*id, p.phase.clone()))
                 .collect()
         })
         .unwrap_or_default();
@@ -478,6 +495,14 @@ mod tests {
     #[test]
     fn ffi_optional_count_caps_match_core_semantics() {
         let mut config: Config = serde_json::from_str(r#"{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"}"#).unwrap();
+        assert!(config.validate());
+        assert_eq!(
+            config.ffi_resource_budget_bytes,
+            crate::budget::DEFAULT_BYTES
+        );
+        config.ffi_resource_budget_bytes = crate::budget::MIN_BYTES - 1;
+        assert!(!config.validate());
+        config.ffi_resource_budget_bytes = crate::budget::MIN_BYTES;
         assert!(config.validate());
         assert_eq!(
             (

@@ -18,6 +18,77 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 
 class CapacityControllerTests(unittest.TestCase):
+    def ffi_proof(self):
+        return {
+            'status':'passed','case':'ffi','peer_count':500,'pc_identity_count':1,'pc_sdk_instances':1,
+            'native_simulated_peer_instances':500,'simultaneous_ready':500,'pc_c_abi_instances':1,
+            'c_adapter_validated':True,'ffi_streams_ready':500,'peak_pending_reads':500,
+            'all_500_reads_accepted_before_peer_payload':True,'read_reservation_bytes':65536,
+            'resource_budget_bytes':134217728,'bulk_bytes_per_peer_per_direction':262144,
+            'pending_read_charged_bytes':500*65536+10000,'pending_critical_charged_bytes':24576,
+            'bulk_send_window':8,'bulk_bytes_total':2*500*262144,
+            'bulk_elapsed_seconds':2.0,'bulk_bytes_per_second':500*262144.0,
+            'queued_cancel_verified':True,'running_read_cancel_busy':True,'terminated_pending_reads':20,
+            'siblings_survive_termination':True,'partial_read_verified':True,'partial_write_verified':True,
+            'fin_half_close_verified':True,'reset_verified':True,'exactly_once_completions':True,
+            'no_callbacks_after_shutdown':True,'real_registration':True,
+            'real_webrtc_bidirectional_unique_payloads':True,'all_session_rows_closed':True,
+            'all_local_gates_closed':True,'explicit_session_close_before_sdk_shutdown':True,
+            'errors':0,'manual_new_session_count':0,'hold_seconds':120,
+            'pending_reads_after_reset':0,'ffi_operations_accepted':1000,'ffi_operation_completions':1000,
+            'all_initial_dual_deadlines_crossed_and_renewed':True,
+        }
+
+    def test_ffi_requires_each_actual_c_abi_stream_and_cleanup_fact(self):
+        proof=self.ffi_proof();m.verify_sdk_proof(proof,'ffi',500)
+        for key in proof:
+            altered=dict(proof);altered.pop(key)
+            with self.subTest(key=key),self.assertRaises(m.Failure):m.verify_sdk_proof(altered,'ffi',500)
+        for key,value in [('peak_pending_reads',499),('case','core'),('pc_c_abi_instances',True),
+                          ('reset_verified',1),('hold_seconds',119),('bulk_bytes_per_peer_per_direction',1)]:
+            with self.subTest(key=key),self.assertRaises(m.Failure):m.verify_sdk_proof(dict(proof,**{key:value}),'ffi',500)
+
+    def test_ffi_smoke_preserves_sibling_without_claiming_five_hundred(self):
+        value=self.ffi_proof()
+        value.update(peer_count=5,native_simulated_peer_instances=5,simultaneous_ready=5,
+                     ffi_streams_ready=5,peak_pending_reads=5,terminated_pending_reads=4,
+                     all_500_reads_accepted_before_peer_payload=False,bulk_bytes_total=2*5*262144,
+                     pending_read_charged_bytes=5*65536+1000)
+        m.verify_sdk_proof(value,'ffi',5)
+        with self.assertRaises(m.Failure):m.verify_sdk_proof(dict(value,all_500_reads_accepted_before_peer_payload=True),'ffi',5)
+        with self.assertRaises(m.Failure):m.verify_sdk_proof(dict(value,terminated_pending_reads=5),'ffi',5)
+
+    def test_ffi_byte_budget_and_measurements_are_not_rss_or_soft_passes(self):
+        proof=self.ffi_proof()
+        for key,value in [('pending_read_charged_bytes',500*65536-1),
+                          ('pending_critical_charged_bytes',-1),('pending_read_charged_bytes',134217729),
+                          ('pending_read_charged_bytes',True),('bulk_bytes_total',1),
+                          ('ffi_operations_accepted',0),('ffi_operation_completions',999),
+                          ('pending_reads_after_reset',1),
+                          ('bulk_elapsed_seconds',float('nan')),('bulk_bytes_per_second',float('inf')),
+                          ('bulk_elapsed_seconds',0),('bulk_send_window',500)]:
+            with self.subTest(key=key),self.assertRaises(m.Failure):m.verify_sdk_proof(dict(proof,**{key:value}),'ffi',500)
+        # Metadata overhead is legal: the logical charge is not asserted equal to READ bytes.
+        m.verify_sdk_proof(dict(proof,pending_read_charged_bytes=500*65536+100000),'ffi',500)
+
+    def test_ffi_fixed_phases_and_panic_keep_diagnostics_without_payloads(self):
+        good=[f'capacity phase={phase} elapsed_ms=120000' for phase in ('ffi-bulk','ffi-terminate','ffi-fin','ffi-reset')]
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'sdk.log'
+            path.write_text('\n'.join(good+['capacity phase=ffi-bulk secret=not-public',
+                'ffi_reads_accepted=500 status=private-value',
+                'thread x panicked at /private/ffi_scale.rs:123:4:']))
+            self.assertEqual(m.safe_progress(path),good+['Rust assertion failed at ffi_scale.rs:123:4'])
+
+    def test_core_original_lease_proof_and_session_counts_stay_separate(self):
+        core={'status':'passed','simultaneous_ready':500,'hold_seconds':120,
+              'all_initial_dual_deadlines_crossed_and_renewed':True}
+        m.verify_sdk_proof(core,'core',500)
+        with self.assertRaises(m.Failure):m.verify_sdk_proof(core,'ffi',500)
+        with self.assertRaises(m.Failure):m.verify_sdk_proof(dict(core,hold_seconds=119),'core',500)
+        self.assertEqual(m.expected_sessions('core',500),520)
+        self.assertEqual(m.expected_sessions('ffi',500),500)
+
     def test_private_failure_retained_until_diagnosis_success_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

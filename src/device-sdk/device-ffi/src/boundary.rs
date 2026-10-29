@@ -35,7 +35,21 @@ unsafe fn copy(pointer: *const u8, len: usize, max: usize) -> Result<Vec<u8>, u3
         return Ok(Vec::new());
     }
     // SAFETY: caller's C ABI contract guarantees readability; bounds checked above.
-    Ok(unsafe { std::slice::from_raw_parts(pointer, len) }.to_vec())
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).map_err(|_| FULL)?;
+    bytes.extend_from_slice(unsafe { std::slice::from_raw_parts(pointer, len) });
+    Ok(bytes)
+}
+/// # Safety
+/// Caller guarantees readable input for the duration of the immediate submit.
+unsafe fn borrowed<'a>(pointer: *const u8, len: usize, max: usize) -> Result<&'a [u8], u32> {
+    if len > max || len > isize::MAX as usize || (len != 0 && pointer.is_null()) {
+        return Err(INVALID);
+    }
+    if len == 0 {
+        return Ok(&[]);
+    }
+    Ok(unsafe { std::slice::from_raw_parts(pointer, len) })
 }
 /// # Safety
 /// `output` must be a valid aligned writable u64 for the duration of this call.
@@ -93,12 +107,17 @@ pub unsafe extern "C" fn dp_sdk_create(
         let mut registry = registry().lock().map_err(|_| INTERNAL)?;
         registry.try_reserve(1).map_err(|_| FULL)?;
         let id = next_id()?;
-        let (commands, receiver) = tokio::sync::mpsc::channel(32);
-        let (events, event_rx) = std::sync::mpsc::sync_channel(97);
+        let budget = crate::budget::Budget::new(config.ffi_resource_budget_bytes)?;
+        let (commands, receiver) = crate::queue::channel(budget.clone());
+        let (events, event_rx) = crate::queue::channel(budget.clone());
+        let shutdown_terminal = Mutex::new(Some(events.try_reserve(true)?));
         let instance = Arc::new(Instance {
             commands,
             events,
+            budget,
+            shutdown_terminal,
             operations: Mutex::new(Default::default()),
+            object_counts: Arc::new(ObjectCounts::default()),
             storage: Mutex::new(Default::default()),
             shutting: AtomicBool::new(false),
             stop: Default::default(),
@@ -116,8 +135,7 @@ pub unsafe extern "C" fn dp_sdk_create(
             device_id: Mutex::new(None),
             resetting: AtomicBool::new(false),
             reset_active: AtomicBool::new(false),
-            data_count: AtomicUsize::new(0),
-            control_count: AtomicUsize::new(0),
+            reading_count: AtomicUsize::new(0),
             threads: Mutex::new(Vec::new()),
         });
         // Worker cannot run user-facing work until both threads and the registry exist.
@@ -135,7 +153,7 @@ pub unsafe extern "C" fn dp_sdk_create(
         let callback_thread = std::thread::Builder::new()
             .name("peerloom-callback".into())
             .spawn(move || {
-                while let Ok(mut event) = event_rx.recv() {
+                while let Some(mut event) = event_rx.blocking_recv() {
                     let deliver = event.validity.as_ref().is_none_or(|v| {
                         v.is_valid()
                             && !callback_instance.resetting.load(Ordering::Acquire)
@@ -164,8 +182,9 @@ pub unsafe extern "C" fn dp_sdk_create(
                         };
                         callback(context, &view);
                     }
-                    callback_instance.release_credit(&event);
-                    if event.kind == SHUTDOWN {
+                    let shutdown = event.kind == SHUTDOWN;
+                    callback_instance.release_credit(event);
+                    if shutdown {
                         break;
                     }
                 }
@@ -210,7 +229,7 @@ pub unsafe extern "C" fn dp_sdk_submit(
             output_zero(out_request)?;
         }
         let instance = lookup(sdk)?;
-        let bytes = unsafe { copy(input, len, if operation == 4 { 65536 } else { 16384 })? };
+        let bytes = unsafe { borrowed(input, len, if operation == 4 { 65536 } else { 16384 })? };
         let id = instance.submit(operation, connection, bytes)?;
         unsafe { out_request.write(id) };
         Ok(())
@@ -371,13 +390,37 @@ pub unsafe extern "C" fn dp_channel_submit(
         unsafe {
             output_zero(out_request)?;
         }
-        let bytes = unsafe { copy(input, len, 65536)? };
+        let bytes = unsafe { borrowed(input, len, 65536)? };
         let id = lookup(sdk)?.submit_channel(operation, connection, channel, bytes)?;
         unsafe {
             out_request.write(id);
         }
         Ok(())
     })
+}
+
+/// Test-only observation; absent from default-feature release artifacts.
+#[cfg(feature = "test-diagnostics")]
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_test_pending_stream_reads(sdk: u64) -> u64 {
+    lookup(sdk)
+        .map(|instance| instance.reading_count.load(Ordering::Acquire) as u64)
+        .unwrap_or(u64::MAX)
+}
+#[cfg(feature = "test-diagnostics")]
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_test_ffi_resource_bytes(sdk: u64, field: u32) -> u64 {
+    lookup(sdk)
+        .map(|instance| {
+            let (total, data, critical) = instance.budget.snapshot();
+            match field {
+                0 => total as u64,
+                1 => data as u64,
+                2 => critical as u64,
+                _ => u64::MAX,
+            }
+        })
+        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

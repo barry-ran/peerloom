@@ -10,6 +10,8 @@ public struct PeerloomConfiguration: Encodable, Sendable {
     public var maxConnections = 0
     public var maxChannelsPerConnection = 0
     public var maxChannelCreationsPerConnection = 0
+    /// Separate native and host-owned byte budgets, not a bound on total process RSS.
+    public var ffiResourceBudgetBytes = 134217728
     private let abiVersion = 1
     private let storage = "external"
     enum CodingKeys: String, CodingKey {
@@ -17,6 +19,7 @@ public struct PeerloomConfiguration: Encodable, Sendable {
         case autoReconnect = "auto_reconnect", abiVersion = "abi_version", storage
         case maxConnections = "max_connections", maxChannelsPerConnection = "max_channels_per_connection"
         case maxChannelCreationsPerConnection = "max_channel_creations_per_connection"
+        case ffiResourceBudgetBytes = "ffi_resource_budget_bytes"
     }
     public init(origin: String, applicationID: String) { self.origin = origin; self.applicationID = applicationID }
 }

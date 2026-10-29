@@ -12,6 +12,7 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(peerloom_capacity_c_host)'] }
 [lints.clippy]
 all = "warn"
 
@@ -30,3 +31,10 @@ tokio = { version = "=1.52.3", features = ["rt", "sync", "time"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "=0.22.4", default-features = false }
+
+[dev-dependencies]
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }
+uuid = { version = "=1.29.0", features = ["v4"] }
+time = { version = "=0.3.55", features = ["parsing", "formatting"] }
+zeroize = "=1.9.1"
+futures-util = { version = "=0.3.34", features = ["sink"] }

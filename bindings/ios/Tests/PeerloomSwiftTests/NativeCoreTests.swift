@@ -22,6 +22,15 @@ final class MockNative: NativeAPI, @unchecked Sendable {
         set { lock.lock(); validValue = newValue; lock.unlock() }
     }
     var holdReads = false
+    var holdManagement = false
+    var suppressOpenBirth = false
+    let managementSubmitted = DispatchSemaphore(value: 0)
+    let finalEmitted = DispatchSemaphore(value: 0)
+    private var heldManagement: [@Sendable () -> Void] = []
+    func completeHeldManagement() {
+        lock.lock(); let actions = heldManagement; heldManagement.removeAll(); lock.unlock()
+        actions.forEach { $0() }
+    }
     let readSubmitted = DispatchSemaphore(value: 0)
     let validityChecked = DispatchSemaphore(value: 0)
     private var heldRead: (@Sendable () -> Void)?
@@ -44,7 +53,17 @@ final class MockNative: NativeAPI, @unchecked Sendable {
     }
     func submit(_ sdk: UInt64, operation: UInt32, connection: UInt64, data: Data) -> (UInt32, UInt64) {
         lock.lock(); sequence += 1; let request = sequence; lock.unlock()
-        DispatchQueue.global().async { self.emit(kind: 1, request: request, data: data) }
+        if suppressOpenBirth && operation == 8 {
+            DispatchQueue.global().async {
+                self.emit(kind: 1, request: request, connection: connection, channel: 88, status: 5)
+                self.emit(kind: 13, connection: connection, channel: 88)
+            }
+        } else if holdManagement && operation == 6 {
+            lock.lock(); heldManagement.append { self.emit(kind: 1, request: request, data: data) }; lock.unlock()
+            managementSubmitted.signal()
+        } else {
+            DispatchQueue.global().async { self.emit(kind: 1, request: request, data: data) }
+        }
         return (0, request)
     }
     func channelValid(_ sdk: UInt64, connection: UInt64, channel: UInt64) -> UInt32 { let result: UInt32 = isValid ? 0 : 5; validityChecked.signal(); return result }
@@ -68,6 +87,7 @@ final class MockNative: NativeAPI, @unchecked Sendable {
         DispatchQueue.global().async {
             self.emit(kind: 9)
             self.lock.lock(); self.final = true; self.lock.unlock()
+            self.finalEmitted.signal()
         }
         return 0
     }
@@ -83,6 +103,17 @@ final class MockNative: NativeAPI, @unchecked Sendable {
 final class NativeCoreTests: XCTestCase {
     func testOptionalCapacityDefaultsAndLargeValuesEncodeWithoutClamping() throws {
         var config = PeerloomConfiguration(origin: "https://localhost", applicationID: UUID().uuidString)
+        let budget = try HostBudget()
+        try budget.population(connections: 500, streams: 500)
+        let reads = try (0..<500).map { _ in try budget.acquire(bytes: 65536, critical: false) }
+        let management = try budget.acquire(bytes: 256, critical: true)
+        try budget.population(connections: 0, streams: 0)
+        XCTAssertThrowsError(try budget.acquire(bytes: 1, critical: false))
+        reads.forEach { $0.release(); $0.release() }
+        management.release()
+        XCTAssertEqual(budget.usage, [0, 0, 0, 0])
+        XCTAssertThrowsError(try budget.population(connections: Int.max, streams: 0))
+        XCTAssertEqual(config.ffiResourceBudgetBytes, 134217728)
         XCTAssertEqual(config.maxConnections, 0)
         XCTAssertEqual(config.maxChannelsPerConnection, 0)
         XCTAssertEqual(config.maxChannelCreationsPerConnection, 0)
@@ -99,7 +130,7 @@ final class NativeCoreTests: XCTestCase {
 
     func testRetainedEventRechecksAtSynchronousConsumption() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
-        try core.create(Data())
+        try core.create(Data("{}".utf8))
         native.emit(kind: 6, connection: 42, data: Data([1, 2]))
         let retained = try await core.nextEvent()
         XCTAssertNotNil(retained)
@@ -113,11 +144,12 @@ final class NativeCoreTests: XCTestCase {
         }
         try await core.close()
     }
+    @MainActor
     func testRetainedEventsKeepBoundedCreditsUntilConsumption() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
-        try core.create(Data())
+        try core.create(Data("{}".utf8))
         var retained: [PeerloomEvent] = []
-        for _ in 0..<32 {
+        for _ in 0..<64 {
             native.emit(kind: 6, connection: 42, data: Data([1]))
             let event = try await core.nextEvent()
             retained.append(try XCTUnwrap(event))
@@ -125,15 +157,61 @@ final class NativeCoreTests: XCTestCase {
         native.emit(kind: 6, connection: 42, data: Data([2]))
         do { _ = try await core.nextEvent(); XCTFail("retained payloads lost their credits") }
         catch { XCTAssertEqual(error as? PeerloomError, .eventOverflow) }
-        XCTAssertEqual(retained.count, 32)
+        XCTAssertEqual(retained.count, 64)
         retained.removeAll()
         try await core.close()
+
+        // Hold all old management credits, shrink C to zero, then require final to bypass them.
+        let finalNative = MockNative(), finalCore = NativeCore(store: EmptyStore(), api: finalNative)
+        try finalCore.create(Data("{}".utf8))
+        for connection in 1...65 {
+            finalNative.emit(kind: 5, connection: UInt64(connection))
+            let readyValue = try await finalCore.nextEvent()
+            _ = try XCTUnwrap(readyValue).consumePayload()
+        }
+        finalNative.holdManagement = true
+        let operations = (1...65).map { connection in
+            Task { @MainActor in try await finalCore.performDetailed(operation: 6, connection: UInt64(connection), input: Data()) }
+        }
+        let accepted = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global().async {
+                var complete = true
+                for _ in 0..<65 { if finalNative.managementSubmitted.wait(timeout: .now() + 5) != .success { complete = false; break } }
+                continuation.resume(returning: complete)
+            }
+        }
+        XCTAssertTrue(accepted)
+        for connection in 1...65 {
+            finalNative.emit(kind: 7, connection: UInt64(connection))
+            let closedValue = try await finalCore.nextEvent()
+            _ = try XCTUnwrap(closedValue).consumePayload()
+        }
+        // Drain population updates before the separate caller attempts reset.
+        let queueValue = Mirror(reflecting: finalCore).children.first { $0.label == "io" }?.value
+        let hostQueue = try XCTUnwrap(queueValue as? DispatchQueue)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            hostQueue.async { continuation.resume() }
+        }
+        let reset = Task.detached {
+            finalNative.completeHeldManagement()
+            do {
+                let result = try await finalCore.performDetailed(operation: 7, connection: 0, input: Data("{}".utf8))
+                finalCore.requestShutdown()
+                return result
+            } catch { finalCore.requestShutdown(); throw error }
+        }
+        // All 65 CLOSE completions are retained on this paused MainActor; reset must still run.
+        XCTAssertEqual(finalNative.finalEmitted.wait(timeout: .now() + 5), .success)
+        _ = try await reset.value
+        for operation in operations { _ = try await operation.value }
+        try await finalCore.close()
+        XCTAssertEqual(finalNative.released, 1)
     }
     @MainActor
     func testReadRechecksAfterCallerActorResumes() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
         native.holdReads = true
-        try core.create(Data())
+        try core.create(Data("{}".utf8))
         let stream = try PeerloomChannel(core: core, connection: 42, handle: 52,
             metadata: Data("{\"mode\":\"reliable_stream\",\"label\":\"stream\"}".utf8))
         let reading = Task { @MainActor in try await stream.read(maxBytes: 2) }
@@ -160,7 +238,7 @@ final class NativeCoreTests: XCTestCase {
 
     func testTypedChildMetadataAndPartialWriteResult() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
-        try core.create(Data())
+        try core.create(Data("{}".utf8))
         let message = try PeerloomChannel(core: core, connection: 42, handle: 51,
             metadata: Data("{\"mode\":\"low_latency_message\",\"label\":\"test\"}".utf8))
         let disposition = try await message.send(Data([1, 2, 3]))
@@ -176,11 +254,43 @@ final class NativeCoreTests: XCTestCase {
         let event = try await core.nextEvent()
         XCTAssertEqual(event?.kind, 3)
         try await core.close()
+
+        let terminalNative = MockNative(), terminalCore = NativeCore(store: EmptyStore(), api: terminalNative)
+        try terminalCore.create(Data("{}".utf8))
+        terminalNative.emit(kind: 5, connection: 42)
+        let born = try await terminalCore.nextEvent()
+        _ = try XCTUnwrap(born).consumePayload()
+        // A stale Ready for 99 was suppressed by native dispatch; its Closed still arrives.
+        terminalNative.emit(kind: 7, connection: 99)
+        let unknownClosed = try await terminalCore.nextEvent()
+        XCTAssertEqual(unknownClosed?.kind, 7)
+        XCTAssertEqual(unknownClosed?.connection, 99)
+        _ = try unknownClosed?.consumePayload()
+        terminalNative.suppressOpenBirth = true
+        do {
+            _ = try await terminalCore.performDetailed(operation: 8, connection: 42, input: Data("{}".utf8))
+            XCTFail("suppressed OPEN failure was hidden")
+        } catch { XCTAssertEqual(error as? PeerloomError, .native(5)) }
+        let childClosed = try await terminalCore.nextEvent()
+        XCTAssertEqual(childClosed?.kind, 13)
+        XCTAssertEqual(childClosed?.channel, 88)
+        _ = try childClosed?.consumePayload()
+        let deliveryQueue = try XCTUnwrap(Mirror(reflecting: terminalCore).children.first { $0.label == "io" }?.value as? DispatchQueue)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            deliveryQueue.async { continuation.resume() }
+        }
+        let fields = Dictionary(uniqueKeysWithValues: Mirror(reflecting: terminalCore).children.compactMap { child in child.label.map { ($0, child.value) } })
+        XCTAssertEqual(fields["activeConnections"] as? Set<UInt64>, Set([42]))
+        XCTAssertTrue((fields["activeStreams"] as? [UInt64: UInt64])?.isEmpty == true)
+        XCTAssertTrue((fields["readChannels"] as? Set<UInt64>)?.isEmpty == true)
+        let echo = try await terminalCore.perform(operation: 4, connection: 42, input: Data([9]))
+        XCTAssertEqual(echo, Data([9]))
+        try await terminalCore.close()
     }
 
     func testEarlyCompletionsAndQuiescentRelease() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
-        try core.create(Data())
+        try core.create(Data("{}".utf8))
         try await withThrowingTaskGroup(of: Void.self) { group in
             for value in 0..<16 {
                 group.addTask {
@@ -191,14 +301,31 @@ final class NativeCoreTests: XCTestCase {
             }
             try await group.waitForAll()
         }
-        try await core.close()
+        let cancelledWaiter = Task { try await core.close() }
+        cancelledWaiter.cancel() // Does not cancel the shared shutdown or another waiter's result.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<500 { group.addTask { try await core.close() } }
+            try await group.waitForAll()
+        }
+        try await cancelledWaiter.value
         XCTAssertEqual(native.released, 1)
         try await core.close()
         XCTAssertEqual(native.released, 1)
+
+        var transient: NativeCore? = NativeCore(store: EmptyStore(), api: MockNative())
+        weak var weakCore = transient
+        try transient!.create(Data("{}".utf8))
+        try await transient!.close()
+        transient = nil
+        for _ in 0..<100 {
+            if weakCore == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNil(weakCore, "completed shared close task retained its core")
     }
     func testExpiredBufferedReadyAndMessageAreNotDelivered() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
-        try core.create(Data())
+        try core.create(Data("{}".utf8))
         native.emit(kind: 5, connection: 42)
         native.emit(kind: 6, connection: 42, data: Data("expired".utf8))
         native.isValid = false
@@ -211,8 +338,10 @@ final class NativeCoreTests: XCTestCase {
     }
     func testHostEventOverflowStopsInsteadOfDroppingAndContinuing() async throws {
         let native = MockNative(), core = NativeCore(store: EmptyStore(), api: native)
-        try core.create(Data())
-        for _ in 0..<33 { native.emit(kind: 2) }
+        try core.create(Data("{\"ffi_resource_budget_bytes\":2097152}".utf8))
+        // Two 64KiB unsolicited controls exceed the explicit 128KiB lifecycle half,
+        // including metadata; this is a byte-budget negative, not a device-count ceiling.
+        for _ in 0..<2 { native.emit(kind: 2, data: Data(count: 65536)) }
         do { _ = try await core.nextEvent(); XCTFail("overflow accepted") }
         catch { XCTAssertEqual(error as? PeerloomError, .eventOverflow) }
         try await core.close()

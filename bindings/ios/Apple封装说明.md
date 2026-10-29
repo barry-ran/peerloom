@@ -16,7 +16,7 @@ flowchart LR
     API --> NativeQueue[独立 native 调度队列]
     NativeQueue --> ABI[唯一 C ABI]
     ABI --> Callback[串行回调 立即复制借用字节]
-    Callback --> Completions[请求终态映射 最多32]
+    Callback --> Completions[请求终态映射 动态额度]
     Callback --> Events[有界事件 单消费者]
     Events --> Gate[同步consumePayload重验父子有效性]
     Gate --> App
@@ -27,8 +27,8 @@ flowchart LR
 
 - `open` 在后台创建原生线程和存储适配；所有 `SecItem*`、文件锁与存储 IO 在专用后台队列。直接在主线程调用存储适配会拒绝，不弹解锁 UI。
 - C event/payload 指针只在 callback 中借用；Swift 复制后才排队，回调不等待下一个回调或 Keychain。
-- 最多 32 个已接受且尚未消费终态的 Swift 操作；completion 可以早于 C submit 返回，因此调用与 request 登记在同一锁内完成，回调在登记后查找。字节流 `read` 将调用者 isolation 显式传至 core，恢复后再检查 child gate；检查至返回之间没有新的 await，信用也不在 C callback 时提前释放。结果只报告固定错误码，不把凭证写入错误文本。
-- 普通事件与消息分别最多 32 个，已经从 `next()` 取出但未消费的事件仍占用额度；事件副本共享单次消费状态与同一额度，消费或最后释放后归还。宿主不消费导致溢出时停止实例，不静默丢可靠消息后继续假装健康。`PeerloomEvents` 只支持一个并发 `next()`。
+- 默认自动按实际活跃连接 C、stream S 提供 `64+8*C+2*S` 数据操作额度及独立 `64+C+S` 管理额度；completion 可以早于 C submit 返回，因此调用与 request 登记在同一锁内完成，回调在登记后查找。字节流 `read` 将调用者 isolation 显式传至 core，恢复后再检查 child gate；检查至返回之间没有新的 await，信用也不在 C callback 时提前释放。结果只报告固定错误码，不把凭证写入错误文本。
+- 事件与操作共享各自的数据/管理资源预算，已经从 `next()` 取出但未消费的事件仍占用额度；事件副本共享单次消费状态与同一额度，消费或最后释放后归还。宿主不消费导致溢出时停止实例，不静默丢可靠消息后继续假装健康。`PeerloomEvents` 只支持一个并发 `next()`。
 - `next()` 仅预先过滤失效事件，不能保证旧 AsyncIterator 的返回值不会再次排队到调用者 actor。事件字节保持私有，应用须在实际使用处同步调用一次 `consumePayload()`；它重新检查 Ready/Message 的父连接或通道 gate，过期、关闭或 shutdown 则抛错，不交付字节。`incomingChannel(from:)` 会消费 CHANNEL_READY 的元数据，不要先消费同一事件。只读查询不续租；同步消费成功后的再次排队/保存属于业务自己的字节所有权，SDK 不能追回已交付数据。
 - 取消只请求取消尚未执行的操作。运行中的注册/轮换可能已提交，不能伪称远端回滚；等待真实终态。注册调用方须保留原注册输入和幂等键，当前没有跨进程崩溃的 mutation journal。
 
@@ -109,3 +109,13 @@ iOS 测试使用 `SimulatorHost` 中的空应用宿主和显式 XCTest target，
 为尽快定位模拟器问题，CI 先构建独立单 arm64 Simulator 诊断包并执行相同 12 项测试；此产物不是发布 XCFramework。诊断通过后仍须完成全部五 slice 构建与全部原生门禁，失败不会跳过检查晋级。
 
 Linux 可运行 `python3 bindings/ios/scripts/test-static.py`，只覆盖打包边界与脚本，不替代原生运行。上述精确提交的原 14/12 项、独立服务场景及包装均已真实通过；服务 artifact `12847506114` 的 SHA256 为 `f37a8c7582c96904bccba29ba2b1ace370b84a93fe719d3b51d37b78386412c1`，明确记录 Swift 首次注册与重开同 ID。release-profile artifact `12847091166` 已通过未修改的 `release-policy.verify_zip` 整包校验，包含三平台变体/五架构、统一规范 C 头、notice/SBOM 与已记录缺项；正式交付仍须当前提交所有必需门禁及审核后的发布步骤。项目 MIT 不覆盖第三方，证据收集不等于法律清关，也不等于生产签名或真机验收。
+
+### 宿主资源预算
+
+`ffiResourceBudgetBytes` 编码为 `ffi_resource_budget_bytes`，默认 128 MiB、最小 2 MiB。native 与 Swift 分别管理自己的预算，不是整个进程 RSS 的总上限。关键区保留 `R=max(256 KiB, B/8)`，数据不能借用；每个 reservation 另计 256 字节元数据。C 回调在复制 `Data` 前申请额度，completion 使用原 admission ticket，直到等待调用者恢复才释放；每 stream 一个 READ。关闭事件消费前保留生命周期计数，缩容不撤销旧 ticket。并发 close 共享一个关闭任务，不设置固定 32 个等待者上限。
+
+未请求的 push 事件超出宿主预算时明确报资源溢出并停止，不静默丢可靠数据；ABI1 void callback 没有消费 ACK，不将此机制描述为跨 native/宿主的端到端反压。调用者取得或消费后的数据及其后续自建队列属于调用者内存。
+
+关键分区 R 内再分为管理操作/存储回复与生命周期通知各半；每个登记对象预留一个 Closed ticket，不能耗用管理操作计数或管理字节。最终空 payload shutdown 通知有独立保证路径，不因缩容或旧宿主票据未消费而丢失；存储回调预算失败会明确回复失败，不把未回复 CAS 当作完成或回滚。
+
+RESET 另有唯一 pending 紧急槽，不受旧 CLOSE completion 仍占用且 C/S 已缩小的 M 计数阻断，但仍受管理字节预算限制。只在对应 native 终态到达或受理失败时释放该槽；旧结果字节仍归原 ticket，直到宿主消费才释放，旧清理不能清除较新的 reset 槽。native 可以抑制已经失效的 Ready/OPEN birth 后仍送 Closed；未向宿主发布的句柄终态使用有界生命周期备用预算，不凭空创建连接/流，也不因此停止其他兄弟连接。

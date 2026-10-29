@@ -11,7 +11,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONObject
 
 class PeerloomException(val status: Int) : Exception("Peerloom status $status")
@@ -64,12 +64,21 @@ private constructor(
     private val store: IdentityStorage,
     private val listener: (Event) -> Unit,
     private val applicationExecutor: Executor,
+    private val budget: HostBudget,
 ) {
     @Volatile private var handle: Long = 0
     private val operations = HashMap<Long, CompletableFuture<Completion>>()
     private val operationLock = Any()
+    private val finalReservation = budget.acquireLifecycle(0)
+    private val emptyPayload = byteArrayOf()
     private val operationKinds = HashMap<Long, Int>()
-    private val hostReads = AtomicInteger(0)
+    private var urgentReset: HostBudget.Ticket? = null
+    private val operationReservations = HashMap<Long, HostBudget.Ticket>()
+    private val readingChannels = HashSet<Long>()
+    private val activeConnections = HashSet<Long>()
+    private val connectionClosed = HashMap<Long, HostBudget.Ticket>()
+    private val channelClosed = HashMap<Long, HostBudget.Ticket>()
+    private val hostReads = AtomicLong(0)
     private val channels = HashMap<Long, Channel>()
     private val closing = AtomicBoolean(false)
     private val released = CompletableFuture<Unit>()
@@ -78,6 +87,9 @@ private constructor(
     private val events = ArrayDeque<Event>()
     private var scheduled = false
     private val eventLock = Any()
+    private val eventReservations = java.util.IdentityHashMap<Event, HostBudget.Ticket>()
+    private var copiedEventReservation: HostBudget.Ticket? = null
+    private val deliveryFailed = AtomicBoolean(false)
 
     companion object {
         private val work =
@@ -98,9 +110,11 @@ private constructor(
         /**
          * Configure origin/application_id; storage is always Android Keystore-backed external.
          * Omitted or zero max_connections/max_channels_per_connection/
-         * max_channel_creations_per_connection removes the optional application count cap.
-         * Positive values retain explicit caps; protocol limits and bounded queues still apply.
-         * Caller-supplied executor receives at most one queued drain task; data queue is bounded32.
+         * max_channel_creations_per_connection removes the optional application count cap. Positive
+         * values retain explicit caps; protocol limits and bounded queues still apply.
+         * Caller-supplied executor receives at most one drain task. Host-owned copies use an
+         * independent byte budget; a stalled consumer can cause observable resource shutdown, not
+         * silent reliable-data loss.
          */
         fun create(
             context: Context,
@@ -109,6 +123,14 @@ private constructor(
             listener: (Event) -> Unit,
         ): CompletableFuture<PeerloomSdk> =
             createInternal(context, config, applicationExecutor, null, listener)
+
+        fun create(
+            context: Context,
+            config: PeerloomConfiguration,
+            applicationExecutor: Executor,
+            listener: (Event) -> Unit,
+        ): CompletableFuture<PeerloomSdk> =
+            create(context, config.json(), applicationExecutor, listener)
 
         /** Explicit custom encrypted CAS store; no automatic plaintext/memory fallback. */
         fun createWithStore(
@@ -148,6 +170,7 @@ private constructor(
                                 storage ?: IdentityStore(application),
                                 listener,
                                 applicationExecutor,
+                                HostBudget(config.optLong("ffi_resource_budget_bytes", 134217728L)),
                             )
                         synchronized(sdk.operationLock) {
                             val created = Native.create(encoded, sdk)
@@ -219,14 +242,44 @@ private constructor(
             if (closing.get() || handle == 0L) {
                 throw PeerloomException(5)
             }
-            val response = Native.submit(handle, kind, connection, data)
+            if (kind == 7 && urgentReset != null) throw PeerloomException(11)
+            val future = CompletableFuture<Completion>()
+            val reservation =
+                if (kind == 7) budget.acquireUrgentReset(data.size.toLong() + 256L)
+                else
+                    budget.acquire(
+                        data.size.toLong() + if (kind in setOf(5, 6)) 256L else 65536L,
+                        kind in setOf(5, 6),
+                    )
+            if (kind == 7) urgentReset = reservation
+            val response =
+                try {
+                    Native.submit(handle, kind, connection, data)
+                } catch (failure: Throwable) {
+                    if (urgentReset === reservation) urgentReset = null
+                    reservation.close()
+                    throw failure
+                }
             if (response[0] != 0L) {
+                if (urgentReset === reservation) urgentReset = null
+                reservation.close()
                 throw PeerloomException(response[0].toInt())
             }
-            val future = CompletableFuture<Completion>()
-            operations[response[1]] = future
-            operationKinds[response[1]] = kind
-            return Operation(this, response[1], future)
+            try {
+                operationReservations[response[1]] = reservation
+                operations[response[1]] = future
+                operationKinds[response[1]] = kind
+                return Operation(this, response[1], future)
+            } catch (failure: Throwable) {
+                if (urgentReset === reservation) urgentReset = null
+                operationReservations.remove(response[1])
+                operations.remove(response[1])
+                operationKinds.remove(response[1])
+                reservation.close()
+                future.completeExceptionally(PeerloomException(6))
+                failOperations()
+                throw failure
+            }
         }
     }
 
@@ -238,12 +291,40 @@ private constructor(
     ): Operation {
         synchronized(operationLock) {
             if (closing.get() || handle == 0L) throw PeerloomException(5)
-            val response = Native.channelSubmit(handle, connection, channel, kind, data)
-            if (response[0] != 0L) throw PeerloomException(response[0].toInt())
             val future = CompletableFuture<Completion>()
-            operations[response[1]] = future
-            operationKinds[response[1]] = 63 + kind
-            return Operation(this, response[1], future)
+            val reservation =
+                budget.acquire(
+                    data.size.toLong() + if (kind == 4 || kind == 5) 256L else 65536L,
+                    kind == 4 || kind == 5,
+                )
+            val response =
+                try {
+                    Native.channelSubmit(handle, connection, channel, kind, data)
+                } catch (failure: Throwable) {
+                    if (urgentReset === reservation) urgentReset = null
+                    reservation.close()
+                    throw failure
+                }
+            if (response[0] != 0L) {
+                if (urgentReset === reservation) urgentReset = null
+                reservation.close()
+                throw PeerloomException(response[0].toInt())
+            }
+            try {
+                operationReservations[response[1]] = reservation
+                operations[response[1]] = future
+                operationKinds[response[1]] = 63 + kind
+                return Operation(this, response[1], future)
+            } catch (failure: Throwable) {
+                if (urgentReset === reservation) urgentReset = null
+                operationReservations.remove(response[1])
+                operations.remove(response[1])
+                operationKinds.remove(response[1])
+                reservation.close()
+                future.completeExceptionally(PeerloomException(6))
+                failOperations()
+                throw failure
+            }
         }
     }
 
@@ -251,10 +332,9 @@ private constructor(
         !closing.get() && handle != 0L && Native.channelValid(handle, connection, channel) == 0
 
     internal fun readChannel(connection: Long, channel: Long, maxBytes: Int): ReadOperation {
-        while (true) {
-            val current = hostReads.get()
-            if (current >= 32) throw PeerloomException(6)
-            if (hostReads.compareAndSet(current, current + 1)) break
+        synchronized(operationLock) {
+            if (!readingChannels.add(channel)) throw PeerloomException(11)
+            hostReads.updateAndGet { Math.addExact(it, 1L) }
         }
         val operation =
             try {
@@ -265,6 +345,7 @@ private constructor(
                     JSONObject().put("max_bytes", maxBytes).toString().toByteArray(UTF_8),
                 )
             } catch (error: Throwable) {
+                synchronized(operationLock) { readingChannels.remove(channel) }
                 hostReads.decrementAndGet()
                 throw error
             }
@@ -281,19 +362,40 @@ private constructor(
                         completion?.payload?.fill(0)
                         result.completeExceptionally(failure)
                     } finally {
-                        hostReads.decrementAndGet()
+                        releaseRead(operation.requestId, channel)
                         finishReleaseIfDrained()
                     }
                 }
             } catch (failure: RejectedExecutionException) {
                 completion?.payload?.fill(0)
-                hostReads.decrementAndGet()
+                releaseRead(operation.requestId, channel)
                 result.completeExceptionally(failure)
                 close()
                 finishReleaseIfDrained()
             }
         }
         return ReadOperation(operation, result)
+    }
+
+    private fun updatePopulation() {
+        activeConnections.forEach {
+            if (!connectionClosed.containsKey(it)) connectionClosed[it] = budget.acquireLifecycle()
+        }
+        channels.keys.forEach {
+            if (!channelClosed.containsKey(it)) channelClosed[it] = budget.acquireLifecycle()
+        }
+        budget.population(
+            activeConnections.size.toLong(),
+            channels.values.count { it.mode == ChannelMode.RELIABLE_STREAM }.toLong(),
+        )
+    }
+
+    private fun releaseRead(request: Long, channel: Long) {
+        synchronized(operationLock) {
+            operationReservations.remove(request)?.close()
+            readingChannels.remove(channel)
+        }
+        hostReads.decrementAndGet()
     }
 
     internal fun cancel(request: Long): Int = Native.cancel(handle, request)
@@ -335,6 +437,86 @@ private constructor(
         )
     }
 
+    /** JNI final path does not allocate/copy a payload or acquire a new credit. */
+    @Suppress("unused")
+    private fun onNativeFinal(status: Int) {
+        if (!deliveryFailed.get()) shutdownStatus = status
+        copiedEventReservation = finalReservation
+        try {
+            deliver(Event(9, null, shutdownStatus, emptyPayload))
+        } finally {
+            if (closing.compareAndSet(false, true)) pollRelease()
+        }
+    }
+
+    /** JNI invokes this before allocating a Java copy, on its serial callback thread. */
+    @Suppress("unused")
+    private fun reserveNativeEvent(
+        kind: Int,
+        request: Long,
+        connection: Long,
+        channel: Long,
+        length: Long,
+    ): Boolean {
+        if (length !in 0L..65536L || deliveryFailed.get()) return false
+        return try {
+            synchronized(operationLock) {
+                if (kind == 1) {
+                    operationReservations[request]?.permits(length) == true
+                } else {
+                    check(copiedEventReservation == null)
+                    val lifecycle =
+                        when {
+                            kind == 7 && connection != 0L -> connectionClosed[connection]
+                            kind == 13 -> channelClosed[channel]
+                            else -> null
+                        }
+                    // Invalid births can be suppressed natively while Closed remains observable.
+                    // Missing pre-ticket uses the same bounded lifecycle fallback, never a new
+                    // handle.
+                    if (lifecycle != null && !lifecycle.permits(length)) return false
+                    copiedEventReservation =
+                        lifecycle
+                            ?: if (kind == 10) {
+                                budget.acquire(length + 16384L, true)
+                            } else {
+                                if (kind in setOf(4, 5, 6, 12, 14)) budget.acquire(length, false)
+                                else budget.acquireLifecycle(length)
+                            }
+                    true
+                }
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** No callback exception or copy failure may leave an accepted future pending forever. */
+    @Suppress("unused")
+    private fun failedNativeDelivery() {
+        copiedEventReservation?.close()
+        copiedEventReservation = null
+        failOperations()
+    }
+
+    private fun failOperations() {
+        if (deliveryFailed.compareAndSet(false, true)) {
+            shutdownStatus = 6
+            synchronized(operationLock) {
+                while (operations.isNotEmpty()) {
+                    val entry = operations.entries.iterator().next()
+                    val id = entry.key
+                    val future = entry.value
+                    operations.remove(id)
+                    if (urgentReset === operationReservations[id]) urgentReset = null
+                    if (operationKinds.remove(id) != 65) operationReservations.remove(id)?.close()
+                    future.completeExceptionally(PeerloomException(6))
+                }
+            }
+            close()
+        }
+    }
+
     /** Called only on the serial native callback thread. JNI has already copied borrowed bytes. */
     @Suppress("unused")
     private fun onNativeEvent(
@@ -355,22 +537,35 @@ private constructor(
             1 -> {
                 val (future, operationKind) =
                     synchronized(operationLock) {
-                        Pair(operations.remove(request), operationKinds.remove(request))
+                        val kind = operationKinds.remove(request)
+                        if (kind == 7 && urgentReset === operationReservations[request])
+                            urgentReset = null
+                        Pair(operations.remove(request), kind)
                     }
                 try {
                     val opened =
                         if (operationKind == 8 && status == 0 && channel != 0L) {
                             channel(connection, channel, payload).also {
-                                synchronized(operationLock) { channels[channel] = it }
+                                synchronized(operationLock) {
+                                    channels[channel] = it
+                                    updatePopulation()
+                                }
                             }
                         } else null
                     future?.complete(Completion(status, payload, opened))
-                } catch (failure: Exception) {
+                } catch (failure: Throwable) {
                     future?.completeExceptionally(failure)
                     close()
+                } finally {
+                    if (operationKind != 65)
+                        synchronized(operationLock) {
+                            operationReservations.remove(request)?.close()
+                        }
                 }
             }
             10 -> {
+                val storageReservation = copiedEventReservation
+                copiedEventReservation = null
                 val sdk = handle
                 try {
                     work.execute {
@@ -393,32 +588,33 @@ private constructor(
                         } finally {
                             payload.fill(0)
                             reply.fill(0)
+                            storageReservation?.close()
                         }
                     }
                 } catch (_: RejectedExecutionException) {
                     Native.storageComplete(sdk, request, 255, byteArrayOf())
                     payload.fill(0)
+                    storageReservation?.close()
                 }
             }
-            9 -> {
-                shutdownStatus = status
-                deliver(Event(kind, null, status, payload))
-                if (closing.compareAndSet(false, true)) {
-                    pollRelease()
-                }
-            }
+            9 -> onNativeFinal(status)
             else -> {
                 val scopedChannel =
                     synchronized(operationLock) {
                         when (kind) {
+                            5 -> {
+                                activeConnections.add(connection)
+                                updatePopulation()
+                                null
+                            }
                             12 ->
                                 channel(connection, channel, payload).also {
                                     channels[channel] = it
+                                    updatePopulation()
                                 }
-                            13 -> channels.remove(channel)
+                            13 -> channels[channel]
                             14 -> channels[channel] ?: throw PeerloomException(8)
                             7 -> {
-                                channels.entries.removeAll { it.value.parent == connection }
                                 null
                             }
                             else -> null
@@ -439,11 +635,26 @@ private constructor(
 
     private fun deliver(event: Event) {
         synchronized(eventLock) {
-            if (events.size >= 32) {
-                close()
+            val reservation =
+                copiedEventReservation
+                    ?: try {
+                        if (event.kind in setOf(4, 5, 6, 12, 14))
+                            budget.acquire(event.payload.size.toLong(), false)
+                        else budget.acquireLifecycle(event.payload.size.toLong())
+                    } catch (_: Exception) {
+                        failedNativeDelivery()
+                        return
+                    }
+            copiedEventReservation = null
+            try {
+                eventReservations[event] = reservation
+                events.addLast(event)
+            } catch (failure: Throwable) {
+                eventReservations.remove(event)
+                reservation.close()
+                failedNativeDelivery()
                 return
             }
-            events.addLast(event)
             if (scheduled) {
                 return
             }
@@ -457,6 +668,8 @@ private constructor(
             applicationExecutor.execute { drainOne() }
         } catch (_: RejectedExecutionException) {
             synchronized(eventLock) {
+                eventReservations.values.forEach { it.close() }
+                eventReservations.clear()
                 events.clear()
                 scheduled = false
             }
@@ -491,6 +704,21 @@ private constructor(
                 close()
             }
         }
+        if (event != null)
+            synchronized(operationLock) {
+                if (event.kind == 13)
+                    event.channel?.let {
+                        channels.remove(it.handle)
+                        channelClosed.remove(it.handle)
+                    }
+                if (event.kind == 7)
+                    event.connection?.let { parent ->
+                        activeConnections.remove(parent.handle)
+                        channels.entries.removeAll { it.value.parent == parent.handle }
+                    }
+                updatePopulation()
+            }
+        synchronized(eventLock) { if (event != null) eventReservations.remove(event)?.close() }
         val again =
             synchronized(eventLock) {
                 if (events.isEmpty()) {
@@ -510,9 +738,18 @@ private constructor(
     private fun finishReleaseIfDrained() {
         val done =
             synchronized(eventLock) {
-                nativeReleased.get() && hostReads.get() == 0 && events.isEmpty() && !scheduled
+                nativeReleased.get() && hostReads.get() == 0L && events.isEmpty() && !scheduled
             }
         if (done) {
+            synchronized(operationLock) {
+                connectionClosed.values.forEach { it.close() }
+                connectionClosed.clear()
+                channelClosed.values.forEach { it.close() }
+                channelClosed.clear()
+                activeConnections.clear()
+                channels.clear()
+                finalReservation.close()
+            }
             if (shutdownStatus == 0) {
                 released.complete(Unit)
             } else {

@@ -96,15 +96,24 @@ uint64_t dp_capabilities(void);
  * Positive values impose explicit limits; if both channel limits are positive,
  * the active limit must not exceed the lifetime creation budget (not refunded on close).
  * Protocol stream-ID limits, resource exhaustion, bounded queues and the separate
- * 32 admitted-operation credits still apply. Unlimited does not preallocate capacity.
+ * byte budgets still apply. Unlimited does not preallocate capacity.
+ * ffi_resource_budget_bytes defaults to 134217728 (minimum 2097152). This bounds
+ * charged FFI buffers/metadata, not process RSS or core/host allocations. Critical
+ * control owns R=max(262144,budget/8) bytes that data cannot consume.
+ * R/2 is reserved for management operations and storage callbacks; the remainder covers
+ * lifecycle notifications, including a Closed reservation per published object.
  * Inputs copied before return; non-null pointers must be valid/aligned as appropriate.
  * Immediate error => output0, no asynchronous completion. No callbacks on create failure.
  * On success, callback code must remain loaded until release succeeds.
  */
 uint32_t dp_sdk_create(const uint8_t *json, size_t len, dp_callback callback,
                        uint64_t context, uint64_t *out_sdk);
-/* <=32 admitted operations, each reserves one terminal completion credit until callback
- * returns. Successful admission => unique request ID and exactly one COMPLETE event.
+/* Admission grows lazily with connections C and reliable streams S, including
+ * retired objects until their Closed callback returns or notification is discarded:
+ * ordinary credits=64+8*C+2*S; independent close/reset credits=64+C+S.
+ * Byte exhaustion returns FULL without acceptance. Each admitted operation reserves
+ * its terminal slot and bytes until callback returns; shrinking object counts cannot
+ * revoke existing reservations. Successful admission => unique request ID and exactly one COMPLETE event.
  * Completion may occur before submit returns; correlate by returned request ID.
  * Start: {} loads host store; registration:
  * {"registration":{"platform":"linux","installation_public_key":"...",
@@ -132,7 +141,7 @@ uint32_t dp_sdk_create(const uint8_t *json, size_t len, dp_callback callback,
  */
 uint32_t dp_sdk_submit(uint64_t sdk, uint32_t operation, uint64_t connection,
                        const uint8_t *input, size_t len, uint64_t *out_request);
-/* Typed child operations share the SAME SDK-wide 32 completion credits as sdk_submit.
+/* Typed child operations share the SDK dynamic credits/byte budget with sdk_submit.
  * All three handles must belong together; handles never alias another generation.
  * SEND: complete binary message; OK payload {"disposition":"sent"|"dropped"}.
  * "sent" is local acceptance, not peer receipt; dropped is explicit queue policy.
