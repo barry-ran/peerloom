@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/barry-ran/peerloom/src/device-server/internal/migrate"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -373,12 +374,29 @@ func TestDirectCounterMigrationPreservesRowsAndRollbackFailsClosed(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertVersion := func(want int64) {
+		t.Helper()
+		var version int64
+		if err := p.QueryRow(ctx, "SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version != want {
+			t.Fatalf("migration version = %d, want %d: %v", version, want, err)
+		}
+	}
+	// The fixture starts at schema 11. First remove the unrelated exclusive
+	// migration, then exercise precisely the historical 9 -> 10 transition.
+	assertVersion(11)
 	if err = migrate.Apply(ctx, p, migrations, "down"); err != nil {
 		t.Fatal(err)
 	}
-	if err = migrate.Apply(ctx, p, migrations, "up"); err != nil {
+	assertVersion(10)
+	capacityMigrations := migrations[:10]
+	if err = migrate.Apply(ctx, p, capacityMigrations, "down"); err != nil {
 		t.Fatal(err)
 	}
+	assertVersion(9)
+	if err = migrate.Apply(ctx, p, capacityMigrations, "up"); err != nil {
+		t.Fatal(err)
+	}
+	assertVersion(10)
 	var attempts int
 	if err = p.QueryRow(ctx, "SELECT attempts FROM direct_registration_windows WHERE key_hash=$1", hash).Scan(&attempts); err != nil || attempts != 6001 {
 		t.Fatal("migration rewrote historical count", err)
@@ -386,9 +404,12 @@ func TestDirectCounterMigrationPreservesRowsAndRollbackFailsClosed(t *testing.T)
 	if _, err = p.Exec(ctx, "UPDATE direct_registration_windows SET attempts=6002 WHERE key_hash=$1", hash); err != nil {
 		t.Fatal(err)
 	}
-	if err = migrate.Apply(ctx, p, migrations, "down"); err == nil {
-		t.Fatal("rollback silently truncated new counter")
+	rollbackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err = migrate.Apply(rollbackCtx, p, capacityMigrations, "down"); err == nil || err.Error() != "migration 10 down failed" {
+		t.Fatal("rollback must reject the schema 10 counter constraint", err)
 	}
+	assertVersion(10)
 	if err = p.QueryRow(ctx, "SELECT attempts FROM direct_registration_windows WHERE key_hash=$1", hash).Scan(&attempts); err != nil || attempts != 6002 {
 		t.Fatal("failed rollback changed count", err)
 	}

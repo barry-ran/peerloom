@@ -86,6 +86,7 @@ private constructor(
     private val connectionClosed = HashMap<Long, HostBudget.Ticket>()
     private val channelClosed = HashMap<Long, HostBudget.Ticket>()
     private val hostReads = AtomicLong(0)
+    private val hostStorageJobs = AtomicLong(0)
     private val channels = HashMap<Long, Channel>()
     private val closing = AtomicBoolean(false)
     private val released = CompletableFuture<Unit>()
@@ -587,34 +588,44 @@ private constructor(
                 val storageReservation = copiedEventReservation
                 copiedEventReservation = null
                 val sdk = handle
+                // Native timeout/release does not end a host CAS or its owned buffers.
+                hostStorageJobs.incrementAndGet()
                 try {
                     work.execute {
-                        var replyStatus = 0
-                        val reply =
-                            try {
-                                store
-                                    .execute(JSONObject(String(payload, UTF_8)))
-                                    .toString()
-                                    .toByteArray(UTF_8)
-                            } catch (_: IdentityStore.Conflict) {
-                                replyStatus = 11
-                                byteArrayOf()
-                            } catch (_: Exception) {
-                                replyStatus = 255
-                                byteArrayOf()
-                            }
+                        var reply = byteArrayOf()
                         try {
+                            var replyStatus = 0
+                            reply =
+                                try {
+                                    store
+                                        .execute(JSONObject(String(payload, UTF_8)))
+                                        .toString()
+                                        .toByteArray(UTF_8)
+                                } catch (_: IdentityStore.Conflict) {
+                                    replyStatus = 11
+                                    byteArrayOf()
+                                } catch (_: Exception) {
+                                    replyStatus = 255
+                                    byteArrayOf()
+                                }
                             Native.storageComplete(sdk, request, replyStatus, reply)
                         } finally {
                             payload.fill(0)
                             reply.fill(0)
                             storageReservation?.close()
+                            hostStorageJobs.decrementAndGet()
+                            finishReleaseIfDrained()
                         }
                     }
                 } catch (_: RejectedExecutionException) {
-                    Native.storageComplete(sdk, request, 255, byteArrayOf())
-                    payload.fill(0)
-                    storageReservation?.close()
+                    try {
+                        Native.storageComplete(sdk, request, 255, byteArrayOf())
+                    } finally {
+                        payload.fill(0)
+                        storageReservation?.close()
+                        hostStorageJobs.decrementAndGet()
+                        finishReleaseIfDrained()
+                    }
                 }
             }
             9 -> onNativeFinal(status)
@@ -767,7 +778,11 @@ private constructor(
     private fun finishReleaseIfDrained() {
         val done =
             synchronized(eventLock) {
-                nativeReleased.get() && hostReads.get() == 0L && events.isEmpty() && !scheduled
+                nativeReleased.get() &&
+                    hostReads.get() == 0L &&
+                    hostStorageJobs.get() == 0L &&
+                    events.isEmpty() &&
+                    !scheduled
             }
         if (done) {
             synchronized(operationLock) {

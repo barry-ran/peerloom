@@ -41,7 +41,8 @@ pub fn read() -> Result<Duration, ClockError> {
 }
 #[cfg(target_os = "windows")]
 pub fn read() -> Result<Duration, ClockError> {
-    #[link(name = "kernel32")]
+    // QueryInterruptTime is exported by Kernel32.dll but imported via Mincore.lib.
+    #[link(name = "mincore")]
     unsafe extern "system" {
         fn QueryInterruptTime(value: *mut u64);
     }

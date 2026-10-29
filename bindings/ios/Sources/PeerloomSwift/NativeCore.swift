@@ -382,7 +382,11 @@ final class NativeCore: @unchecked Sendable {
         storageJobs += 1
         lock.unlock()
         storageIO.async { [self] in
-            defer { reservation?.release() }
+            defer {
+                // close must not observe zero jobs until the host budget is returned.
+                reservation?.release()
+                lock.lock(); storageJobs -= 1; lock.unlock()
+            }
             var status: UInt32 = 0
             var response = Data()
             do {
@@ -392,7 +396,6 @@ final class NativeCore: @unchecked Sendable {
             } catch StoreError.conflict { status = 11 }
             catch { status = 255 }
             _ = api.storage(sdk, request: request, status: status, data: response)
-            lock.lock(); storageJobs -= 1; lock.unlock()
         }
     }
     func fail(_ error: Error) {
