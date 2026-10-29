@@ -56,14 +56,41 @@ class AdminDeploymentTests(unittest.TestCase):
         self.assertNotRegex(dockerfile, r'(?im)^RUN .*device-admin-user (create|change)')
         self.assertNotRegex(dockerfile, r'(?im)^FROM node:')
 
-    def test_cross_platform_artifact_loop_includes_admin_user(self):
+    def test_server_artifact_is_linux_amd64_with_all_operator_tools(self):
         script = ROOT / 'scripts/build.sh'
         body = script.read_text()
         self.assertRegex(body, r'for binary in [^;]*\bdevice-admin-user; do')
-        self.assertIn('linux/amd64 linux/arm64 darwin/arm64 windows/amd64', body)
+        self.assert_server_sdk_split(body, (ROOT / 'scripts/package-release.py').read_text(encoding='utf-8'))
         self.assertIn('"$root/dist/$os-$arch/$binary$suffix"', body)
         subprocess.run(['bash', '-n', str(script)], check=True)
         self.assert_build_notice_pipeline(body, (ROOT / 'scripts/package-third-party.py').read_text())
+
+    def assert_server_sdk_split(self, body, package):
+        import re
+        targets = re.findall(r'for target in ([^;]+); do', body)
+        self.assertEqual(targets, ['linux/amd64'])
+        binaries = re.findall(r'for binary in ([^;]+); do', body)
+        self.assertEqual(binaries, ['device-server device-migrate device-bootstrap device-admin device-admin-user'])
+        self.assertIn('CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build', body)
+        for platform in ('linux-x86_64', 'server-linux-amd64'):
+            self.assertIn(f'python3 "$root/scripts/package-release.py" --platform {platform} --output "$root/dist/release/{platform}"', body.splitlines())
+        self.assertIn("sources = [(root / 'dist/c-abi-linux-x86_64', 'sdk')]", package)
+        self.assertIn("elif args.platform == 'server-linux-amd64':\n        sources = server_sources(root)", package)
+        self.assertNotIn('go-crossbuilds', package)
+
+    def test_server_sdk_split_rejects_old_targets_missing_tools_or_mixed_payload(self):
+        body = (ROOT/'scripts/build.sh').read_text(encoding='utf-8')
+        package = (ROOT/'scripts/package-release.py').read_text(encoding='utf-8')
+        cases = [
+            (body.replace('for target in linux/amd64;', 'for target in linux/amd64 linux/arm64;'), package),
+            (body.replace(' device-admin-user;', ';'), package),
+            (body.replace('--platform server-linux-amd64', '--platform linux-x86_64'), package),
+            (body, package.replace("'sdk')]", "'go-crossbuilds')]")),
+        ]
+        for changed_body, changed_package in cases:
+            with self.subTest(body_changed=changed_body != body):
+                with self.assertRaises(AssertionError):
+                    self.assert_server_sdk_split(changed_body, changed_package)
 
     def assert_build_notice_pipeline(self, body, producer):
         invocation = 'python3 "$root/scripts/package-third-party.py" --include-build-notices'
