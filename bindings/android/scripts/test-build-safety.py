@@ -23,6 +23,30 @@ kvm = module("kvm-access")
 artifacts = module("verify-artifacts")
 ACL = "# file: /dev/kvm\n# owner: root\n# group: kvm\nuser::rw-\ngroup::rw-\nother::---\n"
 
+class NativeVendorInputs(unittest.TestCase):
+    def test_every_workspace_path_patch_invalidates_native_build(self):
+        import tomllib
+        repo = ROOT.parents[2]
+        patches = tomllib.loads((repo/'src/device-sdk/Cargo.toml').read_text(encoding='utf-8'))['patch']['crates-io']
+        script = (ROOT.parent/'library/build.gradle.kts').read_text(encoding='utf-8')
+        for name, value in patches.items():
+            vendor = value['path'].removesuffix('/crate')
+            self.assertIn('inputs.files(fileTree(rootProject.projectDir.resolve("'+vendor+'")))', script, name)
+        self.assertEqual(set(patches), {'nix', 'rtc', 'webrtc'})
+
+    def test_missing_webrtc_input_is_rejected(self):
+        from unittest.mock import patch
+        original = Path.read_text
+        target = ROOT.parent/'library/build.gradle.kts'
+        def missing(path, *args, **kwargs):
+            text = original(path, *args, **kwargs)
+            if path == target:
+                text = '\n'.join(line for line in text.splitlines() if 'third_party/rust/webrtc-' not in line)
+            return text
+        # Call the same contract against an actual omitted input, not a permissive fallback.
+        with patch.object(Path, 'read_text', missing), self.assertRaises(AssertionError):
+            self.test_every_workspace_path_patch_invalidates_native_build()
+
 class EmulatorMemory(unittest.TestCase):
     def test_fixed_4g_avd_has_readonly_host_memory_admission(self):
         self.assertEqual(memory.validate("MemTotal: 16777216 kB\nMemAvailable: 8388608 kB\n"), (16384, 8192))

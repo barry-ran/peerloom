@@ -17,6 +17,7 @@ class CheckoutEvidenceTests(unittest.TestCase):
             'third_party/license-evidence/manifest.json': b'{"fixture": true}\n',
             'third_party/rust/nix-0.31.3/crate/LICENSE': b'Original upstream CRLF\r\nCopyright\r\n',
             'third_party/rust/rtc-0.21.1/crate/LICENSE': b'Original mixed\r\nSecond line\n',
+            'third_party/rust/webrtc-0.21.1/crate/LICENSE-MIT': b'Original mixed\r\nNotice\n',
             'third_party/rust/rtc-0.21.1/source.json': b'Pinned manifest LF\n',
             'infra/migrations/000001_fixture.up.sql': b'Original hash-bound bytes\r\nDo not normalize\n',
             'src/device-sdk/Cargo.toml': b'Original hash-bound bytes\r\nDo not normalize\n',

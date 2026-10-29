@@ -1360,7 +1360,7 @@ impl Actor {
                     // Retiring refusals retain only their original lightweight slot
                     // until the server confirms close; no historical ID cache.
                     let full = self.config.max_connections != 0
-                        && self.sessions.len() >= self.config.max_connections;
+                        && self.sessions.admission_len() >= self.config.max_connections;
                     self.sessions
                         .insert_retiring_or_pending(id.clone(), session)
                         .map_err(|_| SdkError::QueueFull)?;
@@ -1699,6 +1699,7 @@ impl Actor {
                 .await;
         }
         self.stop_generation(id).await;
+        self.sessions.retire(id);
         if announced {
             let _ = self.emit(SdkEvent::ConnectionClosed {
                 session_id: id.to_owned(),

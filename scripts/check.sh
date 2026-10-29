@@ -26,6 +26,7 @@ python3 scripts/test-postgres-backup.py
 python3 scripts/test-tls-compose-script.py
 python3 scripts/test-windows-service-script.py
 python3 scripts/test-vendor-evidence.py
+python3 scripts/test-vendored-webrtc.py
 python3 bindings/android/scripts/test-maven-evidence.py
 (
   cd src/device-server
@@ -40,6 +41,7 @@ python3 bindings/android/scripts/test-maven-evidence.py
   cargo fmt --all -- --check
   cargo clippy --workspace --all-targets --locked -- -D warnings
   cargo test --workspace --locked
+  cargo test -p webrtc --lib --locked peer_connection::driver::turn_flush_regression::core_relay_packet_must_reach_socket_in_same_flush_without_another_wake -- --exact
 )
 
 # Linux C ABI真实链接生命周期及C++头文件兼容性。

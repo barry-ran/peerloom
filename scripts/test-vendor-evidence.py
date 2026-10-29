@@ -17,14 +17,14 @@ class VendorTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.patches = {}
-        # The integration runner may supply a root with both reviewed vendors.
+        # The integration runner may supply a root with all three reviewed vendors.
         import os
         fixtures = os.environ.get('PEERLOOM_VENDOR_FIXTURES', str(Path(__file__).resolve().parents[1]))
-        for name, version in [('nix', '0.31.3'), ('rtc', '0.21.1')]:
+        for name, version in [('nix', '0.31.3'), ('rtc', '0.21.1'), ('webrtc', '0.21.1')]:
             base = f'third_party/rust/{name}-{version}'
             source = Path(fixtures) / base
             if not source.is_dir():
-                self.fail('Both reviewed vendor fixture directories are required')
+                self.fail('All three reviewed vendor fixture directories are required')
             shutil.copytree(source, self.root / base)
             self.patches[name] = {'path': '../../' + base + '/crate'}
         self.base = self.root / 'third_party/rust/nix-0.31.3'
@@ -34,15 +34,15 @@ class VendorTests(unittest.TestCase):
         gen.cargo_vendor(record, self.root, self.patches, blobs)
         return record, blobs
 
-    def test_both_modified_components_in_sbom(self):
+    def test_all_modified_components_in_sbom(self):
         records, blobs = [], {}
-        for name, version in [('nix', '0.31.3'), ('rtc', '0.21.1')]:
+        for name, version in [('nix', '0.31.3'), ('rtc', '0.21.1'), ('webrtc', '0.21.1')]:
             record, contents = self.call(name, version)
             records.append(record); blobs.update(contents)
         files, incomplete = gen.render(records, blobs, [], {})
         self.assertFalse(incomplete)
         components = json.loads(files['sbom.cdx.json'])['components']
-        self.assertEqual({x['name'] for x in components}, {'nix', 'rtc'})
+        self.assertEqual({x['name'] for x in components}, {'nix', 'rtc', 'webrtc'})
         for item in components:
             self.assertNotIn('hashes', item)
             self.assertTrue(any(x['name'] == 'peerloom:modified-vendor-provenance' for x in item['properties']))
@@ -53,11 +53,11 @@ class VendorTests(unittest.TestCase):
         sdk.mkdir(parents=True)
         (self.root / 'src/device-server').mkdir()
         (self.root / 'src/device-server/go.sum').write_text('')
-        (sdk / 'Cargo.toml').write_text('[workspace]\nmembers=[]\n[patch.crates-io]\nnix={path="../../third_party/rust/nix-0.31.3/crate"}\nrtc={path="../../third_party/rust/rtc-0.21.1/crate"}\n')
-        (sdk / 'Cargo.lock').write_text('version=4\n[[package]]\nname="nix"\nversion="0.31.3"\n[[package]]\nname="rtc"\nversion="0.21.1"\n')
+        (sdk / 'Cargo.toml').write_text('[workspace]\nmembers=[]\n[patch.crates-io]\nnix={path="../../third_party/rust/nix-0.31.3/crate"}\nrtc={path="../../third_party/rust/rtc-0.21.1/crate"}\nwebrtc={path="../../third_party/rust/webrtc-0.21.1/crate"}\n')
+        (sdk / 'Cargo.lock').write_text('version=4\n[[package]]\nname="nix"\nversion="0.31.3"\n[[package]]\nname="rtc"\nversion="0.21.1"\n[[package]]\nname="webrtc"\nversion="0.21.1"\n')
         with patch.object(gen, 'run', side_effect=['', str(self.root / 'go-cache')]):
             records, blobs, issues = gen.collect(self.root)
-        self.assertEqual(len(records), 2)
+        self.assertEqual(len(records), 3)
         self.assertFalse(issues)
         self.assertTrue(all(not item['issues'] and item['vendor_provenance'] for item in records))
 

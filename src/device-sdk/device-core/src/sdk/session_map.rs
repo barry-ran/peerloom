@@ -29,6 +29,7 @@ pub(super) struct SessionMap<T> {
     pending: BTreeMap<Reservation, Pending>,
     sessions: BTreeMap<String, T>,
     seen: BTreeSet<String>,
+    retiring: BTreeSet<String>,
     closed: bool,
 }
 
@@ -40,12 +41,25 @@ impl<T> SessionMap<T> {
             pending: BTreeMap::new(),
             sessions: BTreeMap::new(),
             seen: BTreeSet::new(),
+            retiring: BTreeSet::new(),
             closed: false,
         })
     }
 
     pub(super) fn len(&self) -> usize {
         self.pending.len() + self.sessions.len()
+    }
+
+    /// Retiring entries retain anti-replay state, not active connection slots.
+    pub(super) fn admission_len(&self) -> usize {
+        self.len() - self.retiring.len()
+    }
+
+    /// Called only after the old gate closes and its bounded worker is joined.
+    pub(super) fn retire(&mut self, id: &str) {
+        if self.sessions.contains_key(id) {
+            self.retiring.insert(id.to_owned());
+        }
     }
 
     fn identifier(value: &str) -> Result<(), MapError> {
@@ -61,7 +75,7 @@ impl<T> SessionMap<T> {
     fn admission(&self) -> Result<(), MapError> {
         if self.closed {
             Err(MapError::Closed)
-        } else if self.capacity != 0 && self.len() >= self.capacity {
+        } else if self.capacity != 0 && self.admission_len() >= self.capacity {
             Err(MapError::Full)
         } else {
             Ok(())
@@ -211,6 +225,7 @@ impl<T> SessionMap<T> {
     }
     pub(super) fn remove(&mut self, id: &str) -> Option<T> {
         self.seen.remove(id);
+        self.retiring.remove(id);
         self.sessions.remove(id)
     }
     pub(super) fn iter(&self) -> impl Iterator<Item = (&str, &T)> {
@@ -229,6 +244,7 @@ impl<T> SessionMap<T> {
     }
     pub(super) fn drain_sessions(&mut self) -> impl Iterator<Item = T> {
         self.seen.clear();
+        self.retiring.clear();
         std::mem::take(&mut self.sessions).into_values()
     }
 }
@@ -236,6 +252,30 @@ impl<T> SessionMap<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retiring_releases_active_capacity_without_forgetting_session_identity() {
+        let mut map = SessionMap::new(1).unwrap();
+        map.insert_incoming("old".into(), ()).unwrap();
+        assert_eq!(map.reserve_outgoing("peer".into()), Err(MapError::Full));
+        map.retire("old");
+        map.retire("old"); // Idempotent: no underflow or double-release.
+        map.retire("unknown");
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.admission_len(), 0);
+        assert!(map.get("old").is_some());
+        assert_eq!(
+            map.insert_incoming("old".into(), ()),
+            Err(MapError::DuplicateSession)
+        );
+        let reservation = map.reserve_outgoing("peer".into()).unwrap();
+        assert_eq!(map.admission_len(), 1);
+        assert_eq!(map.reserve_outgoing("another".into()), Err(MapError::Full));
+        map.remove("old");
+        assert_eq!(map.admission_len(), 1); // ACK cannot release the new slot.
+        map.release_reservation(reservation);
+        assert_eq!(map.admission_len(), 0);
+    }
 
     #[test]
     fn released_slots_have_no_lifetime_cap_and_zero_is_unlimited() {

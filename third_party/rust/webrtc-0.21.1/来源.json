@@ -1,0 +1,950 @@
+{
+  "package": {
+    "name": "webrtc",
+    "version": "0.21.1",
+    "declared_license": "MIT/Apache-2.0"
+  },
+  "archive": {
+    "url": "https://static.crates.io/crates/webrtc/webrtc-0.21.1.crate",
+    "sha256": "b621e736302bef784948cc8d8099fd0a8fdb5757693c80a344ffbe38c49387d2",
+    "vcs_commit": "d658b5a803dd8dc389547450e245877310c9cbed"
+  },
+  "patch": {
+    "file": "应用补丁.patch",
+    "sha256": "28a541a63d8aff5601c012b655c33bbcb85d51cfc62ea75ba8707be52a5b9579",
+    "modified_files": [
+      "Cargo.toml",
+      "src/peer_connection/driver.rs"
+    ],
+    "kind": "Peerloom local TURN output flush correctness patch and deterministic regression; not claimed upstream merged"
+  },
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "sha256": "a3ec3cef7eb9a9b9356d05e258591846defb072137f2e6360e434a6e4ae22dea",
+      "upstream_sha256": "919a3c7bc257918856f157682d2c9650fcf478a175098a9aaa80d5ac0fb8797c"
+    },
+    {
+      "path": "LICENSE-APACHE",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+      "upstream_sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+    },
+    {
+      "path": "LICENSE-MIT",
+      "sha256": "56cc6c08157f4faf70d351b3a7ceac143399d5359a78c180e06dcd0390784f4d",
+      "upstream_sha256": "56cc6c08157f4faf70d351b3a7ceac143399d5359a78c180e06dcd0390784f4d"
+    },
+    {
+      "path": "README.md",
+      "sha256": "f670a188e3b9e41b43d1d94e1f1655e7eb20b586c4ce0d7869efd1bb05eece03",
+      "upstream_sha256": "f670a188e3b9e41b43d1d94e1f1655e7eb20b586c4ce0d7869efd1bb05eece03"
+    },
+    {
+      "path": "src/data_channel/mod.rs",
+      "sha256": "5259666d935c33523d29e85c3339264657beb7cdf10d4272ce5e7284844c6fa5",
+      "upstream_sha256": "5259666d935c33523d29e85c3339264657beb7cdf10d4272ce5e7284844c6fa5"
+    },
+    {
+      "path": "src/lib.rs",
+      "sha256": "c5bc24870798ca5d87a805aa4c8afb3f38d49cfcf8a29def20f91f3cdd82fe9b",
+      "upstream_sha256": "c5bc24870798ca5d87a805aa4c8afb3f38d49cfcf8a29def20f91f3cdd82fe9b"
+    },
+    {
+      "path": "src/media_stream/mod.rs",
+      "sha256": "45c22572fc9305ab8b45cdb5bcdac77b3da5f6ce71ad044577586c241428193a",
+      "upstream_sha256": "45c22572fc9305ab8b45cdb5bcdac77b3da5f6ce71ad044577586c241428193a"
+    },
+    {
+      "path": "src/media_stream/track_local/mod.rs",
+      "sha256": "3ffc26c0d2108ae5bbd8a5de1725ca42c3419d989d71347f2802b45ab8de7337",
+      "upstream_sha256": "3ffc26c0d2108ae5bbd8a5de1725ca42c3419d989d71347f2802b45ab8de7337"
+    },
+    {
+      "path": "src/media_stream/track_local/static_rtp.rs",
+      "sha256": "e03fc655ab3641f012ebb1b1a99627604cf92cecc5a41e01399975e9dae97c93",
+      "upstream_sha256": "e03fc655ab3641f012ebb1b1a99627604cf92cecc5a41e01399975e9dae97c93"
+    },
+    {
+      "path": "src/media_stream/track_local/static_sample.rs",
+      "sha256": "0ca5af90a0a45636b7bd13ae46bc8d705e9b3f6bcba2fe2d2af148d67b0ab91b",
+      "upstream_sha256": "0ca5af90a0a45636b7bd13ae46bc8d705e9b3f6bcba2fe2d2af148d67b0ab91b"
+    },
+    {
+      "path": "src/media_stream/track_remote/mod.rs",
+      "sha256": "a23f40ad29c357c30cc1c9761f27ce4bd55c920b257d1783ab8822bb176d3924",
+      "upstream_sha256": "a23f40ad29c357c30cc1c9761f27ce4bd55c920b257d1783ab8822bb176d3924"
+    },
+    {
+      "path": "src/media_stream/track_remote/static_rtp.rs",
+      "sha256": "970cf1b950ee66fe5e922d804711cd9eaacde8ca57924a907a684e23aa486ece",
+      "upstream_sha256": "970cf1b950ee66fe5e922d804711cd9eaacde8ca57924a907a684e23aa486ece"
+    },
+    {
+      "path": "src/peer_connection/driver.rs",
+      "sha256": "19f187152aa1c34db707cce05f17b0a80745f43dcc809eabcfc5834c28f8e208",
+      "upstream_sha256": "0edb347b10805852911709b15ce21af2682f9f0580765834ca2b3b1adb7b8292"
+    },
+    {
+      "path": "src/peer_connection/mod.rs",
+      "sha256": "360c56d83f7f52b84f04a762105327af1733d4b2177b1d824d7708f73113ee61",
+      "upstream_sha256": "360c56d83f7f52b84f04a762105327af1733d4b2177b1d824d7708f73113ee61"
+    },
+    {
+      "path": "src/peer_connection/transport/mod.rs",
+      "sha256": "08d10b97bc2f249647d053ef5de9c3496b6c93c5788b348bc6effa2a869d6303",
+      "upstream_sha256": "08d10b97bc2f249647d053ef5de9c3496b6c93c5788b348bc6effa2a869d6303"
+    },
+    {
+      "path": "src/peer_connection/transport/stun_gatherer.rs",
+      "sha256": "fa4a83e4270c85ddbe877ee435900a40c9d209a96b51bd0c136421e78e5fd59d",
+      "upstream_sha256": "fa4a83e4270c85ddbe877ee435900a40c9d209a96b51bd0c136421e78e5fd59d"
+    },
+    {
+      "path": "src/peer_connection/transport/tcp_transport.rs",
+      "sha256": "2035c38d79ba2bb52d3938ed2aa30b7ecc64bc39055ee61ddf2d88cc668abf03",
+      "upstream_sha256": "2035c38d79ba2bb52d3938ed2aa30b7ecc64bc39055ee61ddf2d88cc668abf03"
+    },
+    {
+      "path": "src/peer_connection/transport/turn_relayer.rs",
+      "sha256": "f224a6acef7bd4c80fae55daf82aca677b14efcd98381934eec483e63adfa1e8",
+      "upstream_sha256": "f224a6acef7bd4c80fae55daf82aca677b14efcd98381934eec483e63adfa1e8"
+    },
+    {
+      "path": "src/rtp_transceiver/mod.rs",
+      "sha256": "92dbf629bb0ce06a53dbd159d6ed515bc6a993c30b1c8666564f8b7450df7861",
+      "upstream_sha256": "92dbf629bb0ce06a53dbd159d6ed515bc6a993c30b1c8666564f8b7450df7861"
+    },
+    {
+      "path": "src/rtp_transceiver/rtp_receiver.rs",
+      "sha256": "226b798c3f0901207f975e75c1f1a5f83e4aba7c2b4508bb47210e250dd95767",
+      "upstream_sha256": "226b798c3f0901207f975e75c1f1a5f83e4aba7c2b4508bb47210e250dd95767"
+    },
+    {
+      "path": "src/rtp_transceiver/rtp_sender.rs",
+      "sha256": "974d6fdc442aafdc35d72487f953411cafe3636dd41628bb66b3e41d99f281bf",
+      "upstream_sha256": "974d6fdc442aafdc35d72487f953411cafe3636dd41628bb66b3e41d99f281bf"
+    },
+    {
+      "path": "src/runtime/mock.rs",
+      "sha256": "a111dbf7687a9938983c520b0704e6a79b7b685459a4e7d9ca4c4c8f3f23284b",
+      "upstream_sha256": "a111dbf7687a9938983c520b0704e6a79b7b685459a4e7d9ca4c4c8f3f23284b"
+    },
+    {
+      "path": "src/runtime/mod.rs",
+      "sha256": "cd8e32ce41b2407658acb989cbf377d8680dda52605dd310236a265238d267ef",
+      "upstream_sha256": "cd8e32ce41b2407658acb989cbf377d8680dda52605dd310236a265238d267ef"
+    },
+    {
+      "path": "src/runtime/primitives.rs",
+      "sha256": "50a466b63aeeba887e73c0d9b5da3383a250d6a1078095ba88b8e3955f1e1804",
+      "upstream_sha256": "50a466b63aeeba887e73c0d9b5da3383a250d6a1078095ba88b8e3955f1e1804"
+    },
+    {
+      "path": "src/runtime/smol.rs",
+      "sha256": "60363dee853c2d7549e7cf2fa4d59975cbd90c652bd8343ef89782e117f668e4",
+      "upstream_sha256": "60363dee853c2d7549e7cf2fa4d59975cbd90c652bd8343ef89782e117f668e4"
+    },
+    {
+      "path": "src/runtime/tokio.rs",
+      "sha256": "5f6f2d4834da0923b6ca3c260f4d5c8a2450ac1fe3cc70dfbf85a8551f439497",
+      "upstream_sha256": "5f6f2d4834da0923b6ca3c260f4d5c8a2450ac1fe3cc70dfbf85a8551f439497"
+    }
+  ],
+  "excluded": [
+    {
+      "path": ".cargo_vcs_info.json",
+      "sha256": "64ceececa60d22a9d6e343d778dbd18593fc65d1fed37c94f20a765f32a079c4",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": ".devcontainer/devcontainer.json",
+      "sha256": "4744f23dd559c070ae0adc41b1647eb76dd2cc48b7be5e72c44673195cf9d4e6",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": ".github/workflows/cargo.yml",
+      "sha256": "1dbd30cd6143725b10a50c3d90a72881f5383ec7a0486f54efb96c08e6b2f89a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": ".github/workflows/grcov.yml",
+      "sha256": "7e95362e930742d753f2550b04857dd37296e4d646ea59f09c9539e009819a99",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": ".github/workflows/semver.yml",
+      "sha256": "e4358a0d3969085b85fadb8b0e9c8bb7d8d8004d1929550d06ad1aeb53ed7c72",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "250f174c3e3a5482df4c15451765b6e83a95edfd1ece79854c94451f568a4cf8",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": ".gitmodules",
+      "sha256": "03498711f1dc8d2d02325d24d3748cc3a82a1bc67c32fd4b9945425e13a568fd",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": ".vscode/launch.json",
+      "sha256": "6572f2be4a3e693a62599b682870a0fd9b874b5d7f6a30608de6925b97cdb718",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": ".vscode/settings.json",
+      "sha256": "76bb5258a8702519d4abc0340068d8373c7c52dc3032962ab789acf793639165",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "36c4f1b69bd8e1590babf8806f98c306b465596c9c15c71c6a598c46e90bcc60",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "5d7b02287361c093adeab59ac7b06c8689aced67954545ee20b617b69b405126",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "Cargo.toml.orig",
+      "sha256": "90d85598213a20b35a8d4aef3311e136e22f89c181a3aca398dd7333e4d8a407",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "codecov.yml",
+      "sha256": "5c1f666a6b9346796ff9803d59caa235ead5cab1164744d63dcd611d88d206a6",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "docs/internal-channel-overflow-policy.md",
+      "sha256": "a098833a4bcee778bbe6ca34264de774c24b0c0743c54047881e94874327f771",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "docs/semver.md",
+      "sha256": "0ef98b30c5676db52cec8c9c0af52e6d3fadf9fc3c6cd7ea0cf1bd88454e632b",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "docs/transport-objects.md",
+      "sha256": "57a1b26e3d183ea2991a23cb157114db9c78cac9083026af3e2fbc33dba7e3c8",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/README.md",
+      "sha256": "caf3beb8eab0b23dab8f870a5d253f1c552426568b1d0b261291bd3988d41f9c",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/bandwidth-estimation-from-disk/README.md",
+      "sha256": "46d2549448f48b5b7492ae346961c81d960308d7b83568a8c64c8531a03f32ed",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/bandwidth-estimation-from-disk/bandwidth-estimation-from-disk.rs",
+      "sha256": "2cd67452c185f618ebfbf925e7c9bc650e719ce5bf00a3b3f9730e87acfc9e2f",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/broadcast/README.md",
+      "sha256": "8b54a00ed900ff05ba973ae9e72583d0d4d883496904e04cb72fe2ff278889f0",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/broadcast/broadcast.rs",
+      "sha256": "fbf29e29e713882f93c56abdfb30b2101141a56e352f28ce5bd94ab99ab7abb1",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/common/mod.rs",
+      "sha256": "4fba00dfa035c59159f11faf23062666ad45222efd47c6dcbecba5cf14f42efa",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/custom-runtime/README.md",
+      "sha256": "47857f3868ff7bb9f4a2e14fa7e69071b1ccb7c8513b4413f864a34799b51550",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/custom-runtime/custom-runtime.rs",
+      "sha256": "3b429a1663709be922817e0bd198657d970377ad983773cad8373f0fd376c60e",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/custom-runtime/my_runtime.rs",
+      "sha256": "6a5703b00848061e1c880c840c6cdd9c4a4a1b738d3132731674d792024ec69a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-close/README.md",
+      "sha256": "ec5197facbe1d21a4371ca8808b735fd246d36a75c37b69fd167dd4066382d91",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-close/data-channels-close.rs",
+      "sha256": "dbef7d971a16a2b1d176981173fbd4aa580421f6b5eca1e8773bb26f47b3adc6",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-create/README.md",
+      "sha256": "462696e7a3572aa4fecd3b81d4ca7a7e459e6b083ff30f72db41150aca9ed460",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-create/data-channels-create.rs",
+      "sha256": "18d02f797d5b40d6d0dfd1047414c2b5d03bf9c797915503d5d83226b8c88695",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-flow-control-multi/data-channels-flow-control-multi.rs",
+      "sha256": "f0e03723e5369921fd6a88eb72b8e6fc56f28169773c1c7a469eaea2f7cbb187",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-flow-control/README.md",
+      "sha256": "b38968b356289c12376fc7f2835a63d9c3cc430f07368fd9167cd8dc624be552",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-flow-control/data-channels-flow-control.rs",
+      "sha256": "3c17f1b110d4dbe2ea128b5e55fd91e4f99606854eae27555fe0168815ded9ab",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-offer-answer/README.md",
+      "sha256": "5dac848294a72cacf563b65a498dec0e267c7418e0110b2f46059aacac982b11",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-offer-answer/data-channels-answer.rs",
+      "sha256": "ac573a59f9f875f7a71f3d590bbadd81664f573172ec67283f703ff6d2c6fc38",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-offer-answer/data-channels-offer.rs",
+      "sha256": "5755bd473b97177eb7c8f5ed143c9caba5a48a97cce7aaba8cc3a490d8127332",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-simple/README.md",
+      "sha256": "b78ecf9d9c33e55a478ea8b176ec53be631341fe599bd82dee8451f8174473e3",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-simple/data-channels-simple.rs",
+      "sha256": "5adb2736105d8a550228be1a7244ec0d3377e4dd2f9fd91cb79882e08a398287",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-simple/demo.html",
+      "sha256": "557bd14f2502b6e8575a62866af6fd54764611c300c31e488211cfaa539b2acf",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels-stress-bench/data-channels-stress-bench.rs",
+      "sha256": "627578331c692aa38eed03a121c0cb7a0412bb1c36aa7a3b91189a9bc7fa6337",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels/README.md",
+      "sha256": "b800f254478dca7ea8108401fc3c0799490391532ad71b1044adb3ce84a2972a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/data-channels/data-channels.rs",
+      "sha256": "1098302ce72acddec54d99705aa7f46588224ae324b2a959672713074404eaa1",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/ice-restart/README.md",
+      "sha256": "2ccdddf6e3a2e5817490a948646685e782cb6a618fb960bcdb9ed4d87e292419",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/ice-restart/ice-restart.rs",
+      "sha256": "9b2c5a39e1566605bc72b8be82d623964154c98656250b31a58b2b3f74d884d6",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/ice-restart/index.html",
+      "sha256": "461e88d395d2b30e0df9355dba41c4c43dde0d675af07abc08063900b51e077d",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/ice-tcp-active-passive/README.md",
+      "sha256": "5f75a45bf7fd1bad0d2936601d65d30d86b88fc337075efe0207b8e78b95e76d",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/ice-tcp-active-passive/ice-tcp-active-offer.rs",
+      "sha256": "dc632cbdc994b35ca1e000e48e5c9b2c0136fd00b6a83b8df9566236468e4d16",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/ice-tcp-active-passive/ice-tcp-passive-answer.rs",
+      "sha256": "6c71bd6eaba4d25cbcf5ee07392023832018674ea200b6d2a0df3dcb6ec28644",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/ice-tcp/README.md",
+      "sha256": "a2dcef8578c97b54c34289d8974f7f8626022023fec186e1114a3f1b72b6be75",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/ice-tcp/ice-tcp.rs",
+      "sha256": "1c02afcae8370b315049a5df6c0c25ed11a2b7ada35fddf83c4b5de6260208cf",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/ice-tcp/index.html",
+      "sha256": "54fec25d7da6adf2a981daabc66f94be663ef28d30fec331012493d9b2719024",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/insertable-streams/README.md",
+      "sha256": "bca59ba5c631910f9054ed2820ec4d67113beb8cb7a378b85e13af9d48a3864d",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/insertable-streams/insertable-streams.rs",
+      "sha256": "3a5965651352af5dfe2bf6b22ebe120deeab933367050251e3275b11c6675ecf",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/mdns-query-and-gather/README.md",
+      "sha256": "645e6ed84b8ddd49e29deda35a0d10d7cae9f1413ff7bf6c0ac6fb394ad86d54",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/mdns-query-and-gather/mdns-query-and-gather.rs",
+      "sha256": "5c2b1085b4fb886efa8998a21dbf231e6bf03710a3a1de74e6b1281d8d596910",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-fec/README.md",
+      "sha256": "0d09288762ff1700abc4708c58bb139370613ad1c04eddd0ce0035a0adc4ccd2",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-fec/jsfiddle/demo.css",
+      "sha256": "848400b3bd4175a570c502f000047da0f3bc7d1d08160203b8aa3d692aea5a79",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-fec/jsfiddle/demo.details",
+      "sha256": "271e7d42f645e1639d9cf403ee3f0db06b72a452fc773f9f0a92091f843eb5df",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-fec/jsfiddle/demo.html",
+      "sha256": "30ccdabc9e52bdb4b74c90bd8473cfc22a68756fc576f8c9e67f7f5a8f3de26f",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-fec/jsfiddle/demo.js",
+      "sha256": "ad30a2c53d22a09b8f00f0cbdb853e00db65ee127b167a51d2f328b0be6cdd35",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-fec/play-from-disk-fec.rs",
+      "sha256": "28621e157a95588b7f48bfdd303cfe4c1c38f888b7021d0526d561624ead52df",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-h26x/README.md",
+      "sha256": "497898a570cda9a33985aacdfac0d0fbd2ff5773e3535203ed31b7bc8197e7d0",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-h26x/play-from-disk-h26x.rs",
+      "sha256": "962c8e5d05adf0f801dc1acf5a6e0309def14879b7acb8745e25964ff5428248",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-playlist-control/README.md",
+      "sha256": "96b57a20fb174a59d0bd0204aba8d3b97785c7aa4fd380f254afc2b2f46f5b9b",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-playlist-control/play-from-disk-playlist-control.rs",
+      "sha256": "e0b9d3959dde7f7dcb6fb4f83a4e316b9d89478c79193bd24419256c1328f39a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-playlist-control/web/app.css",
+      "sha256": "d20ce3f33ec01ac076c7eed3afb816f6d4266b5008cf5df934dc5532175676b9",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-playlist-control/web/app.js",
+      "sha256": "1d2ae70486dda45d06f9a46cec16bdb787acaa3735de8a4e617995fc3c8be82f",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-playlist-control/web/index.html",
+      "sha256": "4815dae5cc6cf9ff262467ad503b9101e85d03fd7b01e160f603242bdce67fa7",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-renegotiation/README.md",
+      "sha256": "e40548c033fb9d1d058f179157912c93d55bf9500f4fb15ee20c7bda5dc6e2b8",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-renegotiation/index.html",
+      "sha256": "e71bebc5b974b8d4eee2d07be4d0fe49028a1efb7911c3625ee7acaa1c90dee4",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-renegotiation/play-from-disk-renegotiation.rs",
+      "sha256": "f8f526560157edec140d42220bde77bde0a7d26fa8e60d7e210144a900a41a77",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-vpx/README.md",
+      "sha256": "80239c674bc4c09850bc16de143cc8cb6ebe1d2385c908c835122fa025ef1841",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/play-from-disk-vpx/play-from-disk-vpx.rs",
+      "sha256": "b0dbef191e583fdfcd96d6cc8a9aef479d6f1f4fc279bf6d6e4c432f27921935",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/reflect/README.md",
+      "sha256": "679cc59421145e509c6df16228d6f2a3b97f63c6ec97c9adf6599b1027f26027",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/reflect/reflect.rs",
+      "sha256": "0e46a52377f7dfe45854a4450e4dd21f222a578fc485e51a1a0390a7ba7f683e",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtcp-processing/README.md",
+      "sha256": "b1e82c0a8a5d52ea58636cee602581098847c4a96409c84fbe9d164714d50004",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtcp-processing/jsfiddle/demo.css",
+      "sha256": "ce48ff852788ded705562ff64c3ffee5161de80baf1ad12dd5677764ceff17cc",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtcp-processing/jsfiddle/demo.details",
+      "sha256": "b47ea4f4c4d22b4f717ce85112ec48a770e6b325e8fa52acd6a56a957b03316a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtcp-processing/jsfiddle/demo.html",
+      "sha256": "fda4882241d2c3013168a21fa448f71cb150352f10de1561eb220b1d8e745ebe",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtcp-processing/jsfiddle/demo.js",
+      "sha256": "e7bb8b2cdbd760ea9c7b0de99b5fbc3652d57a339c5ac7640eaf5a66edb83a04",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtcp-processing/rtcp-processing.rs",
+      "sha256": "a08710b53b8d3bf4fd2616c64e3370170a177169ad9c2f61d0559915e298c531",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtp-forwarder/README.md",
+      "sha256": "b3470cbfa7f59647320fa03d35f9050a5eff3d8e44248e118f0e5bf1c823e953",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtp-forwarder/rtp-forwarder.rs",
+      "sha256": "54d4a1a970356f41e525c1bbff6a70a2799a69aee155155b7a7ba9100e5d6192",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtp-forwarder/rtp-forwarder.sdp",
+      "sha256": "ea25a3858383ffb9fae26b0fbcc1092eb567df79c82ddff8aa69b2141584a061",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtp-to-webrtc/README.md",
+      "sha256": "88ec50ae3fe7a432fce14433bba235c55e3d9f4b6cf88ba77b2d1a3fa2e9b38a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/rtp-to-webrtc/rtp-to-webrtc.rs",
+      "sha256": "b6ae1af60aae0c09f6b5884d7ce9110e93d8dabba3261499a59f79d84dfcbae7",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/save-to-disk-av1/README.md",
+      "sha256": "8b999e41fbdf53132629416707230d2a7003c7b7a6e7fd4bf897d12a7e6204dc",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/save-to-disk-av1/save-to-disk-av1.rs",
+      "sha256": "6b5148ae14bdedbc041d77769a64af56f922f46b34886b9fbe9fbd74bab86634",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/save-to-disk-fec/README.md",
+      "sha256": "515a7168ca90263e0c09eb734278e519b683f6e8985b8e7a125703f0dc443301",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/save-to-disk-fec/save-to-disk-fec.rs",
+      "sha256": "e9630e85a54e4ac4e4fbb699b72cbc80ff58fd4c04a3772402a1eb7ddeb4252a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/save-to-disk-h26x/README.md",
+      "sha256": "6404df63a2bb903a810d189a8c6847558f61177a9891e7141f211584e1c4c6a0",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/save-to-disk-h26x/save-to-disk-h26x.rs",
+      "sha256": "e6a9c335341d30aa5053aabb7360f0f9856e91e739560d1201135478ac944cd0",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/save-to-disk-vpx/README.md",
+      "sha256": "a75ad7a29e7b589359764287b07a190a85b81b4ba5f1e3b03c19013a6db3a601",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/save-to-disk-vpx/save-to-disk-vpx.rs",
+      "sha256": "aaaded097a2c0076d351404bec4e045eadf8d9f83082b805a26d42460b0e8381",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/simulcast/README.md",
+      "sha256": "ba33326f2045631d398488c6e4b879621dd71b4592d3625dec2bd8983bca1bdc",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/simulcast/simulcast.rs",
+      "sha256": "fe3297b6274f0c2ff3cf7c9577bfb0fb6e0c0e1cc945975bfdf6f25bf9a1ec3a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/simulcast_add_transceiver_from_kind/README.md",
+      "sha256": "ba33326f2045631d398488c6e4b879621dd71b4592d3625dec2bd8983bca1bdc",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/simulcast_add_transceiver_from_kind/simulcast_add_transceiver_from_kind.rs",
+      "sha256": "749a16b3012e57ed26614c63c6cbdcd43325d40c7bf3638f4d320d3b23e7fb48",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/stats/README.md",
+      "sha256": "3270706597db50050740381f3d1ea46a38865639442169efda9879ffdeacfd83",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/stats/stats.rs",
+      "sha256": "00e246472500a4cbd2a4c6cc4c00b6c3f21a54c622c29d1d38ad3b51fd908099",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/swap-tracks/README.md",
+      "sha256": "4af2c4b33be57cf8e0767ca71d9ef44a220579f177e3493fc0bcc3a5f2a7870b",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/swap-tracks/swap-tracks.rs",
+      "sha256": "b83c24b024dd7c099e6209fe194a2bb6bcf0a4caff4cc7e7cdc9dde31e580118",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/trickle-ice-host/README.md",
+      "sha256": "f0ae3c1369c65ab127b9dadc9751ab144696fed3905e9faf394dd9cf27442566",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/trickle-ice-host/trickle-ice-host.rs",
+      "sha256": "4f10763986d0b2e2660898866f75e6f0f0a0598efd6f2efae67ddd00a5421576",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/trickle-ice-relay/README.md",
+      "sha256": "3de65d5d1836e036cd6332793d8900782c312043438741e57e5872023ee3847d",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/trickle-ice-relay/trickle-ice-relay.rs",
+      "sha256": "1c237ba917bd7b8765a9cddc26596053be1dff21fc4d027f6d114a9afb7d0a8c",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/trickle-ice-srflx/README.md",
+      "sha256": "9644fe36a808793a4c69fad5bcf6a368214f16bb8bd499218339c52185270dae",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/trickle-ice-srflx/trickle-ice-srflx.rs",
+      "sha256": "ee7b17b88d4f054597a4f419b2df60901e696935f46a48f1895c5b6dc671f4b0",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/trickle-ice/README.md",
+      "sha256": "37652eb0a6332f381bd03559f11f9c3f96a9da000b391f99f85e569e593030f1",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/trickle-ice/trickle-ice.rs",
+      "sha256": "e1bb0085a03d72083b962d6e0ae2512d02c7dfcab5704f15941e4481b5422c7d",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "examples/trickle_ice_common/mod.rs",
+      "sha256": "4e092d91f91188f6a6ebfdfb695bb0c1151a985b32464a1e025d78d40aaeab42",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "scripts/check-channel-overflow-policy.py",
+      "sha256": "734bf35eee18e1177b7bd64d89196190ddd4397ac0aeb991412e752b80a0cd72",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "scripts/check-crypto-boundary.py",
+      "sha256": "d54b3524aba70aadfd584c3ce3e7e5d5e42e17989347ef5d32688ad3da923a44",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/bind_failures_skip_addresses.rs",
+      "sha256": "586981e8e00e456eeeae01f2e265f90dc2667f698cb4a2f96aa28e9446365dc6",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/close_ends_event_streams.rs",
+      "sha256": "ca57ac40881e4b4798ed32034d7b6d868958bb922d05852bdb3dda406e94eae1",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/close_releases_connection_with_transceivers.rs",
+      "sha256": "daac46d985fe86da45ae8c5619dde3ca76703f2475415430b9b1dd0e2912d22a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/codec_negotiation.rs",
+      "sha256": "131285d2655a85b05035029171a4b3c05853fda4321cd826d66b6777c6b57f7f",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/common/mod.rs",
+      "sha256": "e3f486f0ffa6e97d11f45f28f9ed35b6e016d58132b1a0f5befac2ee35fc0eb5",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/configuration_test.rs",
+      "sha256": "b5c8fa25d9283f5bc81e5db8e67386c620e71352d2d4d94a9bfd04d9c9bae9ed",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/crypto_provider_features.rs",
+      "sha256": "0f536ab3b695ec7d2436df0242f158a99f3b70c5cba55fb1085fb60581b4aeb4",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/crypto_provider_integration.rs",
+      "sha256": "51aaca22b9bf144f0d3a0ce0bbfd004ad9767c315f41f1a64b9b3cf59a511f18",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/custom_runtime_interop.rs",
+      "sha256": "2b4d6477986484ed96d9dade7007d29281aa140f58309e405ab368262eab97b3",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channel_close_wakes_send.rs",
+      "sha256": "84fa4620a34ecee7667f48d03f4907971f8b7bfe28c78b15616c12409addbadc",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channel_dropped_handle_does_not_stall.rs",
+      "sha256": "6af111059780ba5c7e98878368760d3b94fc23ec3319d6fdfa9183a6d1a751cd",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channel_send_after_close.rs",
+      "sha256": "c281c4128b2a07e425a47909ae9b1fcc3320f3d73a5938b906858d0da0135e33",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channel_send_backpressure.rs",
+      "sha256": "e4a2e147cfa0a21bee9a9663eb9041c6af3edb248341983c11892ca0cd674432",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channel_send_blocking.rs",
+      "sha256": "7ea228698f8e660aa8f42c550b9bd64287fc4ad959e1f3151de8df2eda1854de",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channel_send_unbounded.rs",
+      "sha256": "0d7402d07a991e97e13ed07bfa3e31677d9da570ad4bde9af25d82366b214308",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channel_slow_consumer.rs",
+      "sha256": "6790205be5d256e226665922ab7b777343c5a79b232d543af93f22eba6dedd27",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channel_stall_does_not_block_media.rs",
+      "sha256": "b47e8a6e6ad7f8a8eedee802750c6519bd78aabd432fd214f8316a2d0d2a2ebf",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channel_survives_send_failure.rs",
+      "sha256": "432721217d00060332db3cc1005513a3d95d49f8ee05c9dfc603454c33348bd5",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channels_close_by_rtc_interop.rs",
+      "sha256": "7d17358f49412c5958b9f55822bbcc562944969aaf2de3a221e527c587a1b88b",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channels_close_by_webrtc_interop.rs",
+      "sha256": "b72fcc99317a22350e979882b29ace0cb0285fcd84fbf2e5be9b62169979ab5b",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channels_create_interop.rs",
+      "sha256": "997c7db930f8cfcd5accf9b62c895088602ef1d09c382141841b679b46885bc5",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/data_channels_interop.rs",
+      "sha256": "949a3ad6d33578b10db5c680d9c3addab99f2e1278cede81c8e0344514c277b3",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/dedicated_reactor_data_channel.rs",
+      "sha256": "41019efd528e33274a569ca5c6d11544aafb165e4e8fccc0be9afd06eead493b",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/dedicated_reactor_drop.rs",
+      "sha256": "85a84b65143f5d0ffbf3537331e111756b832fdaa19d0ffac394ac01f1962dc5",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/flexfec03_encoder_decoder.rs",
+      "sha256": "0e090e0b286590c686db036b442d7935fcd1e706fcec534bdd124349871de835",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/ice_restart_by_rtc_interop.rs",
+      "sha256": "82712ea467a3d619e7071adcc23a8b1ae89334d65a4c5d502fd4a37e180aadfe",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/ice_restart_by_webrtc_interop.rs",
+      "sha256": "b78d0bfc65b8f19007da5d07c2bd35e076e059f1f3d963fe089d5a6e1fc20196",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/ice_restart_rebinds_sockets.rs",
+      "sha256": "2be383a879a832bb006f7b0ce777302f3253e086a9510f3895698b3513ce6038",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/ice_test.rs",
+      "sha256": "ad381a104b2ec1a01cd1b2977430261d151559bb5d0b09372875fca18b408cd1",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/mdns_query_and_gather_webrtc2webrtc.rs",
+      "sha256": "c2cbcdf981484d83558109d7999c5319074ce41ae48d5eef03e32066b859d7bf",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/media_only_negotiation_no_sctp.rs",
+      "sha256": "8ebfe706c29be7439b231e696228931efe7657b4004020b11da0ebc961b01c8a",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/media_rejection.rs",
+      "sha256": "c92b550d279b0dcb6b72f6f8a119c116870b367e0f3f1e03e8c6363860e12980",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/offer_answer_webrtc2webrtc.rs",
+      "sha256": "b4857cde966d9be5f541f3fb8ca55b4c81dd0b3000764a0056d444837882b1df",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/on_data_channel_only_for_remote.rs",
+      "sha256": "8deb940e4198cbcef1c43a8eeb7742d5592a71ddf9fce0bd9ef3b899cade187c",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/on_track_codings_ready.rs",
+      "sha256": "8efc6078e227b98157a67e321de0404cd0dc8013032bce028bae1c70cb238f54",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/peer_connection_test.rs",
+      "sha256": "acc831d12e3527b0a17921e979cedd04c64781129bfc04b18fff6c0b6e3482bd",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/play_save_disk.rs",
+      "sha256": "e207026bb3f1440f6d0e8542110b64efbd232bf396e368d07bade2bca1b952c5",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/remote_certificate_fingerprint.rs",
+      "sha256": "9cc422277656233949275916466a3f4b9bb742d89b81f52fdd37c900f6626772",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/renegotiation.rs",
+      "sha256": "0735ce4bd8015f949936df4bfc195b02a40326ffc73052a6648af6d5f054da7d",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/rtcp_processing_webrtc2webrtc.rs",
+      "sha256": "887fe4c6f3cd86c7eac2d15d3c652adb6442e6315096451cb95bba7b0adb7a2f",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/sctp_receive_buffer.rs",
+      "sha256": "2adcd8c7fd8ad93107640eccf772a3f9bf3121b41caee67e7d37f58248dc5a01",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/simulcast_rtc_to_webrtc_interop.rs",
+      "sha256": "dd7acac25df6132b3983d1de8f0d1ba38ee589ab63e43af5fe6c6ada9e0ec066",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/statistics.rs",
+      "sha256": "521dedcd9baa2491325f3fe5553f095a366d271a17cb987a883654868b6b864d",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/transport_objects.rs",
+      "sha256": "f99baa1add2b8121b842410ad56f30492103c93a0b8ea04c48f99191127bac65",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/turn_credential_rotation.rs",
+      "sha256": "f7b30ca7229d185990b253b9f0373c29891906d36cca08e6690472c55e4f16f9",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/turn_release_on_close.rs",
+      "sha256": "e2b60d635d8787fcbd9231b7dddcdc4367be02730326eb0e113259696af108b5",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    },
+    {
+      "path": "tests/wildcard_bind_expands_interfaces.rs",
+      "sha256": "130631f8642628ca534d01e92e12e97a1403e353fe9e06a25973462003d3ef7e",
+      "reason": "not needed by library: upstream external examples/tests, CI/editor metadata or standalone lock; no source/dependency upgrade"
+    }
+  ]
+}

@@ -727,3 +727,49 @@ async fn authority_closing_auth_failure_is_fatal_without_reviving_or_forgetting_
     actor.signal.take().unwrap().close().await;
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn local_close_releases_active_capacity_but_keeps_replay_fence_until_terminal() {
+    let (mut actor, mut events, server, authority) = capacity_actor(1).await;
+    let id = uuid::Uuid::new_v4().to_string();
+    let initial = capacity_snapshot(&actor, &id, false);
+    authority
+        .lock()
+        .unwrap()
+        .insert(id.clone(), initial.clone());
+    actor.message(initial).await.unwrap();
+    apply_authority_reply(&mut actor).await;
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        SdkEvent::IncomingConnection { .. }
+    ));
+    actor.close_session(&id, SdkError::Closed, true).await;
+    assert!(
+        matches!(events.try_recv().unwrap(), SdkEvent::ConnectionClosed { session_id, .. } if session_id == id)
+    );
+    let old_gate = actor.sessions.get(&id).unwrap().gate.clone();
+    assert!(old_gate.check().is_err());
+    // The response may already be in the socket, but this actor has not applied
+    // it. Local Closed already releases active capacity, while the old
+    // identity and permanently closed gate remain pending the terminal ACK.
+    assert_eq!(actor.sessions.len(), 1);
+    let reservation = actor
+        .sessions
+        .reserve_outgoing(uuid::Uuid::new_v4().to_string())
+        .unwrap();
+    assert!(actor.sessions.release_reservation(reservation));
+    apply_authority_reply(&mut actor).await;
+    assert_eq!(actor.sessions.len(), 0);
+    assert!(
+        events.try_recv().is_err(),
+        "terminal ACK must not duplicate Closed"
+    );
+    assert!(old_gate.check().is_err());
+    let reservation = actor
+        .sessions
+        .reserve_outgoing(uuid::Uuid::new_v4().to_string())
+        .unwrap();
+    assert!(actor.sessions.release_reservation(reservation));
+    actor.signal.take().unwrap().close().await;
+    server.await.unwrap();
+}

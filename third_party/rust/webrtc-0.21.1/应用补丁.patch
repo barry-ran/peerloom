@@ -1,0 +1,662 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -48,393 +48,90 @@
+ name = "webrtc"
+ path = "src/lib.rs"
+ 
+-[[example]]
+-name = "bandwidth-estimation-from-disk"
+-path = "examples/bandwidth-estimation-from-disk/bandwidth-estimation-from-disk.rs"
+-bench = false
+ 
+-[[example]]
+-name = "broadcast"
+-path = "examples/broadcast/broadcast.rs"
+-bench = false
+ 
+-[[example]]
+-name = "custom-runtime"
+-path = "examples/custom-runtime/custom-runtime.rs"
+-bench = false
+ 
+-[[example]]
+-name = "data-channels"
+-path = "examples/data-channels/data-channels.rs"
+-bench = false
+ 
+-[[example]]
+-name = "data-channels-answer"
+-path = "examples/data-channels-offer-answer/data-channels-answer.rs"
+-bench = false
+-required-features = ["runtime-tokio"]
+ 
+-[[example]]
+-name = "data-channels-close"
+-path = "examples/data-channels-close/data-channels-close.rs"
+-bench = false
+ 
+-[[example]]
+-name = "data-channels-create"
+-path = "examples/data-channels-create/data-channels-create.rs"
+-bench = false
+ 
+-[[example]]
+-name = "data-channels-flow-control"
+-path = "examples/data-channels-flow-control/data-channels-flow-control.rs"
+-bench = false
+ 
+-[[example]]
+-name = "data-channels-flow-control-multi"
+-path = "examples/data-channels-flow-control-multi/data-channels-flow-control-multi.rs"
+-bench = false
+ 
+-[[example]]
+-name = "data-channels-offer"
+-path = "examples/data-channels-offer-answer/data-channels-offer.rs"
+-bench = false
+-required-features = ["runtime-tokio"]
+ 
+-[[example]]
+-name = "data-channels-simple"
+-path = "examples/data-channels-simple/data-channels-simple.rs"
+-bench = false
+-required-features = ["runtime-tokio"]
+ 
+-[[example]]
+-name = "data-channels-stress-bench"
+-path = "examples/data-channels-stress-bench/data-channels-stress-bench.rs"
+-bench = false
+ 
+-[[example]]
+-name = "ice-restart"
+-path = "examples/ice-restart/ice-restart.rs"
+-bench = false
+-required-features = ["runtime-tokio"]
+ 
+-[[example]]
+-name = "ice-tcp"
+-path = "examples/ice-tcp/ice-tcp.rs"
+-bench = false
+-required-features = ["runtime-tokio"]
+ 
+-[[example]]
+-name = "ice-tcp-active-offer"
+-path = "examples/ice-tcp-active-passive/ice-tcp-active-offer.rs"
+-bench = false
+-required-features = ["runtime-tokio"]
+ 
+-[[example]]
+-name = "ice-tcp-passive-answer"
+-path = "examples/ice-tcp-active-passive/ice-tcp-passive-answer.rs"
+-bench = false
+-required-features = ["runtime-tokio"]
+ 
+-[[example]]
+-name = "insertable-streams"
+-path = "examples/insertable-streams/insertable-streams.rs"
+-bench = false
+ 
+-[[example]]
+-name = "mdns-query-and-gather"
+-path = "examples/mdns-query-and-gather/mdns-query-and-gather.rs"
+-bench = false
+ 
+-[[example]]
+-name = "play-from-disk-fec"
+-path = "examples/play-from-disk-fec/play-from-disk-fec.rs"
+-bench = false
+ 
+-[[example]]
+-name = "play-from-disk-h26x"
+-path = "examples/play-from-disk-h26x/play-from-disk-h26x.rs"
+-bench = false
+ 
+-[[example]]
+-name = "play-from-disk-playlist-control"
+-path = "examples/play-from-disk-playlist-control/play-from-disk-playlist-control.rs"
+-bench = false
+-required-features = ["runtime-tokio"]
+ 
+-[[example]]
+-name = "play-from-disk-renegotiation"
+-path = "examples/play-from-disk-renegotiation/play-from-disk-renegotiation.rs"
+-bench = false
+-required-features = ["runtime-tokio"]
+ 
+-[[example]]
+-name = "play-from-disk-vpx"
+-path = "examples/play-from-disk-vpx/play-from-disk-vpx.rs"
+-bench = false
+ 
+-[[example]]
+-name = "reflect"
+-path = "examples/reflect/reflect.rs"
+-bench = false
+ 
+-[[example]]
+-name = "rtcp-processing"
+-path = "examples/rtcp-processing/rtcp-processing.rs"
+-bench = false
+ 
+-[[example]]
+-name = "rtp-forwarder"
+-path = "examples/rtp-forwarder/rtp-forwarder.rs"
+-bench = false
+ 
+-[[example]]
+-name = "rtp-to-webrtc"
+-path = "examples/rtp-to-webrtc/rtp-to-webrtc.rs"
+-bench = false
+ 
+-[[example]]
+-name = "save-to-disk-av1"
+-path = "examples/save-to-disk-av1/save-to-disk-av1.rs"
+-bench = false
+ 
+-[[example]]
+-name = "save-to-disk-fec"
+-path = "examples/save-to-disk-fec/save-to-disk-fec.rs"
+-bench = false
+ 
+-[[example]]
+-name = "save-to-disk-h26x"
+-path = "examples/save-to-disk-h26x/save-to-disk-h26x.rs"
+-bench = false
+ 
+-[[example]]
+-name = "save-to-disk-vpx"
+-path = "examples/save-to-disk-vpx/save-to-disk-vpx.rs"
+-bench = false
+ 
+-[[example]]
+-name = "simulcast"
+-path = "examples/simulcast/simulcast.rs"
+-bench = false
+ 
+-[[example]]
+-name = "simulcast_add_transceiver_from_kind"
+-path = "examples/simulcast_add_transceiver_from_kind/simulcast_add_transceiver_from_kind.rs"
+-bench = false
+ 
+-[[example]]
+-name = "stats"
+-path = "examples/stats/stats.rs"
+-bench = false
+ 
+-[[example]]
+-name = "swap-tracks"
+-path = "examples/swap-tracks/swap-tracks.rs"
+-bench = false
+ 
+-[[example]]
+-name = "trickle-ice"
+-path = "examples/trickle-ice/trickle-ice.rs"
+-bench = false
+ 
+-[[example]]
+-name = "trickle-ice-host"
+-path = "examples/trickle-ice-host/trickle-ice-host.rs"
+-bench = false
+ 
+-[[example]]
+-name = "trickle-ice-relay"
+-path = "examples/trickle-ice-relay/trickle-ice-relay.rs"
+-bench = false
+ 
+-[[example]]
+-name = "trickle-ice-srflx"
+-path = "examples/trickle-ice-srflx/trickle-ice-srflx.rs"
+-bench = false
+ 
+-[[test]]
+-name = "bind_failures_skip_addresses"
+-path = "tests/bind_failures_skip_addresses.rs"
+ 
+-[[test]]
+-name = "close_ends_event_streams"
+-path = "tests/close_ends_event_streams.rs"
+ 
+-[[test]]
+-name = "close_releases_connection_with_transceivers"
+-path = "tests/close_releases_connection_with_transceivers.rs"
+ 
+-[[test]]
+-name = "codec_negotiation"
+-path = "tests/codec_negotiation.rs"
+ 
+-[[test]]
+-name = "configuration_test"
+-path = "tests/configuration_test.rs"
+ 
+-[[test]]
+-name = "crypto_provider_features"
+-path = "tests/crypto_provider_features.rs"
+ 
+-[[test]]
+-name = "crypto_provider_integration"
+-path = "tests/crypto_provider_integration.rs"
+ 
+-[[test]]
+-name = "custom_runtime_interop"
+-path = "tests/custom_runtime_interop.rs"
+ 
+-[[test]]
+-name = "data_channel_close_wakes_send"
+-path = "tests/data_channel_close_wakes_send.rs"
+ 
+-[[test]]
+-name = "data_channel_dropped_handle_does_not_stall"
+-path = "tests/data_channel_dropped_handle_does_not_stall.rs"
+ 
+-[[test]]
+-name = "data_channel_send_after_close"
+-path = "tests/data_channel_send_after_close.rs"
+ 
+-[[test]]
+-name = "data_channel_send_backpressure"
+-path = "tests/data_channel_send_backpressure.rs"
+ 
+-[[test]]
+-name = "data_channel_send_blocking"
+-path = "tests/data_channel_send_blocking.rs"
+ 
+-[[test]]
+-name = "data_channel_send_unbounded"
+-path = "tests/data_channel_send_unbounded.rs"
+ 
+-[[test]]
+-name = "data_channel_slow_consumer"
+-path = "tests/data_channel_slow_consumer.rs"
+ 
+-[[test]]
+-name = "data_channel_stall_does_not_block_media"
+-path = "tests/data_channel_stall_does_not_block_media.rs"
+ 
+-[[test]]
+-name = "data_channel_survives_send_failure"
+-path = "tests/data_channel_survives_send_failure.rs"
+ 
+-[[test]]
+-name = "data_channels_close_by_rtc_interop"
+-path = "tests/data_channels_close_by_rtc_interop.rs"
+ 
+-[[test]]
+-name = "data_channels_close_by_webrtc_interop"
+-path = "tests/data_channels_close_by_webrtc_interop.rs"
+ 
+-[[test]]
+-name = "data_channels_create_interop"
+-path = "tests/data_channels_create_interop.rs"
+ 
+-[[test]]
+-name = "data_channels_interop"
+-path = "tests/data_channels_interop.rs"
+ 
+-[[test]]
+-name = "dedicated_reactor_data_channel"
+-path = "tests/dedicated_reactor_data_channel.rs"
+ 
+-[[test]]
+-name = "dedicated_reactor_drop"
+-path = "tests/dedicated_reactor_drop.rs"
+ 
+-[[test]]
+-name = "flexfec03_encoder_decoder"
+-path = "tests/flexfec03_encoder_decoder.rs"
+ 
+-[[test]]
+-name = "ice_restart_by_rtc_interop"
+-path = "tests/ice_restart_by_rtc_interop.rs"
+ 
+-[[test]]
+-name = "ice_restart_by_webrtc_interop"
+-path = "tests/ice_restart_by_webrtc_interop.rs"
+ 
+-[[test]]
+-name = "ice_restart_rebinds_sockets"
+-path = "tests/ice_restart_rebinds_sockets.rs"
+ 
+-[[test]]
+-name = "ice_test"
+-path = "tests/ice_test.rs"
+ 
+-[[test]]
+-name = "mdns_query_and_gather_webrtc2webrtc"
+-path = "tests/mdns_query_and_gather_webrtc2webrtc.rs"
+ 
+-[[test]]
+-name = "media_only_negotiation_no_sctp"
+-path = "tests/media_only_negotiation_no_sctp.rs"
+ 
+-[[test]]
+-name = "media_rejection"
+-path = "tests/media_rejection.rs"
+ 
+-[[test]]
+-name = "offer_answer_webrtc2webrtc"
+-path = "tests/offer_answer_webrtc2webrtc.rs"
+ 
+-[[test]]
+-name = "on_data_channel_only_for_remote"
+-path = "tests/on_data_channel_only_for_remote.rs"
+ 
+-[[test]]
+-name = "on_track_codings_ready"
+-path = "tests/on_track_codings_ready.rs"
+ 
+-[[test]]
+-name = "peer_connection_test"
+-path = "tests/peer_connection_test.rs"
+ 
+-[[test]]
+-name = "play_save_disk"
+-path = "tests/play_save_disk.rs"
+ 
+-[[test]]
+-name = "remote_certificate_fingerprint"
+-path = "tests/remote_certificate_fingerprint.rs"
+ 
+-[[test]]
+-name = "renegotiation"
+-path = "tests/renegotiation.rs"
+ 
+-[[test]]
+-name = "rtcp_processing_webrtc2webrtc"
+-path = "tests/rtcp_processing_webrtc2webrtc.rs"
+ 
+-[[test]]
+-name = "sctp_receive_buffer"
+-path = "tests/sctp_receive_buffer.rs"
+ 
+-[[test]]
+-name = "simulcast_rtc_to_webrtc_interop"
+-path = "tests/simulcast_rtc_to_webrtc_interop.rs"
+ 
+-[[test]]
+-name = "statistics"
+-path = "tests/statistics.rs"
+ 
+-[[test]]
+-name = "transport_objects"
+-path = "tests/transport_objects.rs"
+ 
+-[[test]]
+-name = "turn_credential_rotation"
+-path = "tests/turn_credential_rotation.rs"
+ 
+-[[test]]
+-name = "turn_release_on_close"
+-path = "tests/turn_release_on_close.rs"
+ 
+-[[test]]
+-name = "wildcard_bind_expands_interfaces"
+-path = "tests/wildcard_bind_expands_interfaces.rs"
+ 
+ [dependencies.async-broadcast]
+ version = "0.7.2"
+@@ -481,47 +178,16 @@
+ ]
+ optional = true
+ 
+-[dev-dependencies.anyhow]
+-version = "1.0.103"
+ 
+-[dev-dependencies.async-executor]
+-version = "1.14.0"
+ 
+-[dev-dependencies.async-io]
+-version = "2.6.0"
+ 
+-[dev-dependencies.base64]
+-version = "0.22.1"
+ 
+-[dev-dependencies.chrono]
+-version = "0.4.45"
+ 
+-[dev-dependencies.clap]
+-version = "4.6.1"
+-features = ["derive"]
+ 
+-[dev-dependencies.ctrlc]
+-version = "3.5.2"
+ 
+-[dev-dependencies.env_logger]
+-version = "0.11.11"
+ 
+-[dev-dependencies.futures-lite]
+-version = "2.6.1"
+ 
+-[dev-dependencies.hyper]
+-version = "0.14.32"
+-features = ["full"]
+ 
+-[dev-dependencies.rand]
+-version = "0.10.1"
+ 
+-[dev-dependencies.serde_json]
+-version = "1.0.150"
+ 
+-[dev-dependencies.signal]
+-version = "0.21.1"
+-package = "rtc-signal"
+ 
+-[dev-dependencies.socket2]
+-version = "0.6.5"
+--- a/src/peer_connection/driver.rs
++++ b/src/peer_connection/driver.rs
+@@ -499,6 +499,8 @@
+     inner: Arc<PeerConnectionRef>,
+     stun_gatherer: RTCStunGatherer,
+     turn_relayer: RTCTurnRelayer,
++    #[cfg(test)]
++    test_core_writes: Vec<TaggedBytesMut>,
+     tcp_transport: RTCTcpTransport,
+     mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
+     udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
+@@ -565,6 +567,8 @@
+     ) -> Self {
+         let runtime = Arc::clone(&inner.runtime);
+         Self {
++            #[cfg(test)]
++            test_core_writes: Vec::new(),
+             inner,
+             // Placeholders until `bind_transports` runs; constructing them costs no I/O.
+             stun_gatherer: RTCStunGatherer::new(
+@@ -1949,7 +1953,26 @@
+             }
+         }
+ 
+-        // 1.b turn_relayer poll_write()
++        self.flush_turn_writes().await;
++
++        // 1.c peer_connection poll_write() - Send all outgoing packets, coalescing
++        // consecutive same-destination datagrams into single UDP GSO syscalls.
++        let writes = Self::drain_core_writes(self.inner.clone()).await;
++        #[cfg(test)]
++        let writes = {
++            let mut writes = writes;
++            writes.append(&mut self.test_core_writes);
++            writes
++        };
++        self.flush_writes(writes).await;
++        // Core writes can enqueue TURN output after the first TURN pass.
++        // Drain it once before parking; this is not a retry/fixed-point loop.
++        self.flush_turn_writes().await;
++
++        Ok(())
++    }
++
++    async fn flush_turn_writes(&mut self) {
+         while let Some(msg) = self.turn_relayer.poll_write() {
+             let four_tuple: FourTuple = FourTuple::from(&msg.transport);
+             if let Err(err) = self.handle_write(msg).await {
+@@ -1968,13 +1991,6 @@
+                 }
+             }
+         }
+-
+-        // 1.c peer_connection poll_write() - Send all outgoing packets, coalescing
+-        // consecutive same-destination datagrams into single UDP GSO syscalls.
+-        let writes = Self::drain_core_writes(self.inner.clone()).await;
+-        self.flush_writes(writes).await;
+-
+-        Ok(())
+     }
+ 
+     /// Send a drained batch of outgoing packets, coalescing maximal runs of
+@@ -2539,3 +2555,155 @@
+         );
+     }
+ }
++
++#[cfg(all(test, feature = "runtime-tokio", feature = "crypto-ring"))]
++mod turn_flush_regression {
++    use super::*;
++    use bytes::BytesMut;
++    use rtc::stun::attributes::{ATTR_NONCE, ATTR_REALM};
++    use rtc::stun::error_code::CODE_UNAUTHORIZED;
++    use rtc::stun::message::{
++        CLASS_ERROR_RESPONSE, CLASS_SUCCESS_RESPONSE, METHOD_ALLOCATE, METHOD_CREATE_PERMISSION,
++        Message, MessageType,
++    };
++    use rtc::stun::textattrs::{Nonce, Realm};
++    use rtc::turn::proto::{lifetime::Lifetime, relayaddr::RelayedAddress};
++
++    fn packet(local: SocketAddr, remote: SocketAddr, bytes: &[u8]) -> TaggedBytesMut {
++        TaggedBytesMut {
++            now: Instant::now(),
++            transport: TransportContext {
++                local_addr: local,
++                peer_addr: remote,
++                ecn: None,
++                transport_protocol: TransportProtocol::UDP,
++            },
++            message: BytesMut::from(bytes),
++        }
++    }
++    fn decode(msg: TaggedBytesMut) -> Message {
++        let mut value = Message::new();
++        value.raw = msg.message.to_vec();
++        value.decode().unwrap();
++        value
++    }
++
++    #[test]
++    fn core_relay_packet_must_reach_socket_in_same_flush_without_another_wake() {
++        let runtime = crate::runtime::default_runtime().unwrap();
++        runtime.block_on(Box::pin(async {
++            let (inner, mut wakes) = super::super::tests::new_test_peer_connection().await;
++            let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
++            server.set_nonblocking(true).unwrap();
++            let server_addr = server.local_addr().unwrap();
++            let local_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
++            local_socket.set_nonblocking(true).unwrap();
++            let local = local_socket.local_addr().unwrap();
++            let relay: SocketAddr = "127.0.0.1:55001".parse().unwrap();
++            let peer: SocketAddr = "127.0.0.1:55002".parse().unwrap();
++            let provider = rtc::crypto::default_provider().unwrap();
++            let mut driver = PeerConnectionDriver::new(
++                inner.clone(),
++                Vec::<SocketAddr>::new(),
++                Vec::new(),
++                MulticastDnsMode::Disabled,
++                Vec::new(),
++                RTCIceTransportPolicy::Relay,
++                provider.clone(),
++                false,
++                None,
++            );
++            driver
++                .udp_sockets
++                .insert(local, inner.runtime.wrap_udp_socket(local_socket).unwrap());
++            driver.turn_relayer = RTCTurnRelayer::new(
++                vec![local],
++                vec![RTCIceServer {
++                    urls: vec![format!("turn:{server_addr}?transport=udp")],
++                    username: "test".into(),
++                    credential: "test".into(),
++                }],
++                RTCIceTransportPolicy::Relay,
++                None,
++                inner.runtime.clone(),
++                provider,
++            );
++            driver.turn_relayer.gather().await.unwrap();
++            let initial = decode(driver.turn_relayer.poll_write().unwrap());
++            let mut challenge = Message::new();
++            challenge
++                .build(&[
++                    Box::new(initial.transaction_id),
++                    Box::new(MessageType::new(METHOD_ALLOCATE, CLASS_ERROR_RESPONSE)),
++                    Box::new(CODE_UNAUTHORIZED),
++                    Box::new(Realm::new(ATTR_REALM, "test".into())),
++                    Box::new(Nonce::new(ATTR_NONCE, "test".into())),
++                ])
++                .unwrap();
++            driver
++                .turn_relayer
++                .handle_read(packet(local, server_addr, &challenge.raw))
++                .unwrap();
++            let authenticated = decode(driver.turn_relayer.poll_write().unwrap());
++            let mut allocated = Message::new();
++            allocated
++                .build(&[
++                    Box::new(authenticated.transaction_id),
++                    Box::new(MessageType::new(METHOD_ALLOCATE, CLASS_SUCCESS_RESPONSE)),
++                    Box::new(RelayedAddress {
++                        ip: relay.ip(),
++                        port: relay.port(),
++                    }),
++                    Box::new(Lifetime(Duration::from_secs(600))),
++                ])
++                .unwrap();
++            driver
++                .turn_relayer
++                .handle_read(packet(local, server_addr, &allocated.raw))
++                .unwrap();
++            while driver.turn_relayer.poll_event().is_some() {}
++            assert!(driver.turn_relayer.contains_local_addr(relay));
++            // Establish permission before the isolated hot write. No live TURN daemon or timers.
++            driver
++                .turn_relayer
++                .handle_write(packet(relay, peer, b"setup"))
++                .unwrap();
++            let permission = decode(driver.turn_relayer.poll_write().unwrap());
++            assert_eq!(permission.typ.method, METHOD_CREATE_PERMISSION);
++            let mut permitted = Message::new();
++            permitted
++                .build(&[
++                    Box::new(permission.transaction_id),
++                    Box::new(MessageType::new(
++                        METHOD_CREATE_PERMISSION,
++                        CLASS_SUCCESS_RESPONSE,
++                    )),
++                ])
++                .unwrap();
++            driver
++                .turn_relayer
++                .handle_read(packet(local, server_addr, &permitted.raw))
++                .unwrap();
++            while driver.turn_relayer.poll_event().is_some() {}
++            while driver.turn_relayer.poll_write().is_some() {}
++            assert!(wakes.try_recv().is_err());
++            // Test-only injection at the exact output of drain_core_writes; all downstream
++            // relayer, TURN encoding, driver routing and UDP socket methods are real.
++            driver
++                .test_core_writes
++                .push(packet(relay, peer, b"isolated-core-packet"));
++            driver.poll_writes().await.unwrap();
++            assert!(
++                wakes.try_recv().is_err(),
++                "no follow-up application wake was generated"
++            );
++            let retained = driver.turn_relayer.poll_write().is_some();
++            let mut bytes = [0u8; 2048];
++            let sent = server.recv_from(&mut bytes).is_ok();
++            assert!(
++                sent && !retained,
++                "single flush stranded relay output: socket_sent={sent}, retained={retained}"
++            );
++        }));
++    }
++}
