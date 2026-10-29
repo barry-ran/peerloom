@@ -540,7 +540,7 @@ class AdministrationScopeTests(unittest.TestCase):
     def test_source_gates_remain_but_admin_gates_are_not_repeated(self):
         from unittest.mock import Mock, patch
         plan = {'approved': True, 'format_version': 1, 'repository': P.REPO,
-                'administration_sha': MASTER, 'operation': 'release', 'release_sha': SHA,
+                'administration_sha': MASTER, 'operation': 'release', 'release_sha': SHA, 'tag_sha': MASTER,
                 'tag': 'v0.1.1', 'prerelease': False, 'notes': 'notes', 'final_scope_accepted': True,
                 'artifacts': {name: {'id': number} for number, name in enumerate(P.PLATFORMS, 1)}}
         admin = A.Admin(Mock(), plan, MASTER)
@@ -810,6 +810,76 @@ class ReleaseTests(unittest.TestCase):
             self.assertTrue(plan['notes'])
             self.assertIs(plan['final_scope_accepted'], True)
             self.assertEqual(set(plan['artifacts']), set(P.PLATFORMS))
+
+class ExplicitAdministrationTagTests(unittest.TestCase):
+    def test_only_explicit_event_target_binds_without_changing_artifact_source(self):
+        env = {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REPOSITORY': P.REPO,
+               'GITHUB_REF': 'refs/heads/master', 'GITHUB_SHA': MASTER}
+        event = {'repository': {'full_name': P.REPO}, 'ref': env['GITHUB_REF'], 'before': SHA, 'after': MASTER}
+        plan = {'administration_sha': 'event', 'tag_sha': 'event', 'operation': 'release',
+                'release_sha': SHA, 'artifacts': {'android': {'id': 123, 'sha256': 'a' * 64}}}
+        original = copy.deepcopy(plan)
+        bound, commit = A.context(env, event, plan)
+        self.assertEqual(bound['tag_sha'], MASTER)
+        self.assertEqual(commit, MASTER)
+        self.assertEqual(bound['release_sha'], SHA)
+        self.assertEqual(bound['artifacts'], original['artifacts'])
+        self.assertEqual(plan, original)
+        for value in (None, SHA, MASTER, 'master', 'latest', ''):
+            with self.subTest(value=value), self.assertRaisesRegex(P.Rejected, 'TAG_EVENT'):
+                A.context(env, event, dict(plan, tag_sha=value))
+        with self.assertRaisesRegex(P.Rejected, 'EVENT_OUTSIDE'):
+            A.context(env, event, dict(plan, artifacts={'android': {'sha256': 'event'}}))
+
+    def test_old_default_and_explicit_new_tag_creation(self):
+        from unittest.mock import Mock
+        for explicit, expected in ((False, SHA), (True, MASTER)):
+            api = Mock()
+            api.call.side_effect = [None, {}, {'object': {'type': 'commit', 'sha': expected}}]
+            plan = {'tag': 'v0.1.1', 'release_sha': SHA}
+            if explicit:
+                plan['tag_sha'] = MASTER
+            admin = A.Admin(api, plan, MASTER)
+            admin.tag(create=True)
+            self.assertEqual(api.call.call_args_list[1].args,
+                             ('/repos/' + P.REPO + '/git/refs', 'POST',
+                              {'ref': 'refs/tags/v0.1.1', 'sha': expected}))
+
+    def test_existing_wrong_tag_is_never_moved_or_overwritten(self):
+        from unittest.mock import Mock
+        api = Mock()
+        api.call.return_value = {'object': {'type': 'commit', 'sha': SHA}}
+        admin = A.Admin(api, {'tag': 'v0.1.1', 'release_sha': SHA, 'tag_sha': MASTER}, MASTER)
+        with self.assertRaisesRegex(P.Rejected, 'TAG_MISMATCH'):
+            admin.tag(create=True)
+        api.call.assert_called_once_with('/repos/' + P.REPO + '/git/ref/tags/v0.1.1', missing=True)
+        api.reset_mock()
+        admin.plan['tag_sha'] = TREE
+        with self.assertRaisesRegex(P.Rejected, 'TAG_TARGET'):
+            admin.tag(create=True)
+        api.call.assert_not_called()
+
+    def test_release_target_is_explicit_tag_commit_not_artifact_source(self):
+        from unittest.mock import Mock
+        api = Mock()
+        plan = {'tag': 'v0.1.1', 'release_sha': SHA, 'tag_sha': MASTER, 'notes': 'explicit provenance', 'prerelease': False}
+        draft = {'id': 12, 'tag_name': plan['tag'], 'body': plan['notes'], 'prerelease': False, 'draft': True, 'assets': []}
+        api.call.side_effect = [None, draft, draft, {}, dict(draft, draft=False)]
+        admin = A.Admin(api, plan, MASTER)
+        admin.fresh_master = Mock()
+        admin.tag = Mock(return_value={'object': {'sha': MASTER}})
+        admin.publish({})
+        create = api.call.call_args_list[1]
+        self.assertEqual(create.args[2]['target_commitish'], MASTER)
+        self.assertEqual(admin.plan['release_sha'], SHA)
+
+    def test_candidate_binds_same_event_but_cannot_execute(self):
+        env, event, plan = ReadOnlyCandidateTests().event()
+        plan['tag_sha'] = 'event'
+        bound, commit = A.candidate_context(env, event, plan)
+        self.assertEqual(bound['tag_sha'], commit)
+        ReadOnlyCandidateTests().test_candidate_cannot_execute_even_before_reading_plan()
+
 
 class RedactedApiFailureTests(unittest.TestCase):
     def failure(self, suffix, method='GET', stderr='gh: private response (HTTP 403)'):

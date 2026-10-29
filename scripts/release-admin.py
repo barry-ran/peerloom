@@ -35,13 +35,13 @@ REVIEWED_BOOTSTRAP_BLOBS = {'.github/workflows/admin-web.yml': {'after_blob': 'd
                                   'before_blob': 'bd7293e3526b7087bb382ca90af5d56226f8bbf5'},
  '.github/workflows/release-admin.yml': {'after_blob': '637fe5be5913635194e74bf5c409f973d3e5911d',
                                          'before_blob': '01d5ce8393f98a50d65da89206cc1bc6f6977297'},
- 'docs/发布与分支清理模块.md': {'after_blob': 'b6423bc5218cb4f2c6e42b5423f36fce03a27836',
+ 'docs/发布与分支清理模块.md': {'after_blob': '5b5d2ae8bc065718a6038a3bc4dfc83bb11b3ba8',
                        'before_blob': 'd34cead23879b2215277330d3191bb848eab0712'},
  'docs/开发与验收.md': {'after_blob': '1a7016e1caf173b314ae172f117ac4f8418d35da',
                    'before_blob': '72eb9acfff21a3da61c4648e74c461cfa5556022'},
  'scripts/release-policy.py': {'after_blob': '377fdbcbfdd1dbb165c8878aa7fa28d80857cd79',
                                'before_blob': '47bd8640145af0ab2b44d3ce56c8f290e797acaf'},
- 'scripts/test-release-admin.py': {'after_blob': '2ca4a972ffb492d2257e4e681437630de5bead5c',
+ 'scripts/test-release-admin.py': {'after_blob': '677b21a0a233d5916692bd23e759bf5af29ef8af',
                                    'before_blob': '8d50e4dab2d81c7fb3dfafbe094e4703fc0bcebc'},
  'scripts/test-workflow-triggers.py': {'after_blob': '0d313f72f1e76b4afc57317c1f2eae299c399533',
                                        'before_blob': None}}
@@ -178,6 +178,7 @@ class Admin:
         # The administration commit is carried by the event; plans avoid impossible self-hashing via
         # administration_sha="event" in the stored file, resolved only by the trusted CLI below.
         P.require(plan.get('operation') == 'release' and 'branches' not in plan, 'RELEASE_OPERATION_REQUIRED')
+        self.tag_target()
         self.fresh_master()
         release_sha = P.sha(plan.get('release_sha'))
         P.require(release_sha != self.master and self.ancestor(release_sha, self.master), 'RELEASE_NOT_PREVIOUS_RETAINED_COMMIT')
@@ -212,15 +213,23 @@ class Admin:
             outputs[output.name] = (output, result)
         return outputs
 
+    def tag_target(self):
+        if 'tag_sha' not in self.plan:
+            return P.sha(self.plan.get('release_sha'))
+        target = P.sha(self.plan['tag_sha'])
+        P.require(target == self.master, 'TAG_TARGET_NOT_ADMINISTRATION_COMMIT')
+        return target
+
     def tag(self, create=False):
+        target = self.tag_target()
         name = self.plan['tag']
         endpoint = self.base + '/git/ref/tags/' + name
         value = self.api.call(endpoint, missing=True)
         if value is None and create:
-            self.api.call(self.base + '/git/refs', 'POST', {'ref': 'refs/tags/' + name, 'sha': self.plan['release_sha']})
+            self.api.call(self.base + '/git/refs', 'POST', {'ref': 'refs/tags/' + name, 'sha': target})
             value = self.api.call(endpoint)
         if value is not None:
-            P.require(value['object'].get('type') == 'commit' and value['object']['sha'] == self.plan['release_sha'], 'TAG_MISMATCH')
+            P.require(value['object'].get('type') == 'commit' and value['object']['sha'] == target, 'TAG_MISMATCH')
         return value
 
     def release_matches(self, release, outputs, draft, release_id=None, complete=True):
@@ -247,7 +256,7 @@ class Admin:
             return  # Exact repeat is a read-only no-op, never overwrite.
         if release is None:
             release = self.api.call(self.base + '/releases', 'POST', {
-                'tag_name': self.plan['tag'], 'target_commitish': self.plan['release_sha'],
+                'tag_name': self.plan['tag'], 'target_commitish': self.tag_target(),
                 'name': self.plan['tag'], 'body': self.plan['notes'], 'prerelease': self.plan['prerelease'], 'draft': True})
         release_id = release['id']
         self.release_matches(release, outputs, True, release_id, complete=False)
@@ -274,6 +283,9 @@ def context(env, event, plan):
     P.require(before != '0' * 40 and before != commit, 'PUSH_RANGE_REQUIRED')
     P.require(plan.get('administration_sha') == 'event', 'PLAN_EVENT_BINDING_REQUIRED')
     allowed_event_paths = {('administration_sha',)}
+    if 'tag_sha' in plan:
+        P.require(plan['tag_sha'] == 'event', 'TAG_EVENT_BINDING_REQUIRED')
+        allowed_event_paths.add(('tag_sha',))
     P.require(plan.get('operation') == 'release' and 'branches' not in plan, 'RELEASE_OPERATION_REQUIRED')
     def check_event(value, path=()):
         if isinstance(value, dict):
@@ -286,6 +298,8 @@ def context(env, event, plan):
             P.require(path in allowed_event_paths, 'EVENT_OUTSIDE_APPROVED_BINDING')
     check_event(plan)
     plan = dict(plan, administration_sha=commit)
+    if 'tag_sha' in plan:
+        plan['tag_sha'] = commit
     return plan, commit
 
 def candidate_context(env, event, plan):
