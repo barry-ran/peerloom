@@ -1,7 +1,35 @@
 {
   "format_version": 1,
   "repository": "barry-ran/peerloom",
-  "approved": false,
+  "approved": true,
   "administration_sha": "event",
-  "operation": "release"
+  "operation": "release",
+  "release_sha": "7468c1e61c9e10d413799687c636d009ad0f353a",
+  "tag_sha": "event",
+  "tag": "v0.1.2",
+  "prerelease": false,
+  "final_scope_accepted": true,
+  "artifacts": {
+    "server-linux-amd64": {
+      "id": 12890294946,
+      "sha256": "39665e5d497bdea7949735794107254586a910ec4f98fee2d055efe9a106d02d"
+    },
+    "linux-x86_64": {
+      "id": 12890504738,
+      "sha256": "1ade38b4b007d7d50e9385e05028afe097e7936da20c72968bc3f4d26401ee28"
+    },
+    "windows-x86_64": {
+      "id": 12891565307,
+      "sha256": "de0e3852c967000ee5a4b1c58fb0a8d2e1cdbcc89c41672459bc0127ae65fd1d"
+    },
+    "android": {
+      "id": 12889149796,
+      "sha256": "98c77ae7711ac882a344f251dcdea17375472eb55743ae63558eaa82d1a83af7"
+    },
+    "apple": {
+      "id": 12894105360,
+      "sha256": "a93d4ec4a026a8996cf34ebb50a6db868856479360354c5b6c75061a665aa6b9"
+    }
+  },
+  "notes": "## Peerloom v0.1.2\n\n本版扩展连接规模和 C ABI / Kotlin / Swift 并发流读取能力。服务端与 SDK 继续独立交付，旧版本资产不覆盖。\n\n### 主要变化\n- 新建配置默认不设置人工连接、会话和通道数量配额；运营者仍可设置正数配额。历史显式策略不会被静默清空，服务端原有 0 值拒绝语义保留，-1 表示不限；SDK 0 表示不限。\n- C ABI 完成额度随实际连接与可靠流数量自动增长，移除固定 32 pending 操作瓶颈。Kotlin / Swift 保留独立宿主交付额度，关闭、reset、存储与终态回调具有独立受保护预算。\n- 默认 128 MiB 的 FFI 自有缓冲预算可配置；报文校验、单流一个待完成 READ、内存背压、身份与租约鉴权不取消。“不限设备数”不表示无限物理资源。\n- 修复续租事件乱序处理、正常关闭释放活动配额与 TURN 驱动单次轮询出包问题；保留终止、撤销和过期时的 fail-closed 行为。\n\n### 交付与证据\n产物源码：`7468c1e61c9e10d413799687c636d009ad0f353a`。同一精确源码的八个必需 CI job 已通过，五个实际 ZIP 已独立核验。标签将指向受审发布计划所在 master 执行提交；五包仍绑定上述受验功能源码，不冒称重新构建。\n\n五个交付包：\n- 部署服务端：`peerloom-server-v0.1.2-linux-amd64.zip`，解开内含保留可执行位的 tar.gz 后，从 `deploy/README.md` 开始。\n- Linux SDK：`peerloom-sdk-v0.1.2-linux-x86_64.zip`。\n- Windows SDK：`peerloom-sdk-v0.1.2-windows-x86_64.zip`。\n- Apple SDK：`peerloom-sdk-v0.1.2-apple.zip`（XCFramework / Swift）。\n- Android SDK：`peerloom-sdk-v0.1.2-android.zip`（AAR / Kotlin）。\n\n服务端包可独立解包部署，仍需 Docker/Compose 和网络获取固定官方镜像；TURN 为明确的外部依赖。\n\n容量验收区分两个真实链路场景：一个 PC 身份/实例连接 500 个原生模拟设备端；一个 C ABI PC 实例的 500 条可靠流同时处于待完成 READ，保持至少 120 秒并验证续租、双向部分读写、FIN、管理关闭、reset、恰好一次完成与资源回收。本次精确源码的[容量 CI](https://github.com/barry-ran/peerloom/actions/runs/40857876454/job/123393346739)已通过：C ABI 场景共48,943个受理操作/48,943个唯一完成事件，双向262,144,000字节，20条管理关闭唤醒、其余480条继续并FIN，reset/shutdown后无残留读取或迟到回调。4 vCPU runner 上全场景184.107秒，峰值合计RSS1,054,760,960字节、FD4,160、线程45；RSS为owned进程求和，共享页可能重复计数。原生小消息场景另验证凭证轮换WSS重连及20次重建会话。两者未预期错误均为0。公开[四JSON证据包](https://github.com/barry-ran/peerloom/actions/runs/40857876454/artifacts/12890507000) SHA256：`a625b5657d577502b2967e534116e3d4330dfdafb6d07aad8f6dfc6ba6fc6951`；891项源码摘要已逐一匹配该提交。\n\n### 已知边界\n- 500 个同主机原生模拟端与字节流不等于 500 台 Android 真机或 500 路视频编解码、公网/NAT 长期负载承诺。\n- Apple CI 的模拟器/测试 Keychain 证据不能替代实际生产签名宿主与真机授权配置验证；Android 当前提供 arm64-v8a 与 x86_64，不包含 ARM32。\n- 第三方版本、已有许可材料和固定披露缺项随包保留；不声称法务已完成上线前授权审查。\n\n详见[受验源码](https://github.com/barry-ran/peerloom/tree/7468c1e61c9e10d413799687c636d009ad0f353a)、[部署指南](https://github.com/barry-ran/peerloom/blob/7468c1e61c9e10d413799687c636d009ad0f353a/docs/部署指南.md)、[SDK使用说明](https://github.com/barry-ran/peerloom/blob/7468c1e61c9e10d413799687c636d009ad0f353a/docs/用户使用说明.md)。\n"
 }
