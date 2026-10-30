@@ -549,7 +549,7 @@ checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
 name = "device-continuous-clock"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "device-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "device-ffi"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "device-core",
@@ -604,11 +604,11 @@ dependencies = [
 
 [[package]]
 name = "device-protocol"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "device-storage"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "device-storage-windows",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "device-storage-windows"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "uuid",
  "windows-sys 0.61.2",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "device-transport-webrtc"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "bytes",

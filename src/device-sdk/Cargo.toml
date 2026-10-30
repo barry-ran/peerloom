@@ -3,7 +3,7 @@ resolver = "3"
 members = ["device-continuous-clock", "device-protocol", "device-core", "device-transport-webrtc", "device-storage", "device-storage-windows", "device-ffi"]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.99"
 publish = false

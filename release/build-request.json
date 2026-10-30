@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "version": "0.1.4",
-  "tested_sha": "d2d806834821701f9ffbaad4c21cad5cc1fa18e7",
-  "retained_sha": "e798386bdf18297ae58b23bb6b3f0776ba6c4977",
-  "revision": 2
+  "version": "0.1.5",
+  "tested_sha": "5076a2224fbb43cde66eec3287b5af1a95c92b6c",
+  "retained_sha": "5076a2224fbb43cde66eec3287b5af1a95c92b6c",
+  "revision": 1
 }
