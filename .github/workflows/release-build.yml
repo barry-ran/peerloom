@@ -1,0 +1,179 @@
+name: 版本发布仅编译打包
+on:
+  push:
+    branches: [master]
+    paths: [release/build-request.json]
+permissions:
+  contents: read
+concurrency:
+  group: peerloom-release-build-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  linux-release:
+    if: github.repository == 'barry-ran/peerloom' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: src/device-server/go.sum
+      - name: 固定 Rust 工具链
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: 编译链接并生成 Linux SDK 与服务端包（不执行功能测试）
+        run: python3 scripts/build-release-only.py --platform linux
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-linux-release-${{ github.sha }}
+          path: dist/release/linux-x86_64/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-server-linux-amd64-release-${{ github.sha }}
+          path: dist/release/server-linux-amd64/
+          if-no-files-found: error
+          retention-days: 14
+  windows-release:
+    if: github.repository == 'barry-ran/peerloom' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: src/device-server/go.sum
+      - name: 固定 Rust 并初始化 MSVC x64 编译环境
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustup toolchain install 1.99.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'rustup failed' }
+          rustup default 1.99.1
+          if ($LASTEXITCODE -ne 0) { throw 'rustup default failed' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+          if (-not $vs) { throw 'MSVC_X64_TOOLCHAIN_MISSING' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $environmentLines = & cmd.exe /d /s /c "`"$vcvars`" >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC_ENVIRONMENT_SETUP_FAILED' }
+          foreach ($line in $environmentLines) {
+            $index = $line.IndexOf('=')
+            if ($index -gt 0) { [Environment]::SetEnvironmentVariable($line.Substring(0,$index), $line.Substring($index+1), 'Process') }
+          }
+          python scripts/build-release-only.py --platform windows
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_RELEASE_BUILD_FAILED' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-windows-release-${{ github.sha }}
+          path: dist/release/windows-x86_64/
+          if-no-files-found: error
+          retention-days: 14
+  apple-release:
+    if: github.repository == 'barry-ran/peerloom' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: macos-15
+    timeout-minutes: 70
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      PEERLOOM_REPO_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: src/device-server/go.sum
+      - name: 核对请求并固定 Apple 工具链
+        run: |
+          set -euo pipefail
+          python3 scripts/build-release-only.py
+          printf 'PEERLOOM_APPLE_OUTPUT=%s/peerloom-apple-release\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          [[ $(xcodebuild -version) == $'Xcode 16.4\nBuild version 16F6' ]]
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup default 1.99.1
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - name: 构建五 slice XCFramework 与 Swift 封装（不运行原生测试）
+        run: |
+          set -euo pipefail
+          ./bindings/ios/scripts/build-xcframework.sh
+          cd "$PEERLOOM_APPLE_OUTPUT/SwiftPackage"
+          swift build --configuration release --target PeerloomSwift
+          xcodebuild -scheme PeerloomSwift -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PEERLOOM_APPLE_OUTPUT/DerivedData-device" CODE_SIGNING_ALLOWED=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES build
+      - name: 保留真实构建状态与许可材料并打包
+        run: |
+          set -euo pipefail
+          python3 scripts/package-third-party.py
+          python3 scripts/package-release.py --platform apple --apple-package "$PEERLOOM_APPLE_OUTPUT/SwiftPackage" --output dist/release/apple
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-apple-release-${{ github.sha }}
+          path: dist/release/apple/
+          if-no-files-found: error
+          retention-days: 14
+  android-release:
+    if: github.repository == 'barry-ran/peerloom' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: src/device-server/go.sum
+      - name: 核对请求并固定 Android 编译工具链
+        run: |
+          set -euo pipefail
+          python3 scripts/build-release-only.py
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
+          rustup toolchain install 1.99.1 --profile minimal
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
+      - name: 仅编译双 ABI release AAR 并绑定 Maven 原文证据
+        working-directory: bindings/android
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon :library:assembleRelease :library:prepareMavenPomEvidence
+          mkdir -p ../../dist/android
+          cp library/build/outputs/aar/library-release.aar ../../dist/android/
+          ./gradlew --no-daemon --offline :library:collectMavenEvidence
+          status=0
+          python3 scripts/collect-maven-evidence.py --input build/maven-evidence-input.json --output "$(realpath -m ../../dist/android/maven-evidence)" || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
+          python3 - "$status" <<'PYVERIFY'
+          import json, sys
+          from pathlib import Path
+          report = json.loads(Path('../../dist/android/maven-evidence/report.json').read_text())
+          expected = 'incomplete' if sys.argv[1] == '2' else 'collected-not-legally-reviewed'
+          if report.get('evidence_status') != expected:
+              raise SystemExit('Maven evidence status mismatch')
+          PYVERIFY
+          (cd ../../dist/android/maven-evidence && sha256sum --check --strict SHA256SUMS)
+      - name: 验证 AAR ELF16K 和许可材料并打包
+        run: |
+          set -euo pipefail
+          python3 bindings/android/scripts/verify-artifacts.py dist/android/library-release.aar
+          python3 scripts/package-third-party.py
+          python3 scripts/package-release.py --platform android --output dist/release/android
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: peerloom-android-release-${{ github.sha }}
+          path: dist/release/android/
+          if-no-files-found: error
+          retention-days: 14
