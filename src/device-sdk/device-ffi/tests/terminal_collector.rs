@@ -94,8 +94,15 @@ fn other_kind_status_or_non_target_handle_is_rejected() {
 
 #[test]
 fn terminal_notice_statuses_match_the_public_c_header() {
-    for definition in ["#define DP_CLOSED UINT32_C(5)", "#define DP_INTERNAL UINT32_C(255)"] {
-        assert!(include_str!("../include/device_sdk.h").lines().any(|line| line == definition));
+    for definition in [
+        "#define DP_CLOSED UINT32_C(5)",
+        "#define DP_INTERNAL UINT32_C(255)",
+    ] {
+        assert!(
+            include_str!("../include/device_sdk.h")
+                .lines()
+                .any(|line| line == definition)
+        );
     }
 }
 
@@ -117,8 +124,14 @@ fn tail_predicate_accepts_only_target_zero_notices_without_counting() {
         for kind in [0, 1, 5, 6, 9, 13, u32::MAX] {
             assert!(!collector.is_target_zero_notice(kind, status, 0, payload));
         }
-        for invalid in [b"".as_slice(), b"{", b"null", br#"{"session_id":""}"#,
-                        br#"{"session_id":"sibling"}"#, br#"{"session_id":"unknown"}"#] {
+        for invalid in [
+            b"".as_slice(),
+            b"{",
+            b"null",
+            br#"{"session_id":""}"#,
+            br#"{"session_id":"sibling"}"#,
+            br#"{"session_id":"unknown"}"#,
+        ] {
             assert!(!collector.is_target_zero_notice(7, status, 0, invalid));
         }
     }

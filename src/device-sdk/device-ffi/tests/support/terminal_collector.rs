@@ -39,7 +39,13 @@ impl TerminalCollector {
         self.is_target_zero_notice(kind, status, connection, payload)
     }
 
-    pub fn is_target_zero_notice(&self, kind: u32, status: u32, connection: u64, payload: &[u8]) -> bool {
+    pub fn is_target_zero_notice(
+        &self,
+        kind: u32,
+        status: u32,
+        connection: u64,
+        payload: &[u8],
+    ) -> bool {
         if kind != 7 || connection != 0 {
             return false;
         }

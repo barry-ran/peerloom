@@ -496,7 +496,10 @@ mod tests {
     fn rejected_session_close_maps_to_public_internal_without_reason_details() {
         assert_eq!(INTERNAL, 255);
         assert_eq!(error(SdkError::Rejected("SESSION_CLOSED".into())), INTERNAL);
-        assert_eq!(error(SdkError::Rejected("untrusted-secret-text".into())), INTERNAL);
+        assert_eq!(
+            error(SdkError::Rejected("untrusted-secret-text".into())),
+            INTERNAL
+        );
         assert_eq!(error(SdkError::Transport(TransportError::Closed)), CLOSED);
     }
     #[test]
