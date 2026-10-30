@@ -1,35 +1,36 @@
 {
   "format_version": 1,
   "repository": "barry-ran/peerloom",
-  "approved": false,
+  "approved": true,
   "administration_sha": "event",
   "operation": "release",
-  "release_sha": "25b33273ac5bbd03506905a635b1453dcf969c70",
+  "release_sha": "80ef5fba078822c7b6ba2e2c94b396908a1ef55e",
   "tag_sha": "event",
-  "tag": "v0.1.3",
+  "tag": "v0.1.4",
   "prerelease": false,
   "final_scope_accepted": true,
+  "validation_mode": "compiled-from-verified-tree",
   "artifacts": {
-    "server-linux-amd64": {
-      "id": 12897206080,
-      "sha256": "15a8fcd490c29f952ce715a8aa4ac16e1585f96933317791e647ef7318722b97"
-    },
     "linux-x86_64": {
-      "id": 12897510638,
-      "sha256": "9b761155d5eb88d7d38baafd4b756d1a9cf0b4bb80552bbdb3d0088fcf1f724c"
+      "id": 12945324523,
+      "sha256": "ac65f934118a9dbdd0fbe5d034fa26f855cf52289902360c9b8cb22d9ef62770"
+    },
+    "server-linux-amd64": {
+      "id": 12946023117,
+      "sha256": "1b175f0a816a2fe8bf13d01c09731a2ccfe593fed4b97f6b90b8c08bf21be08a"
     },
     "windows-x86_64": {
-      "id": 12896218265,
-      "sha256": "059f24f7972a9a0b465136a0da96e16d07549d20ee9c9053a6e6bd86928d4142"
+      "id": 12945339594,
+      "sha256": "a899a27a4e31829a2923caa7f206ac1e8610e0c08dc2c43292889ff5e36aaf13"
     },
     "android": {
-      "id": 12895509163,
-      "sha256": "c3fee66862a03d4c0df10e81f1fd6e6f451a4c8d95d68faadba97b103b10d4c7"
+      "id": 12946119013,
+      "sha256": "386a83e6d82728a8fc6dda453092d3162221883a6f485f897f9be57dc2c8cd49"
     },
     "apple": {
-      "id": 12898023332,
-      "sha256": "f6a650eaf8a8ef0d674b5a84db9522a6e76cd69230afe228bf2b3db8163e40e0"
+      "id": 12946846729,
+      "sha256": "5ca7a65acd64e907d2fddb07c0cede9b60f4f0df07551bf443e089b38be5c341"
     }
   },
-  "notes": "# Peerloom v0.1.3\n\n服务端 `GET /v1/device-self` 新增 `credential_expires_at`：返回本次 Bearer 凭证在数据库中的实际到期时间（UTC RFC3339），与设备、租户、应用及有效性在同一认证查询绑定。\n\n- 刷新重叠窗口内的旧凭证返回缩短后的实际期限，新凭证返回自身期限。\n- 过期、撤销、设备禁用、应用禁用或租户停用仍拒绝认证，不返回有效身份快照。\n- 不新增令牌原文或 hash 输出，不采用客户端时间，不改变注册/刷新权限、令牌格式或 SDK ABI。\n- 这是认证时快照，不保证响应之后不会撤销；业务服务应继续按自身需求逐请求重验/处理撤销，不能把离线业务票据当作永久继承设备授权。\n\n服务端与 Linux、Windows、Apple、Android SDK 仍分开提供。统一版本元数据更新为0.1.3；SDK功能代码保持0.1.2，不把元数据升级当成新增媒体或平台能力。产物源码为 `25b33273ac5bbd03506905a635b1453dcf969c70`，同一提交八个必要 CI job 全通过，五份实际ZIP逐项核验。标签指向后续已审发布管理提交；资产保留上述真实源码，不冒称重新构建。\n\n容量与平台边界保持：默认不设人工连接数量配额但仍有内存/报文/背压保护；500原生模拟设备和C ABI并发字节流测试不等于500台Android真机或500路视频。生产签名Apple宿主、物理设备、公网长期负载仍需目标环境验收；Android提供arm64-v8a/x86_64，不含ARM32。\n\n原创代码MIT；第三方材料和精确披露缺项随包保留，尚不声称完成法务上线审查。不会覆盖v0.1.2资产。\n\n[源码与公开API](https://github.com/barry-ran/peerloom/tree/25b33273ac5bbd03506905a635b1453dcf969c70)、[身份模块说明](https://github.com/barry-ran/peerloom/blob/25b33273ac5bbd03506905a635b1453dcf969c70/docs/设备身份模块.md)、[服务端部署包说明](https://github.com/barry-ran/peerloom/blob/25b33273ac5bbd03506905a635b1453dcf969c70/deploy/server/README.md)。\n\n服务端下载 `peerloom-server-v0.1.3-linux-amd64.zip`；SDK下载 `peerloom-sdk-v0.1.3-{linux-x86_64,windows-x86_64,apple,android}.zip`。校验和和元数据随包提供；服务端仍需声明的Docker/Compose依赖与外部TURN，不是离线基础设施全集。\n"
+  "notes": "# Peerloom v0.1.4\n\n本版修复 SDK 生命周期、连续流读取与授权租约时钟问题；不包含业务专用功能。不改变公开 C ABI、线协议、服务端认证接口或数据库迁移。\n\nRust 低层新增 `HelloClockStart` 安全入口；旧 `Instant` 构造器兼容保留但已弃用，不保证跨系统休眠的时长语义。公开 C ABI 与线协议保持不变。\n\n- Android / Apple 的关闭完成通知等待宿主存储清理结束，避免过早释放和迟到任务。\n- 修复连续 READ 的完成交付竞态；已终态读取允许回调重入，同时保留借用缓冲预算与恰好一次完成边界。\n- SDK 内部授权租约使用包含系统休眠时长的连续时钟，补齐到期收发检查及失效关闭；不以客户端墙钟调整延长授权。\n\n## 产物与验证来源\n\n五包实际构建源码为 `80ef5fba078822c7b6ba2e2c94b396908a1ef55e`，统一版本元数据为 `0.1.4`。服务端与四平台 SDK 分开交付；服务端功能保持 v0.1.3，本次只同步版本并重新编译打包。\n\n功能验证使用 `d2d806834821701f9ffbaad4c21cad5cc1fa18e7` 的四条 push 工作流、八个必要 job，全部成功；其完整 Git tree 与 rebase 合入 master 的 `e798386bdf18297ae58b23bb6b3f0776ba6c4977` 相同（`aece36e7b9096751648041f7e4853885bae616d8`）。新构建源码相对该树仅含经审版本号、发布构建支持与禁用旧发布计划的精确变更。\n\n[发布编译工作流](https://github.com/barry-ran/peerloom/actions/runs/40984170941)的四个平台作业全部成功。发布阶段只重新编译、链接和打包，不重复功能联调。正式发布门禁独立核对上述 tree/源码差异、功能验证、编译作业及五份实际 ZIP 的源码、版本、内部清单和 SHA256；不把旧产物改名冒充新版本，也不声称新源码重新运行了全部功能测试。标签指向受审发布管理提交，包内保留真实构建源码 SHA。\n\n## 下载\n\n- 服务端：`peerloom-server-v0.1.4-linux-amd64.zip`\n- Linux SDK：`peerloom-sdk-v0.1.4-linux-x86_64.zip`\n- Windows SDK：`peerloom-sdk-v0.1.4-windows-x86_64.zip`\n- Apple SDK：`peerloom-sdk-v0.1.4-apple.zip`\n- Android SDK：`peerloom-sdk-v0.1.4-android.zip`\n\n## 已知边界\n\n- 连续时钟修复通过确定性回归和平台编译验证；不声称已完成物理手机或真实整机休眠/唤醒验收。\n- 500 个原生模拟设备及 C ABI 并发字节流测试不等于 500 台 Android 真机或 500 路视频；公网与长期负载需目标环境验收。\n- Apple 为 XCFramework / Swift 包，包含 unsigned iOS build，不代表生产签名宿主或真机验证；本次编译包如实保留 `built-not-native-tested` 状态，功能测试证据来自上述已验证树。\n- Android 提供 arm64-v8a / x86_64，不含 ARM32。\n- 原创代码 MIT；第三方许可材料和精确披露缺项随包保留，不声称完成法务上线审查。\n- 服务端仍需声明的 Docker/Compose 与外部 TURN 依赖，不是离线基础设施全集；不会覆盖 v0.1.2 / v0.1.3 资产。\n\n[构建源码](https://github.com/barry-ran/peerloom/tree/80ef5fba078822c7b6ba2e2c94b396908a1ef55e) · [功能验证源码](https://github.com/barry-ran/peerloom/tree/d2d806834821701f9ffbaad4c21cad5cc1fa18e7) · [部署说明](https://github.com/barry-ran/peerloom/blob/80ef5fba078822c7b6ba2e2c94b396908a1ef55e/deploy/server/README.md)\n"
 }

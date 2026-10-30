@@ -1189,5 +1189,334 @@ class ExtraBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(P.Rejected, 'COVERAGE'):
                 P.verify_zip(path, 'windows-x86_64', SHA, '0.1.0')
 
+
+class ReviewedRebuildTests(unittest.TestCase):
+    """版本重编译不替代旧功能门禁，任何不明确证据均拒绝。"""
+    def run_and_jobs(self):
+        run = {'id': 10, 'run_attempt': 1, 'head_sha': SHA, 'head_branch': 'master',
+               'event': 'push', 'head_repository': {'full_name': P.REPO},
+               'status': 'completed', 'conclusion': 'success',
+               'path': '.github/workflows/release-build.yml'}
+        jobs = [{'name': name, 'head_sha': SHA, 'status': 'completed', 'conclusion': 'success',
+                 'steps': [{'name': 'compile', 'conclusion': 'success'}]} for name in sorted(A.REBUILD_JOBS)]
+        return run, jobs
+
+    def admin(self):
+        from unittest.mock import Mock
+        run, jobs = self.run_and_jobs()
+        api = Mock()
+        api.call.side_effect = lambda endpoint: {
+            'sha': endpoint.rsplit('/', 1)[1], 'tree': {'sha': A.REBUILD_TESTED_TREE}}
+        api.pages.side_effect = lambda endpoint, key: jobs if key == 'jobs' else [run]
+        plan = {'approved': True, 'format_version': 1, 'repository': P.REPO,
+                'administration_sha': MASTER, 'operation': 'release', 'release_sha': SHA,
+                'tag_sha': MASTER, 'tag': A.REBUILD_TAG, 'prerelease': False, 'notes': 'notes',
+                'final_scope_accepted': True, 'validation_mode': A.REBUILD_MODE,
+                'artifacts': {name: {'id': number} for number, name in enumerate(P.PLATFORMS, 1)}}
+        admin = A.Admin(api, plan, MASTER)
+        admin.fresh_master = Mock()
+        admin.ancestor = Mock(return_value=True)
+        admin.gates = Mock(return_value={workflow: 99 for workflow in P.WORKFLOWS})
+        return admin, run, jobs
+
+    def test_only_known_mode_selects_rebuild(self):
+        from unittest.mock import Mock, patch
+        for mode in ('skip', '', False, 1, {}, []):
+            admin, _, _ = self.admin()
+            admin.plan['validation_mode'] = mode
+            admin.rebuild_gates = Mock()
+            with patch.object(A, 'verify_administration_scope'), self.subTest(mode=mode), \
+                 self.assertRaisesRegex(P.Rejected, 'UNKNOWN_VALIDATION_MODE'):
+                admin.validate()
+            admin.rebuild_gates.assert_not_called()
+            admin.gates.assert_not_called()
+        admin, _, _ = self.admin()
+        admin.rebuild_gates = Mock(return_value={'ci.yml': 10})
+        with patch.object(A, 'verify_administration_scope'):
+            self.assertEqual(admin.validate(), {'ci.yml': 10})
+        admin.rebuild_gates.assert_called_once_with(SHA)
+        admin.gates.assert_not_called()
+
+    def test_exact_rebuild_identity_and_nonzero_required(self):
+        from unittest.mock import patch
+        for source, commit, tag in ((SHA, MASTER, A.REBUILD_TAG), (SHA, SHA, 'v0.1.5'),
+                                    ('0' * 40, '0' * 40, A.REBUILD_TAG)):
+            admin, _, _ = self.admin()
+            admin.plan['tag'] = tag
+            with patch.object(A, 'REBUILD_SOURCE', source), self.subTest(source=source, commit=commit, tag=tag), \
+                 self.assertRaisesRegex(P.Rejected, 'REBUILD_IDENTITY_NOT_REVIEWED'):
+                admin.rebuild_gates(commit)
+            admin.api.call.assert_not_called()
+            admin.gates.assert_not_called()
+
+    def test_both_exact_commit_trees_are_mandatory(self):
+        from unittest.mock import patch
+        for target in (A.REBUILD_TESTED, A.REBUILD_RETAINED):
+            for bad in ({'sha': target, 'tree': {'sha': TREE}}, {'sha': SHA, 'tree': {'sha': A.REBUILD_TESTED_TREE}},
+                        {'sha': target, 'tree': {}}, {}):
+                admin, _, _ = self.admin()
+                def response(endpoint):
+                    source = endpoint.rsplit('/', 1)[1]
+                    return bad if source == target else {'sha': source, 'tree': {'sha': A.REBUILD_TESTED_TREE}}
+                admin.api.call.side_effect = response
+                with patch.object(A, 'REBUILD_SOURCE', SHA), patch.object(A, 'verify_exact_transition') as transition, \
+                     self.subTest(target=target, bad=bad), self.assertRaisesRegex(P.Rejected, 'REBUILD_TESTED_TREE_MISMATCH'):
+                    admin.rebuild_gates(SHA)
+                transition.assert_not_called()
+                admin.gates.assert_not_called()
+
+    def test_all_five_artifact_roles_bind_one_exact_build_run(self):
+        from unittest.mock import patch
+        admin, run, _ = self.admin()
+        with patch.object(A, 'REBUILD_SOURCE', SHA), patch.object(A, 'verify_exact_transition') as transition:
+            result = admin.rebuild_gates(SHA)
+        self.assertEqual(result, {workflow: run['id'] for workflow in P.WORKFLOWS})
+        transition.assert_called_once_with(admin.api, A.REBUILD_RETAINED, SHA, A.REBUILD_SOURCE_BLOBS)
+        admin.gates.assert_called_once_with(A.REBUILD_TESTED)
+        self.assertEqual([call.args[0] for call in admin.api.call.call_args_list],
+                         ['/repos/' + P.REPO + '/git/commits/' + source for source in (A.REBUILD_TESTED, A.REBUILD_RETAINED)])
+        self.assertIn('head_sha=' + SHA + '&event=push', admin.api.pages.call_args_list[0].args[0])
+
+    def test_original_functional_failure_and_pending_are_not_bypassed(self):
+        from unittest.mock import patch
+        for error in (P.Rejected('FAILED_JOB'), A.Pending('REQUIRED_WORKFLOW_PENDING')):
+            admin, _, _ = self.admin()
+            admin.gates.side_effect = error
+            with patch.object(A, 'REBUILD_SOURCE', SHA), patch.object(A, 'verify_exact_transition'), \
+                 self.subTest(error=error), self.assertRaises(type(error)):
+                admin.rebuild_gates(SHA)
+            admin.gates.assert_called_once_with(A.REBUILD_TESTED)
+            admin.api.pages.assert_not_called()
+        # Exercise the unmodified gate implementation rather than a successful mock.
+        admin, _, _ = self.admin()
+        admin.gates = A.Admin.gates.__get__(admin)
+        admin.api.pages.side_effect = lambda endpoint, key: []
+        with patch.object(A, 'REBUILD_SOURCE', SHA), patch.object(A, 'verify_exact_transition'), \
+             self.assertRaisesRegex(A.Pending, 'REQUIRED_WORKFLOW_NOT_STARTED'):
+            admin.rebuild_gates(SHA)
+        self.assertNotIn('release-build.yml', admin.api.pages.call_args.args[0])
+
+    def test_latest_build_failure_or_pending_cannot_choose_old_success(self):
+        from unittest.mock import patch
+        for changes, error in (({'id': 11, 'conclusion': 'failure'}, P.Rejected),
+                               ({'id': 11, 'status': 'in_progress', 'conclusion': None}, A.Pending),
+                               ({'run_attempt': 2, 'conclusion': 'failure'}, P.Rejected),
+                               ({'run_attempt': 2, 'status': 'queued', 'conclusion': None}, A.Pending)):
+            admin, good, jobs = self.admin()
+            bad = dict(good, **changes)
+            admin.api.pages.side_effect = lambda endpoint, key: jobs if key == 'jobs' else [bad, good]
+            with patch.object(A, 'REBUILD_SOURCE', SHA), patch.object(A, 'verify_exact_transition'), \
+                 self.subTest(changes=changes), self.assertRaises(error):
+                admin.rebuild_gates(SHA)
+        admin, _, _ = self.admin()
+        admin.api.pages.side_effect = lambda endpoint, key: []
+        with patch.object(A, 'REBUILD_SOURCE', SHA), patch.object(A, 'verify_exact_transition'), \
+             self.assertRaisesRegex(A.Pending, 'REBUILD_WORKFLOW_NOT_STARTED'):
+            admin.rebuild_gates(SHA)
+
+    def test_build_run_identity_fields_are_not_interchangeable(self):
+        from unittest.mock import patch
+        run, jobs = self.run_and_jobs()
+        for changes in ({'head_sha': MASTER}, {'head_branch': 'feat/release'}, {'event': 'workflow_dispatch'},
+                        {'head_repository': {'full_name': 'other/peerloom'}}, {'head_repository': {}},
+                        {'status': 'queued'}, {'conclusion': 'failure'}, {'conclusion': 'skipped'},
+                        {'path': '.github/workflows/ci.yml'}):
+            with patch.object(A, 'REBUILD_SOURCE', SHA), self.subTest(changes=changes), \
+                 self.assertRaisesRegex(P.Rejected, 'WRONG_OR_FAILED_REBUILD'):
+                A.verify_rebuild_run(dict(run, **changes), jobs, SHA)
+        with patch.object(A, 'REBUILD_SOURCE', SHA), self.assertRaises(P.Rejected):
+            A.verify_rebuild_run(run, jobs, MASTER)
+
+    def test_exact_build_job_set_and_successful_steps_required(self):
+        from unittest.mock import patch
+        run, jobs = self.run_and_jobs()
+        candidates = [jobs[:-1], jobs + [jobs[0]], jobs + [dict(jobs[0], name='extra')], []]
+        missing_head = copy.deepcopy(jobs)
+        del missing_head[0]['head_sha']
+        candidates.append(missing_head)
+        for field, value in (('head_sha', MASTER), ('status', 'queued'), ('conclusion', 'skipped'),
+                             ('conclusion', 'failure'), ('steps', []), ('steps', None),
+                             ('steps', [{'conclusion': 'skipped'}]), ('steps', [{'conclusion': 'failure'}]),
+                             ('steps', [{'conclusion': None}])):
+            changed = copy.deepcopy(jobs)
+            changed[0][field] = value
+            candidates.append(changed)
+        for candidate in candidates:
+            with patch.object(A, 'REBUILD_SOURCE', SHA), self.subTest(candidate=candidate), self.assertRaises(P.Rejected):
+                A.verify_rebuild_run(run, candidate, SHA)
+
+
+class ExactRebuildTransitionTests(unittest.TestCase):
+    def fixture(self):
+        from unittest.mock import Mock
+        inventory = {'src/device-sdk/Cargo.toml': {'before_blob': SHA, 'after_blob': MASTER},
+                     '.github/workflows/release-build.yml': {'before_blob': None, 'after_blob': TREE}}
+        value = PushComparisonTests().comparison()
+        value['files'] = [{'filename': name, 'sha': entry['after_blob'],
+                           'status': 'added' if entry['before_blob'] is None else 'modified'}
+                          for name, entry in inventory.items()]
+        api = Mock()
+        api.call.side_effect = [value, {'type': 'file', 'sha': SHA}, None]
+        return api, value, inventory
+
+    def test_exact_before_after_inventory(self):
+        api, _, inventory = self.fixture()
+        A.verify_exact_transition(api, SHA, MASTER, inventory)
+        self.assertEqual(api.call.call_args_list[0].args[0],
+                         '/repos/' + P.REPO + '/compare/' + SHA + '...' + MASTER + '?per_page=100&page=1')
+        for call in api.call.call_args_list[1:]:
+            self.assertTrue(call.args[0].endswith('?ref=' + SHA))
+            self.assertEqual(call.kwargs, {'missing': True})
+
+    def test_missing_extra_duplicate_and_truncated_inventory(self):
+        for mutation in ('missing', 'extra', 'duplicate', 'truncated', 'empty'):
+            api, value, inventory = self.fixture()
+            if mutation == 'missing':
+                value['files'].pop()
+            elif mutation == 'extra':
+                value['files'].append({'filename': 'src/product.rs', 'status': 'modified', 'sha': TREE})
+            elif mutation == 'duplicate':
+                value['files'].append(value['files'][0])
+            elif mutation == 'truncated':
+                value['files'] = [{'filename': str(i), 'status': 'added', 'sha': TREE} for i in range(300)]
+            else:
+                value['files'] = []
+            with self.subTest(mutation=mutation), self.assertRaises(P.Rejected):
+                A.verify_exact_transition(api, SHA, MASTER, inventory)
+
+    def test_rename_delete_wrong_status_and_after_blob(self):
+        for index in (0, 1):
+            for change in ({'status': 'renamed'}, {'status': 'removed'}, {'previous_filename': 'src/product.rs'},
+                           {'sha': '4' * 40}, {'status': 'added' if index == 0 else 'modified'}):
+                api, value, inventory = self.fixture()
+                value['files'][index].update(change)
+                with self.subTest(index=index, change=change), self.assertRaisesRegex(P.Rejected, 'REBUILD_AFTER_BLOB_MISMATCH'):
+                    A.verify_exact_transition(api, SHA, MASTER, inventory)
+
+    def test_before_blob_and_prior_absence_required(self):
+        for previous in (None, {'type': 'file', 'sha': TREE}, {'type': 'dir', 'sha': SHA}):
+            api, value, inventory = self.fixture()
+            api.call.side_effect = [value, previous, None]
+            with self.subTest(previous=previous), self.assertRaisesRegex(P.Rejected, 'REBUILD_BEFORE_BLOB_MISMATCH'):
+                A.verify_exact_transition(api, SHA, MASTER, inventory)
+        api, value, inventory = self.fixture()
+        api.call.side_effect = [value, {'type': 'file', 'sha': SHA}, {'type': 'file', 'sha': TREE}]
+        with self.assertRaisesRegex(P.Rejected, 'REBUILD_BEFORE_BLOB_MISMATCH'):
+            A.verify_exact_transition(api, SHA, MASTER, inventory)
+
+    def test_source_must_be_retained_fast_forward_with_complete_compare(self):
+        for change in ({'status': 'diverged'}, {'base_commit': {'sha': TREE}},
+                       {'merge_base_commit': {'sha': TREE}}, {'behind_by': 1}, {'total_commits': 50}):
+            api, value, inventory = self.fixture()
+            value.update(change)
+            with self.subTest(change=change), self.assertRaisesRegex(P.Rejected, 'PUSH_NOT_FAST_FORWARD'):
+                A.verify_exact_transition(api, SHA, MASTER, inventory)
+
+
+class RebuildAdministrationScopeTests(unittest.TestCase):
+    """只允许本次已审发布管理变化，不扩展永久可写范围。"""
+    def fixture(self):
+        from unittest.mock import Mock
+        inventory = {'scripts/test-release-admin.py': {'before_blob': SHA, 'after_blob': TREE}}
+        value = PushComparisonTests().comparison()
+        value['files'] = [
+            {'filename': 'release/approved-plan.json', 'status': 'modified'},
+            {'filename': A.EXECUTION_FILE, 'status': 'modified', 'sha': MASTER},
+            {'filename': 'scripts/test-release-admin.py', 'status': 'modified', 'sha': TREE},
+        ]
+        api = Mock()
+        api.call.side_effect = [value, {'type': 'file', 'sha': SHA}, {'type': 'file', 'sha': SHA}]
+        return api, value, inventory
+
+    def verify(self, api, inventory, source=SHA, tag=None):
+        from unittest.mock import patch
+        with patch.object(A, 'REBUILD_SOURCE', SHA), patch.object(A, 'REBUILD_EXECUTION_BEFORE', SHA), \
+             patch.object(A, 'REBUILD_ADMIN_BLOBS', inventory):
+            A.verify_administration_scope(api, source, MASTER, A.REBUILD_TAG if tag is None else tag)
+
+    def test_only_exact_reviewed_administration_transition(self):
+        api, _, inventory = self.fixture()
+        self.verify(api, inventory)
+        self.assertEqual([call.args[0] for call in api.call.call_args_list], [
+            '/repos/' + P.REPO + '/compare/' + SHA + '...' + MASTER + '?per_page=100&page=1',
+            '/repos/' + P.REPO + '/contents/' + A.EXECUTION_FILE + '?ref=' + SHA,
+            '/repos/' + P.REPO + '/contents/scripts/test-release-admin.py?ref=' + SHA,
+        ])
+        # Scope checking is read-only; no POST/PATCH hidden behind the exception.
+        self.assertTrue(all(len(call.args) == 1 and not call.kwargs for call in api.call.call_args_list))
+
+    def test_wrong_source_or_tag_never_enables_new_allowance(self):
+        for source, tag in ((TREE, A.REBUILD_TAG), (SHA, 'v0.1.3'), (SHA, 'v0.1.5'), (SHA, '')):
+            api, value, inventory = self.fixture()
+            value['base_commit'] = value['merge_base_commit'] = {'sha': source}
+            with self.subTest(source=source, tag=tag), self.assertRaisesRegex(P.Rejected, 'ADMINISTRATION_SCOPE_NOT_REVIEWED'):
+                self.verify(api, inventory, source=source, tag=tag)
+            self.assertEqual(api.call.call_count, 1)
+
+    def test_execution_must_be_present_modified_without_rename(self):
+        for change in ('missing', 'added', 'removed', 'renamed', 'previous_filename'):
+            api, value, inventory = self.fixture()
+            if change == 'missing':
+                value['files'].pop(1)
+            elif change == 'previous_filename':
+                value['files'][1]['previous_filename'] = 'scripts/other.py'
+            else:
+                value['files'][1]['status'] = change
+            with self.subTest(change=change), self.assertRaisesRegex(P.Rejected, 'REVIEWED_EXECUTION_FILE_REQUIRED'):
+                self.verify(api, inventory)
+            self.assertEqual(api.call.call_count, 1)
+
+    def test_execution_before_must_match_retained_source_blob(self):
+        for previous in ({'type': 'file', 'sha': TREE}, {'type': 'dir', 'sha': SHA}, {}):
+            api, value, inventory = self.fixture()
+            api.call.side_effect = [value, previous]
+            with self.subTest(previous=previous), self.assertRaisesRegex(P.Rejected, 'REBUILD_EXECUTION_BEFORE_MISMATCH'):
+                self.verify(api, inventory)
+            self.assertEqual(api.call.call_count, 2)
+
+    def test_extra_product_workflow_and_execution_helpers_rejected(self):
+        for name in ('src/device-sdk/Cargo.toml', 'src/device-sdk/Cargo.lock', 'src/product.rs',
+                     '.github/workflows/release-build.yml', '.github/workflows/release-admin.yml',
+                     'scripts/release-policy.py', 'scripts/build-release-only.py', 'docs/other.md'):
+            api, value, inventory = self.fixture()
+            value['files'].append({'filename': name, 'status': 'modified', 'sha': TREE})
+            with self.subTest(name=name), self.assertRaisesRegex(P.Rejected, 'ADMINISTRATION_SCOPE_NOT_REVIEWED'):
+                self.verify(api, inventory)
+
+    def test_reviewed_test_inventory_and_after_blob_are_exact(self):
+        for change in ('missing', 'added', 'removed', 'renamed', 'previous_filename', 'after_blob'):
+            api, value, inventory = self.fixture()
+            if change == 'missing':
+                value['files'].pop(2)
+            elif change == 'previous_filename':
+                value['files'][2]['previous_filename'] = 'scripts/other.py'
+            elif change == 'after_blob':
+                value['files'][2]['sha'] = MASTER
+            else:
+                value['files'][2]['status'] = change
+            with self.subTest(change=change), self.assertRaises(P.Rejected):
+                self.verify(api, inventory)
+        api, value, inventory = self.fixture()
+        value['files'][0]['status'] = 'removed'
+        with self.assertRaisesRegex(P.Rejected, 'ADMINISTRATION_RENAME_OR_DELETE'):
+            self.verify(api, inventory)
+
+    def test_reviewed_test_before_blob_cannot_drift(self):
+        for previous in ({'type': 'file', 'sha': TREE}, {'type': 'dir', 'sha': SHA}, {}):
+            api, value, inventory = self.fixture()
+            api.call.side_effect = [value, {'type': 'file', 'sha': SHA}, previous]
+            with self.subTest(previous=previous), self.assertRaisesRegex(P.Rejected, 'REBUILD_ADMIN_BEFORE_MISMATCH'):
+                self.verify(api, inventory)
+
+    def test_exception_does_not_change_permanent_or_historical_policy(self):
+        self.assertEqual(P.ADMINISTRATION_FILES,
+                         frozenset(('README.md', 'docs/assets/peerloom-banner.svg', 'release/approved-plan.json')))
+        self.assertEqual(A.BOOTSTRAP_SOURCE, '25b33273ac5bbd03506905a635b1453dcf969c70')
+        self.assertEqual(A.BOOTSTRAP_TAG, 'v0.1.3')
+        self.assertEqual(set(A.REBUILD_ADMIN_BLOBS), {'scripts/test-release-admin.py'})
+        for name in (A.EXECUTION_FILE, 'scripts/test-release-admin.py'):
+            with self.subTest(name=name), self.assertRaisesRegex(P.Rejected, 'ADMINISTRATION_SCOPE_NOT_REVIEWED'):
+                P.verify_administration_files([{'filename': name, 'status': 'modified'}])
+
 if __name__ == '__main__':
     unittest.main()

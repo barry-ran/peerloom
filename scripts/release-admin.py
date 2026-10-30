@@ -40,6 +40,34 @@ REVIEWED_BOOTSTRAP_BLOBS = {'.github/workflows/admin-web.yml': {'after_blob': 'b
  'scripts/test-workflow-triggers.py': {'after_blob': 'dfc6913d29c6ca264ab555c45d77e197d096e374',
                                        'before_blob': '0d313f72f1e76b4afc57317c1f2eae299c399533'}}
 
+# 独立、一次性 v0.1.4 版本重编译转换；不修改历史 BOOTSTRAP。
+# 精确源码和 blobs 经 trusted-master 审阅；不是任意来源/任意版本的跳过门禁。
+REBUILD_TAG = 'v0.1.4'
+REBUILD_SOURCE = '80ef5fba078822c7b6ba2e2c94b396908a1ef55e'
+REBUILD_TESTED = 'd2d806834821701f9ffbaad4c21cad5cc1fa18e7'
+REBUILD_RETAINED = 'e798386bdf18297ae58b23bb6b3f0776ba6c4977'
+REBUILD_TESTED_TREE = 'aece36e7b9096751648041f7e4853885bae616d8'
+REBUILD_MODE = 'compiled-from-verified-tree'
+REBUILD_JOBS = frozenset(('linux-release', 'windows-release', 'apple-release', 'android-release'))
+REBUILD_SOURCE_BLOBS = {'.github/workflows/release-build.yml': {'after_blob': 'afcce378bbb879d4581c80763d8d7727b8a23ec4',
+                                         'before_blob': None},
+ 'release/approved-plan.json': {'after_blob': 'd254d1d63849f12cbd845127bdff08ade5b2b014',
+                                'before_blob': '4b6690d8b20342c44e32576a6e47a1f4a4c68094'},
+ 'release/build-request.json': {'after_blob': 'ad7895e55c1fd901f499decb776414ed9c35060c',
+                                'before_blob': None},
+ 'scripts/build-release-only.py': {'after_blob': '786b7c6d1e001459a15811aaf17446c1fa2e5fcb',
+                                   'before_blob': None},
+ 'scripts/test-release-build.py': {'after_blob': '38f1fb31fcf34419b758ec8966f0c7e74f93599d',
+                                   'before_blob': None},
+ 'src/device-sdk/Cargo.lock': {'after_blob': '6d55ca129dd23bff7a33947f517bd9dd5c6c49ec',
+                               'before_blob': 'facf66f4f1715514d42448c974c963145ba1d6ef'},
+ 'src/device-sdk/Cargo.toml': {'after_blob': 'f03e663d54982217a44c4f27448b5074ae2c08cc',
+                               'before_blob': 'e75af708bb72efe1d65bb2e238164a8d5de0a99b'}}
+REBUILD_EXECUTION_BEFORE = '3bf818c70776a3a55bb1369a729de55baae4dc8c'
+REBUILD_ADMIN_BLOBS = {'scripts/test-release-admin.py': {
+    'before_blob': '6a970f912f19c3f806f7ce724d737431bbbf75f2',
+    'after_blob': '2b67785e037cd10548ec612d41f38e2dad5c3a78'}}
+
 class Pending(P.Rejected):
     pass
 
@@ -185,7 +213,33 @@ class Admin:
                   all(type(value) is int and value > 0 for value in artifact_ids) and
                   len(set(artifact_ids)) == len(artifact_ids), 'DISTINCT_PRODUCT_ARTIFACT_IDS_REQUIRED')
         verify_administration_scope(self.api, release_sha, self.master, plan['tag'])
-        return self.gates(release_sha)
+        mode = plan.get('validation_mode')
+        P.require(mode is None or mode == REBUILD_MODE, 'UNKNOWN_VALIDATION_MODE')
+        return self.rebuild_gates(release_sha) if mode == REBUILD_MODE else self.gates(release_sha)
+
+    def rebuild_gates(self, commit):
+        P.require(commit == REBUILD_SOURCE and commit != '0' * 40 and
+                  self.plan['tag'] == REBUILD_TAG, 'REBUILD_IDENTITY_NOT_REVIEWED')
+        for source in (REBUILD_TESTED, REBUILD_RETAINED):
+            value = self.api.call(self.base + '/git/commits/' + source)
+            P.require(value.get('sha') == source and value.get('tree', {}).get('sha') == REBUILD_TESTED_TREE,
+                      'REBUILD_TESTED_TREE_MISMATCH')
+        # Full, retained-ancestor comparison plus exact before/after blobs prevents
+        # product edits, lockfile upgrades, hidden rename or truncated file lists.
+        verify_exact_transition(self.api, REBUILD_RETAINED, commit, REBUILD_SOURCE_BLOBS)
+        self.gates(REBUILD_TESTED)  # Existing canonical functional CI is not relaxed.
+        runs = self.api.pages(self.base + '/actions/workflows/release-build.yml/runs?head_sha=' +
+                              commit + '&event=push', 'workflow_runs')
+        if not runs:
+            raise Pending('REBUILD_WORKFLOW_NOT_STARTED')
+        run = max(runs, key=lambda r: (r['id'], r.get('run_attempt', 1)))
+        if run.get('status') != 'completed':
+            raise Pending('REBUILD_WORKFLOW_PENDING')
+        jobs = self.api.pages(self.base + f"/actions/runs/{run['id']}/jobs?filter=latest", 'jobs')
+        verify_rebuild_run(run, jobs, commit)
+        # The artifact verifier remains unchanged: all five roles must be produced
+        # by this exact source/run, with matching API and downloaded ZIP digests.
+        return {workflow: run['id'] for workflow in P.WORKFLOWS}
 
     def artifacts(self, directory, runs):
         outputs = {}
@@ -330,11 +384,57 @@ def comparison_files(api, before, commit):
     return files
 
 
+def verify_exact_transition(api, before, after, inventory):
+    files = comparison_files(api, before, after)
+    P.require(isinstance(inventory, dict) and bool(inventory) and
+              {item['filename'] for item in files} == set(inventory), 'REBUILD_INVENTORY_MISMATCH')
+    for item in files:
+        name = item['filename']
+        expected = inventory[name]
+        P.require(item.get('sha') == expected['after_blob'] and 'previous_filename' not in item and
+                  item.get('status') == ('added' if expected['before_blob'] is None else 'modified'),
+                  'REBUILD_AFTER_BLOB_MISMATCH')
+        previous = api.call('/repos/' + P.REPO + '/contents/' + urllib.parse.quote(name, safe='/') +
+                            '?ref=' + before, missing=True)
+        P.require(previous is None if expected['before_blob'] is None else
+                  isinstance(previous, dict) and previous.get('type') == 'file' and
+                  previous.get('sha') == expected['before_blob'], 'REBUILD_BEFORE_BLOB_MISMATCH')
+
+
+def verify_rebuild_run(run, jobs, commit):
+    P.require(commit == REBUILD_SOURCE and run.get('head_sha') == commit and
+              run.get('head_branch') == 'master' and run.get('event') == 'push' and
+              run.get('head_repository', {}).get('full_name') == P.REPO and
+              run.get('status') == 'completed' and run.get('conclusion') == 'success' and
+              run.get('path') == '.github/workflows/release-build.yml', 'WRONG_OR_FAILED_REBUILD')
+    names = [job.get('name') for job in jobs]
+    P.require(len(names) == len(set(names)) and set(names) == REBUILD_JOBS, 'REBUILD_JOBS_MISSING')
+    for job in jobs:
+        P.require(job.get('head_sha') == commit and job.get('status') == 'completed' and
+                  job.get('conclusion') == 'success' and job.get('steps') and
+                  all(step.get('conclusion') == 'success' for step in job['steps']),
+                  'REBUILD_JOB_OR_STEP_NOT_SUCCESSFUL')
+
+
 def verify_administration_scope(api, source, administration, tag=None):
     # Check the ENTIRE source-to-administration tree difference, not just the last push.
     files = comparison_files(api, source, administration)
     if all(item.get('filename') in P.ADMINISTRATION_FILES for item in files):
         P.verify_administration_files(files)
+        return
+    if source == REBUILD_SOURCE and source != '0' * 40 and tag == REBUILD_TAG:
+        execution = [item for item in files if item['filename'] == EXECUTION_FILE]
+        P.require(len(execution) == 1 and execution[0].get('status') == 'modified' and
+                  'previous_filename' not in execution[0], 'REVIEWED_EXECUTION_FILE_REQUIRED')
+        previous = api.call('/repos/' + P.REPO + '/contents/' + EXECUTION_FILE + '?ref=' + source)
+        P.require(previous.get('type') == 'file' and previous.get('sha') == REBUILD_EXECUTION_BEFORE,
+                  'REBUILD_EXECUTION_BEFORE_MISMATCH')
+        remaining = [item for item in files if item['filename'] != EXECUTION_FILE]
+        P.verify_administration_files(remaining, {'files': REBUILD_ADMIN_BLOBS})
+        for name, entry in REBUILD_ADMIN_BLOBS.items():
+            previous = api.call('/repos/' + P.REPO + '/contents/' + name + '?ref=' + source)
+            P.require(previous.get('type') == 'file' and previous.get('sha') == entry['before_blob'],
+                      'REBUILD_ADMIN_BEFORE_MISMATCH')
         return
     P.require(source == BOOTSTRAP_SOURCE and tag == BOOTSTRAP_TAG and
               bool(REVIEWED_BOOTSTRAP_BLOBS), 'ADMINISTRATION_SCOPE_NOT_REVIEWED')
