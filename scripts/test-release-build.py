@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location('build_release', ROOT / 'scripts/b
 B = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(B)
 SHA = '1' * 40
-REQUEST = {'format_version': 1, 'version': '0.1.4', 'tested_sha': '2' * 40, 'retained_sha': '3' * 40}
+REQUEST = {'format_version': 1, 'version': '0.1.4', 'tested_sha': '2' * 40, 'retained_sha': '3' * 40, 'revision': 2}
 ENV = {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REPOSITORY': B.REPO,
        'GITHUB_REF': 'refs/heads/master', 'GITHUB_SHA': SHA}
 EVENT = {'repository': {'full_name': B.REPO}, 'ref': 'refs/heads/master',
@@ -49,6 +49,11 @@ class BuildRequest(unittest.TestCase):
             for value in ('main', 'a' * 39, 'a' * 41, 'A' * 40, None, 123):
                 with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                     self.check(request=dict(REQUEST, **{key: value}))
+
+    def test_revision_is_positive_integer(self):
+        for revision in (None, True, False, 0, -1, '2', 2.0):
+            with self.subTest(revision=revision), self.assertRaises(ValueError):
+                self.check(request=dict(REQUEST, revision=revision))
 
     def test_only_real_master_push(self):
         for key, value in (('GITHUB_EVENT_NAME', 'pull_request'), ('GITHUB_EVENT_NAME', 'workflow_dispatch'),
@@ -92,16 +97,22 @@ class BuildRequest(unittest.TestCase):
             with patch.object(B, 'ROOT', Path(directory)), patch.object(B.platform, 'system', return_value='Windows'), \
                  patch.object(B.platform, 'machine', return_value='AMD64'), patch.object(B, 'run') as run:
                 run.return_value.stdout = ''
-                run.return_value.stderr = 'note: native-static-libs: kernel32.lib bcrypt.lib\n'
+                run.return_value.stderr = 'note: native-static-libs: legacy_stdio_definitions.lib iphlpapi.lib kernel32.lib bcrypt.lib advapi32.lib kernel32.lib ntdll.lib userenv.lib ws2_32.lib dbghelp.lib /defaultlib:msvcrt\n'
                 B.windows()
             commands = [[str(arg) for arg in item.args[0]] for item in run.call_args_list]
             links = [c for c in commands if c[0] == 'cl.exe']
             self.assertEqual(len(links), 2)
             self.assertIn('bcrypt.lib', links[1])
+            self.assertIn('/defaultlib:msvcrt', links[1])
+            self.assertGreater(links[1].index('/defaultlib:msvcrt'), links[1].index('/link'))
+            self.assertGreater(links[1].index('bcrypt.lib'), links[1].index('/link'))
             self.assertFalse(any(c[0].endswith('header-static.exe') or 'test' in c for c in commands))
 
     def test_windows_rejects_unknown_static_link_flags(self):
         for output in ('', 'note: native-static-libs: /OUT:bad.exe\n',
+                       'note: native-static-libs: /defaultlib:other\n',
+                       'note: native-static-libs: @response.lib\n',
+                       'note: native-static-libs: C:/unsafe.lib\n',
                        'note: native-static-libs: a.lib\nnote: native-static-libs: b.lib\n'):
             with tempfile.TemporaryDirectory() as directory:
                 with patch.object(B, 'ROOT', Path(directory)), patch.object(B.platform, 'system', return_value='Windows'), \

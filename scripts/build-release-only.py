@@ -22,10 +22,11 @@ def require(value, message):
 
 
 def validate_context(request, version, env, event, head):
-    require(set(request) == {'format_version', 'version', 'tested_sha', 'retained_sha'}, 'BUILD_REQUEST_FIELDS')
+    require(set(request) == {'format_version', 'version', 'tested_sha', 'retained_sha', 'revision'}, 'BUILD_REQUEST_FIELDS')
     require(type(request['format_version']) is int and request['format_version'] == 1 and
             isinstance(version, str) and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version) and
             request['version'] == version, 'BUILD_REQUEST_VERSION')
+    require(type(request['revision']) is int and request['revision'] > 0, 'BUILD_REQUEST_REVISION')
     for key in ('tested_sha', 'retained_sha'):
         require(isinstance(request[key], str) and re.fullmatch('[0-9a-f]{40}', request[key]), 'BUILD_REQUEST_SHA')
     require(env.get('GITHUB_EVENT_NAME') == 'push' and env.get('GITHUB_REPOSITORY') == REPO and
@@ -94,11 +95,13 @@ def windows():
     lines = [line.split('native-static-libs:', 1)[1].strip()
              for line in (result.stdout + result.stderr).splitlines() if 'native-static-libs:' in line]
     require(len(lines) == 1, 'NATIVE_STATIC_LIBRARIES_REQUIRED')
-    # rustc emits MSVC system-library filenames, never arbitrary compiler switches.
+    # rustc MSVC additionally emits this exact CRT selector (verified native build evidence).
+    # Do not accept arbitrary linker flags, response files or library paths.
     libraries = lines[0].split()
-    require(libraries and all(re.fullmatch(r'[A-Za-z0-9_.-]+\.lib', name) for name in libraries), 'INVALID_STATIC_LIBRARY_LIST')
+    require(libraries and all(re.fullmatch(r'[A-Za-z0-9_.-]+\.lib', name) or name == '/defaultlib:msvcrt'
+                              for name in libraries), 'INVALID_STATIC_LIBRARY_LIST')
     run(['cl.exe', '/nologo', '/std:c11', '/W4', '/WX', '/MD', '/I' + str(include), header,
-         library / 'device_ffi.lib', *libraries, '/link', '/OUT:header-static.exe'], probe)
+         library / 'device_ffi.lib', '/link', *libraries, '/OUT:header-static.exe'], probe)
     run([sys.executable, 'scripts/package-third-party.py'])
     package('windows-x86_64')
 
