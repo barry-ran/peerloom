@@ -75,14 +75,7 @@ start_tls() {
   TEST_RUNNER_PEERLOOM_TLS_ORIGIN="$PEERLOOM_TLS_ORIGIN"
 }
 verify_tls() {
-  python3 - "$TLS_DIR/state.json" "$OUT/phase-$PHASE-tls.json" <<'PY'
-import json,sys
-state=json.load(open(sys.argv[1]))
-assert state['rejected_handshakes'] >= 1 and state['accepted_handshakes'] == 0, '真实自签 TLS 拒绝证据不足'
-# No fixture URL, private key, password or payload in diagnostic artifacts.
-with open(sys.argv[2], 'x') as out:
-    json.dump({k:state[k] for k in ('rejected_handshakes','accepted_handshakes')},out)
-PY
+  python3 "$HERE/scripts/verify-tls-evidence.py" "$TLS_DIR/state.json" "$OUT/phase-$PHASE-tls.json"
 }
 cd "$OUT/SwiftPackage"
 case "$PHASE" in

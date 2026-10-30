@@ -210,7 +210,9 @@ class WatchdogTests(unittest.TestCase):
         self.assertIn("run ios-device 600 xcodebuild -scheme PeerloomSwift", source)
         self.assertNotIn("-skip-testing", source)
         self.assertEqual(source.count("    verify_tls"), 2)
-        self.assertIn("state['rejected_handshakes'] >= 1 and state['accepted_handshakes'] == 0", source)
+        self.assertIn('python3 "$HERE/scripts/verify-tls-evidence.py" "$TLS_DIR/state.json" "$OUT/phase-$PHASE-tls.json"', source)
+        verifier = SCRIPT.with_name('verify-tls-evidence.py').read_text()
+        self.assertIn("state['rejected_handshakes'] >= 1 and state['accepted_handshakes'] == 0", verifier)
 
     def test_simulator_id_validation_preserves_exact_case_and_rejects_multiple_ids(self):
         source = SCRIPT.with_name("test-native.sh").read_text()

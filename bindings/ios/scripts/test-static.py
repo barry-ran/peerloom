@@ -22,6 +22,70 @@ package_spec = importlib.util.spec_from_file_location('package_resolution', ROOT
 package_module = importlib.util.module_from_spec(package_spec)
 package_spec.loader.exec_module(package_module)
 
+tls_spec = importlib.util.spec_from_file_location('tls_evidence', ROOT / 'scripts/verify-tls-evidence.py')
+tls_module = importlib.util.module_from_spec(tls_spec)
+tls_spec.loader.exec_module(tls_module)
+
+
+class TLSEvidenceTests(unittest.TestCase):
+    def state(self, **changes):
+        value = dict(accepted_tcp=1, rejected_handshakes=1, accepted_handshakes=0,
+                     handshake_timeout=0, other_io_error=0,
+                     origin='PRIVATE_ORIGIN', unexpected='PRIVATE_ERROR_BODY')
+        value.update(changes)
+        return value
+
+    def verify(self, root, state):
+        source, destination = root / 'state.json', root / 'evidence.json'
+        source.write_text(json.dumps(state))
+        tls_module.verify(source, destination)
+        return json.loads(destination.read_text())
+
+    def test_success_keeps_legacy_fields_and_only_anonymous_counters(self):
+        with tempfile.TemporaryDirectory() as path:
+            result = self.verify(Path(path), self.state())
+            self.assertEqual(set(result), set(tls_module.COUNTERS))
+            self.assertEqual(result['rejected_handshakes'], 1)
+            self.assertEqual(result['accepted_handshakes'], 0)
+            self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_failed_gate_preserves_no_connection_and_accepted_handshake_evidence(self):
+        for state in (self.state(accepted_tcp=0, rejected_handshakes=0),
+                      self.state(accepted_handshakes=1, rejected_handshakes=0),
+                      self.state(rejected_handshakes=0, handshake_timeout=1),
+                      self.state(rejected_handshakes=0, other_io_error=1)):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as path:
+                root = Path(path)
+                with self.assertRaisesRegex(AssertionError, '真实自签 TLS 拒绝证据不足'):
+                    self.verify(root, state)
+                result = json.loads((root / 'evidence.json').read_text())
+                self.assertEqual(result, {key: state[key] for key in tls_module.COUNTERS})
+                self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_negative_boolean_noninteger_and_missing_counters_rejected(self):
+        for key in tls_module.COUNTERS:
+            for value in (-1, True, False, 0.0, '0', None):
+                with self.subTest(key=key, value=value), tempfile.TemporaryDirectory() as path:
+                    root = Path(path)
+                    with self.assertRaises(ValueError):
+                        self.verify(root, self.state(**{key: value}))
+                    self.assertFalse((root / 'evidence.json').exists())
+            with tempfile.TemporaryDirectory() as path:
+                state = self.state()
+                del state[key]
+                with self.assertRaises(ValueError):
+                    self.verify(Path(path), state)
+                self.assertFalse((Path(path) / 'evidence.json').exists())
+
+    def test_failure_does_not_overwrite_existing_evidence(self):
+        with tempfile.TemporaryDirectory() as path:
+            root = Path(path)
+            (root / 'evidence.json').write_text('retained')
+            with self.assertRaises(FileExistsError):
+                self.verify(root, self.state(rejected_handshakes=0))
+            self.assertEqual((root / 'evidence.json').read_text(), 'retained')
+
+
 class StructureTests(unittest.TestCase):
     def make(self, root):
         canonical = root / 'canonical.h'
@@ -84,6 +148,9 @@ class StructureTests(unittest.TestCase):
                     time.sleep(0.02)
                 self.assertEqual(state['rejected_handshakes'], 1)
                 self.assertEqual(state['accepted_handshakes'], 0)
+                self.assertEqual(state['accepted_tcp'], 1)
+                self.assertEqual(state['handshake_timeout'], 0)
+                self.assertEqual(state['other_io_error'], 0)
             finally:
                 process.terminate(); process.wait(timeout=6)
 

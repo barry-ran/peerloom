@@ -22,7 +22,8 @@ context.load_cert_chain(root/'test-only.crt',root/'test-only.key')
 context.minimum_version=ssl.TLSVersion.TLSv1_2
 listener=socket.socket()
 listener.bind(('127.0.0.1',0));listener.listen(8);listener.settimeout(0.5)
-state={'rejected_handshakes':0,'accepted_handshakes':0,'origin':'https://127.0.0.1:'+str(listener.getsockname()[1])+'/'}
+state={'accepted_tcp':0,'rejected_handshakes':0,'accepted_handshakes':0,
+       'handshake_timeout':0,'other_io_error':0,'origin':'https://127.0.0.1:'+str(listener.getsockname()[1])+'/'}
 def save():
     temporary=root/'state.tmp'
     temporary.write_text(json.dumps(state)+'\n')
@@ -37,10 +38,13 @@ try:
     while running:
         try: raw,_=listener.accept()
         except socket.timeout: continue
+        state['accepted_tcp']+=1
+        save()
         raw.settimeout(4)
         try:
             with context.wrap_socket(raw,server_side=True): state['accepted_handshakes']+=1
         except ssl.SSLError: state['rejected_handshakes']+=1
-        except OSError: pass
+        except socket.timeout: state['handshake_timeout']+=1
+        except OSError: state['other_io_error']+=1
         finally: raw.close();save()
 finally: listener.close()
