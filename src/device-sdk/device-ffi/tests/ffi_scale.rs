@@ -930,11 +930,14 @@ async fn one_c_pc_five_hundred_real_native_streams() {
         fin_count += 1;
     }
     assert_eq!(fin_count, pairs.len());
-    // Flush optional child close notifications before reset; no completion is
-    // ever discarded, and the accepted/completed sets remain independently held.
+    // 仅排空既有 child close 和精确目标会话的零句柄通知；非零重复终态仍拒绝。
+    // COMPLETE 不会被丢弃，accepted/completed 集合独立保留。
     {
         let mut state = host.collector.state.lock().unwrap();
-        assert!(state.events.iter().all(|e| e.kind == 13));
+        assert!(state.events.iter().all(|e| {
+            e.kind == 13
+                || pc_terminal.is_target_zero_notice(e.kind, e.status, e.connection, &e.bytes)
+        }));
         state.events.clear();
     }
     phase("ffi-reset", started);

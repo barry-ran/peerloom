@@ -36,8 +36,16 @@ impl TerminalCollector {
             self.completed.insert(connection);
             return true;
         }
-        // DP_CLOSED=5 是公开 C ABI 状态；其他零句柄事件不能借此获得豁免。
-        if status != 5 {
+        self.is_target_zero_notice(kind, status, connection, payload)
+    }
+
+    pub fn is_target_zero_notice(&self, kind: u32, status: u32, connection: u64, payload: &[u8]) -> bool {
+        if kind != 7 || connection != 0 {
+            return false;
+        }
+        // DP_CLOSED=5；会话 Rejected(_) 的既有 bridge.error 映射为 DP_INTERNAL=255。
+        // 这两类目标会话通知均不代表新的句柄终态，也不代表操作成功。
+        if !matches!(status, 5 | 255) {
             return false;
         }
         let Ok(value) = serde_json::from_slice::<Value>(payload) else {

@@ -493,6 +493,13 @@ mod tests {
         }
     }
     #[test]
+    fn rejected_session_close_maps_to_public_internal_without_reason_details() {
+        assert_eq!(INTERNAL, 255);
+        assert_eq!(error(SdkError::Rejected("SESSION_CLOSED".into())), INTERNAL);
+        assert_eq!(error(SdkError::Rejected("untrusted-secret-text".into())), INTERNAL);
+        assert_eq!(error(SdkError::Transport(TransportError::Closed)), CLOSED);
+    }
+    #[test]
     fn ffi_optional_count_caps_match_core_semantics() {
         let mut config: Config = serde_json::from_str(r#"{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"}"#).unwrap();
         assert!(config.validate());
