@@ -752,6 +752,7 @@ async fn one_c_pc_five_hundred_real_native_streams() {
     // Control-plane termination must wake already-running C reads as CLOSED,
     // without requiring any peer payload or disrupting an authorized sibling.
     phase("ffi-terminate", started);
+    let termination_started = Instant::now();
     let terminated = f.peer_count.saturating_sub(1).min(20);
     let terminated_indices = indices[..terminated].to_vec();
     for index in &terminated_indices {
@@ -808,6 +809,50 @@ async fn one_c_pc_five_hundred_real_native_streams() {
     while pc_terminal.len() < terminated {
         let event = host.next().await;
         if event.kind == 7 {
+            if !terminated_indices
+                .iter()
+                .any(|i| pairs[i].connection == event.connection)
+            {
+                let matched = pairs
+                    .iter()
+                    .find(|(_, pair)| pair.connection == event.connection)
+                    .map(|(index, _)| *index);
+                let class = if event.connection == 0 {
+                    "zero"
+                } else if matched.is_some_and(|index| terminated_indices.contains(&index)) {
+                    "target"
+                } else if matched.is_some() {
+                    "sibling"
+                } else {
+                    "unknown"
+                };
+                let session_class = match serde_json::from_slice::<Value>(&event.bytes) {
+                    Ok(value) => match value.get("session_id").and_then(Value::as_str) {
+                        Some("") => "empty",
+                        Some(session) => {
+                            match pairs.iter().find(|(_, pair)| pair.session == session) {
+                                Some((index, _)) if terminated_indices.contains(index) => "target",
+                                Some(_) => "sibling",
+                                None => "unknown",
+                            }
+                        }
+                        None => "malformed",
+                    },
+                    Err(_) => "malformed",
+                };
+                // 只输出固定枚举和匿名索引；不记录句柄、身份或原始 payload。
+                println!(
+                    "capacity ffi_terminal_failure phase=ffi-terminate kind={} status={} connection_class={} session_class={} index={} terminal_count={} elapsed_ms={} phase_elapsed_ms={}",
+                    event.kind,
+                    event.status,
+                    class,
+                    session_class,
+                    matched.unwrap_or(0),
+                    pc_terminal.len(),
+                    started.elapsed().as_millis(),
+                    termination_started.elapsed().as_millis(),
+                );
+            }
             assert!(
                 terminated_indices
                     .iter()

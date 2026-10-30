@@ -114,6 +114,7 @@ def safe_progress(path):
         rf'capacity event=closed endpoint=[0-9]{{1,3}} reason=(?:closed|rejected|authorization_expired|transport|other) session_tag=[a-f0-9]{{16}}(?: elapsed_ms={unsigned})?',
         r'PeerloomTestDiag lease stage=(?:stale-generation|expired-before-update|expiry-conversion|maintenance-deadline|renewal-registration) current=[0-9]{1,20} incoming=[0-9]{1,20} own_ack=(?:true|false) pending=(?:true|false) remaining_ms=[0-9]{1,39}',
         rf'capacity baseline_complete elapsed_ms={unsigned} snapshot_elapsed_ms={unsigned} sessions=[0-9]{{1,3}}',
+        rf'capacity ffi_terminal_failure phase=ffi-terminate kind=[0-9]{{1,10}} status=[0-9]{{1,10}} connection_class=(?:zero|target|sibling|unknown) session_class=(?:empty|target|sibling|unknown|malformed) index=[0-9]{{1,3}} terminal_count=[0-9]{{1,3}} elapsed_ms={unsigned} phase_elapsed_ms={unsigned}',
         rf'capacity lease_baseline endpoint=[0-9]{{1,3}} session_tag=[a-f0-9]{{16}} lease_generation={unsigned} baseline_elapsed_ms={unsigned} event_elapsed_ms={unsigned} snapshot_elapsed_ms={unsigned} source_baseline_remaining_ms={signed} target_baseline_remaining_ms={signed} source_event_remaining_ms={signed} target_event_remaining_ms={signed}',
     )
     if path.exists():
@@ -134,7 +135,7 @@ def safe_progress(path):
                     important.append(item)
                 if len(phases_seen) < 24 and accepted.startswith(('capacity phase=', 'capacity baseline_complete ')):
                     phases_seen.append(item)
-                if len(failures) < 8 and accepted.startswith(('capacity lease_baseline ', 'Rust assertion failed')):
+                if len(failures) < 8 and accepted.startswith(('capacity lease_baseline ', 'capacity ffi_terminal_failure ', 'Rust assertion failed')):
                     failures.append(item)
                 tail.append(item)
     # At most 256 summaries, independent of shutdown event count; original order.

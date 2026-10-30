@@ -210,6 +210,36 @@ class CapacityControllerTests(unittest.TestCase):
             path = Path(directory) / 'sdk.log'; path.write_text('\n'.join(good + bad))
             self.assertEqual(m.safe_progress(path), good)
 
+    def test_ffi_terminal_diagnostics_allow_only_fixed_anonymous_fields(self):
+        base = 'capacity ffi_terminal_failure phase=ffi-terminate kind=7 status=255 connection_class={} session_class=target index=0 terminal_count=3 elapsed_ms=306962 phase_elapsed_ms=136'
+        good = [base.format(value) for value in ('zero', 'target', 'sibling', 'unknown')]
+        good += [base.format('zero').replace('session_class=target', 'session_class=' + value)
+                 for value in ('empty', 'sibling', 'unknown', 'malformed')]
+        bad = [good[0] + ' session=private', good[0] + ' payload=secret',
+               good[0].replace('connection_class=zero', 'connection_class=private'),
+               good[0].replace('session_class=target', 'session_class=private-session-id'),
+               good[0] + ' session_id=private-session-id',
+               good[0].replace('index=0', 'index=private-device'),
+               good[0].replace('status=255', 'status=-1'),
+               good[0].replace('kind=7', 'kind=' + '1' * 11),
+               good[0].replace('terminal_count=3', 'terminal_count=1000'),
+               good[0].replace('phase_elapsed_ms=136', 'phase_elapsed_ms=1.5'),
+               good[0].replace('phase=ffi-terminate', 'phase=secret')]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sdk.log'; path.write_text('\n'.join(good + bad))
+            self.assertEqual(m.safe_progress(path), good)
+
+    def test_ffi_terminal_failure_survives_shutdown_flood(self):
+        diagnostic = 'capacity ffi_terminal_failure phase=ffi-terminate kind=7 status=255 connection_class=zero session_class=target index=0 terminal_count=3 elapsed_ms=306962 phase_elapsed_ms=136'
+        close = 'capacity event=closed endpoint=1 reason=closed session_tag=0123456789abcdef elapsed_ms=307000'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sdk.log'
+            path.write_text('\n'.join([close] * 300 + [diagnostic, 'thread test panicked at /private/ffi_scale.rs:841:13:'] + [close] * 5000))
+            rows = m.safe_progress(path)
+        self.assertLessEqual(len(rows), 256)
+        self.assertIn(diagnostic, rows)
+        self.assertIn('Rust assertion failed at ffi_scale.rs:841:13', rows)
+
     def test_shutdown_flood_cannot_evict_first_failure_or_phase(self):
         close = 'capacity event=closed endpoint=1 reason=closed session_tag=0123456789abcdef elapsed_ms=60000'
         early = ['capacity phase=hold elapsed_ms=40000'] + [close] * 300
