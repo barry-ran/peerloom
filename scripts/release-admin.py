@@ -68,6 +68,23 @@ REBUILD_ADMIN_BLOBS = {'scripts/test-release-admin.py': {
     'before_blob': '6a970f912f19c3f806f7ce724d737431bbbf75f2',
     'after_blob': '2b67785e037cd10548ec612d41f38e2dad5c3a78'}}
 
+# v0.1.5 独立精确转换草案；实际构建源码已固定，仍须全部编译门禁和独立发布计划。
+# 发布前需独立审核；不继承旧计划批准，不改变历史 v0.1.4 常量或通用门禁。
+V015_TAG = 'v0.1.5'
+V015_SOURCE = '214b36b32af38f784fb08aa6746e3667a7641bbe'
+V015_TESTED = '5076a2224fbb43cde66eec3287b5af1a95c92b6c'
+V015_RETAINED = '5076a2224fbb43cde66eec3287b5af1a95c92b6c'
+V015_TESTED_TREE = '840c03d148d13aa11609d426bc8dc6a97dfe0fcf'
+V015_SOURCE_BLOBS = {'src/device-sdk/Cargo.toml': {'before_blob': 'f03e663d54982217a44c4f27448b5074ae2c08cc', 'after_blob': '4e365e9d9888f40d92983a95ffc82e70e17c6e0a'}, 'src/device-sdk/Cargo.lock': {'before_blob': '6d55ca129dd23bff7a33947f517bd9dd5c6c49ec', 'after_blob': '5495a7b4197ca7d32cbb79868a73bf3d31517c90'}, 'release/build-request.json': {'before_blob': 'ad7895e55c1fd901f499decb776414ed9c35060c', 'after_blob': '46f0250527015e47e0c10974433672fa3584279f'}, 'release/approved-plan.json': {'before_blob': 'bbadcb4b1ae54fe0d3bd5bc7bc50885e7a3f94b3', 'after_blob': 'daec32b51942d83cb0400449c8fd685add5da66f'}}
+V015_EXECUTION_BEFORE = '20e3d404fd314dc418ef7c4ab9af35c378e0b4bb'
+V015_ADMIN_BLOBS = {'scripts/test-release-admin.py': {'before_blob': '2b67785e037cd10548ec612d41f38e2dad5c3a78', 'after_blob': '0474d9144e77a7a748030182f422769020b07a90'}}
+
+
+def require_v015_identity(commit, tag):
+    P.require(isinstance(V015_SOURCE, str) and re.fullmatch('[0-9a-f]{40}', V015_SOURCE) and
+              V015_SOURCE != '0' * 40 and commit == V015_SOURCE and tag == V015_TAG and
+              bool(V015_ADMIN_BLOBS), 'REBUILD_IDENTITY_NOT_REVIEWED')
+
 class Pending(P.Rejected):
     pass
 
@@ -218,6 +235,8 @@ class Admin:
         return self.rebuild_gates(release_sha) if mode == REBUILD_MODE else self.gates(release_sha)
 
     def rebuild_gates(self, commit):
+        if self.plan['tag'] == V015_TAG:
+            return self.rebuild_v015_gates(commit)
         P.require(commit == REBUILD_SOURCE and commit != '0' * 40 and
                   self.plan['tag'] == REBUILD_TAG, 'REBUILD_IDENTITY_NOT_REVIEWED')
         for source in (REBUILD_TESTED, REBUILD_RETAINED):
@@ -239,6 +258,26 @@ class Admin:
         verify_rebuild_run(run, jobs, commit)
         # The artifact verifier remains unchanged: all five roles must be produced
         # by this exact source/run, with matching API and downloaded ZIP digests.
+        return {workflow: run['id'] for workflow in P.WORKFLOWS}
+
+    def rebuild_v015_gates(self, commit):
+        require_v015_identity(commit, self.plan['tag'])
+        P.require(V015_RETAINED == V015_TESTED, 'V015_RETAINED_IDENTITY_NOT_REVIEWED')
+        value = self.api.call(self.base + '/git/commits/' + V015_TESTED)
+        P.require(value.get('sha') == V015_TESTED and value.get('tree', {}).get('sha') == V015_TESTED_TREE,
+                  'V015_TESTED_TREE_MISMATCH')
+        # 正常快进保留同一 SHA；不创建第二套功能验收或任意过渡白名单。
+        verify_exact_transition(self.api, V015_RETAINED, commit, V015_SOURCE_BLOBS)
+        self.gates(V015_TESTED)
+        runs = self.api.pages(self.base + '/actions/workflows/release-build.yml/runs?head_sha=' +
+                              commit + '&event=push', 'workflow_runs')
+        if not runs:
+            raise Pending('REBUILD_WORKFLOW_NOT_STARTED')
+        run = max(runs, key=lambda r: (r['id'], r.get('run_attempt', 1)))
+        if run.get('status') != 'completed':
+            raise Pending('REBUILD_WORKFLOW_PENDING')
+        jobs = self.api.pages(self.base + f"/actions/runs/{run['id']}/jobs?filter=latest", 'jobs')
+        verify_v015_rebuild_run(run, jobs, commit)
         return {workflow: run['id'] for workflow in P.WORKFLOWS}
 
     def artifacts(self, directory, runs):
@@ -416,11 +455,44 @@ def verify_rebuild_run(run, jobs, commit):
                   'REBUILD_JOB_OR_STEP_NOT_SUCCESSFUL')
 
 
+def verify_v015_rebuild_run(run, jobs, commit):
+    require_v015_identity(commit, V015_TAG)
+    P.require(commit == V015_SOURCE and run.get('head_sha') == commit and
+              run.get('head_branch') == 'master' and run.get('event') == 'push' and
+              run.get('head_repository', {}).get('full_name') == P.REPO and
+              run.get('status') == 'completed' and run.get('conclusion') == 'success' and
+              run.get('path') == '.github/workflows/release-build.yml', 'WRONG_OR_FAILED_REBUILD')
+    names = [job.get('name') for job in jobs]
+    P.require(len(names) == len(set(names)) and set(names) == REBUILD_JOBS, 'REBUILD_JOBS_MISSING')
+    for job in jobs:
+        P.require(job.get('head_sha') == commit and job.get('status') == 'completed' and
+                  job.get('conclusion') == 'success' and job.get('steps') and
+                  all(step.get('conclusion') == 'success' for step in job['steps']),
+                  'REBUILD_JOB_OR_STEP_NOT_SUCCESSFUL')
+
+
 def verify_administration_scope(api, source, administration, tag=None):
     # Check the ENTIRE source-to-administration tree difference, not just the last push.
     files = comparison_files(api, source, administration)
     if all(item.get('filename') in P.ADMINISTRATION_FILES for item in files):
         P.verify_administration_files(files)
+        return
+    if tag == V015_TAG:
+        P.require(source == V015_SOURCE and V015_SOURCE is not None and bool(V015_ADMIN_BLOBS),
+                  'ADMINISTRATION_SCOPE_NOT_REVIEWED')
+        require_v015_identity(source, tag)
+        execution = [item for item in files if item['filename'] == EXECUTION_FILE]
+        P.require(len(execution) == 1 and execution[0].get('status') == 'modified' and
+                  'previous_filename' not in execution[0], 'REVIEWED_EXECUTION_FILE_REQUIRED')
+        previous = api.call('/repos/' + P.REPO + '/contents/' + EXECUTION_FILE + '?ref=' + source)
+        P.require(previous.get('type') == 'file' and previous.get('sha') == V015_EXECUTION_BEFORE,
+                  'REBUILD_EXECUTION_BEFORE_MISMATCH')
+        remaining = [item for item in files if item['filename'] != EXECUTION_FILE]
+        P.verify_administration_files(remaining, {'files': V015_ADMIN_BLOBS})
+        for name, entry in V015_ADMIN_BLOBS.items():
+            previous = api.call('/repos/' + P.REPO + '/contents/' + name + '?ref=' + source)
+            P.require(previous.get('type') == 'file' and previous.get('sha') == entry['before_blob'],
+                      'REBUILD_ADMIN_BEFORE_MISMATCH')
         return
     if source == REBUILD_SOURCE and source != '0' * 40 and tag == REBUILD_TAG:
         execution = [item for item in files if item['filename'] == EXECUTION_FILE]

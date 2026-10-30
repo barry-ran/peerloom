@@ -1518,5 +1518,118 @@ class RebuildAdministrationScopeTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(P.Rejected, 'ADMINISTRATION_SCOPE_NOT_REVIEWED'):
                 P.verify_administration_files([{'filename': name, 'status': 'modified'}])
 
+
+class V015ReviewedRebuildTests(unittest.TestCase):
+    """独立版本源码必须精确锁定；批准计划与全部门禁不可省略。"""
+    def enabled(self):
+        from unittest.mock import patch
+        return patch.multiple(A, V015_SOURCE=SHA,
+                              V015_ADMIN_BLOBS={'scripts/test-release-admin.py':
+                                               {'before_blob': SHA, 'after_blob': TREE}})
+
+    def admin(self):
+        admin, run, jobs = ReviewedRebuildTests().admin()
+        admin.plan['tag'] = A.V015_TAG
+        admin.api.call.side_effect = lambda endpoint: {
+            'sha': A.V015_TESTED, 'tree': {'sha': A.V015_TESTED_TREE}}
+        return admin, run, jobs
+
+    def test_unfilled_actual_source_is_disabled_without_api_calls(self):
+        from unittest.mock import patch
+        admin, _, _ = self.admin()
+        with patch.object(A, 'V015_SOURCE', None), self.assertRaisesRegex(P.Rejected, 'REBUILD_IDENTITY_NOT_REVIEWED'):
+            admin.rebuild_gates(SHA)
+        admin.api.call.assert_not_called()
+        admin.gates.assert_not_called()
+
+    def test_exact_identity_rejects_zero_unknown_tag_and_missing_inventory(self):
+        from unittest.mock import patch
+        with self.enabled():
+            for source, commit, tag, inventory in (
+                ('0' * 40, '0' * 40, A.V015_TAG, A.V015_ADMIN_BLOBS),
+                (SHA, MASTER, A.V015_TAG, A.V015_ADMIN_BLOBS),
+                (SHA, SHA, 'v0.1.6', A.V015_ADMIN_BLOBS),
+                (SHA, SHA, A.V015_TAG, {}),
+            ):
+                with self.subTest(source=source, tag=tag), patch.object(A, 'V015_SOURCE', source), \
+                     patch.object(A, 'V015_ADMIN_BLOBS', inventory), self.assertRaises(P.Rejected):
+                    A.require_v015_identity(commit, tag)
+
+    def test_exact_tree_transition_functional_and_compile_gates_all_required(self):
+        from unittest.mock import patch
+        admin, _, _ = self.admin()
+        with self.enabled(), patch.object(A, 'verify_exact_transition') as transition:
+            self.assertEqual(admin.rebuild_gates(SHA), {workflow: 10 for workflow in P.WORKFLOWS})
+        transition.assert_called_once_with(admin.api, A.V015_TESTED, SHA, A.V015_SOURCE_BLOBS)
+        admin.gates.assert_called_once_with(A.V015_TESTED)
+
+    def test_wrong_tested_tree_cannot_reuse_functional_result(self):
+        from unittest.mock import patch
+        admin, _, _ = self.admin()
+        admin.api.call.side_effect = lambda endpoint: {'sha': A.V015_TESTED, 'tree': {'sha': TREE}}
+        with self.enabled(), patch.object(A, 'verify_exact_transition') as transition, \
+             self.assertRaisesRegex(P.Rejected, 'V015_TESTED_TREE_MISMATCH'):
+            admin.rebuild_gates(SHA)
+        transition.assert_not_called()
+        admin.gates.assert_not_called()
+
+    def test_latest_failed_compile_cannot_select_older_green(self):
+        from unittest.mock import patch
+        admin, run, jobs = self.admin()
+        admin.api.pages.side_effect = lambda endpoint, key: jobs if key == 'jobs' else [
+            run, dict(run, id=11, conclusion='failure')]
+        with self.enabled(), patch.object(A, 'verify_exact_transition'), \
+             self.assertRaisesRegex(P.Rejected, 'WRONG_OR_FAILED_REBUILD'):
+            admin.rebuild_gates(SHA)
+
+    def test_each_compile_job_and_step_must_succeed(self):
+        _, run, jobs = self.admin()
+        cases = [jobs[:-1], jobs + [jobs[0]]]
+        bad = copy.deepcopy(jobs)
+        bad[0]['steps'][0]['conclusion'] = 'skipped'
+        cases.append(bad)
+        with self.enabled():
+            for candidate in cases:
+                with self.subTest(candidate=candidate), self.assertRaises(P.Rejected):
+                    A.verify_v015_rebuild_run(run, candidate, SHA)
+            for changes in ({'head_sha': MASTER}, {'head_branch': 'fix/example'}, {'event': 'workflow_dispatch'}):
+                with self.subTest(changes=changes), self.assertRaises(P.Rejected):
+                    A.verify_v015_rebuild_run(dict(run, **changes), jobs, SHA)
+
+    def test_exact_admin_inventory_and_before_blob_remain_mandatory(self):
+        from unittest.mock import patch
+        for tamper in (False, True):
+            api, value, inventory = RebuildAdministrationScopeTests().fixture()
+            if tamper:
+                value['files'][-1]['sha'] = MASTER
+            with self.enabled(), patch.object(A, 'V015_EXECUTION_BEFORE', SHA), \
+                 patch.object(A, 'V015_ADMIN_BLOBS', inventory):
+                if tamper:
+                    with self.assertRaises(P.Rejected):
+                        A.verify_administration_scope(api, SHA, MASTER, A.V015_TAG)
+                else:
+                    A.verify_administration_scope(api, SHA, MASTER, A.V015_TAG)
+
+    def test_v015_actual_source_and_retained_identity_are_pinned(self):
+        from unittest.mock import patch
+        self.assertEqual(A.V015_SOURCE, '214b36b32af38f784fb08aa6746e3667a7641bbe')
+        self.assertEqual(A.V015_TAG, 'v0.1.5')
+        self.assertEqual(A.V015_RETAINED, A.V015_TESTED)
+        admin, _, _ = self.admin()
+        with self.enabled(), patch.object(A, 'V015_RETAINED', MASTER), \
+             self.assertRaisesRegex(P.Rejected, 'V015_RETAINED_IDENTITY_NOT_REVIEWED'):
+            admin.rebuild_gates(SHA)
+        admin.api.call.assert_not_called()
+        admin.gates.assert_not_called()
+
+    def test_v014_historical_identity_and_v015_four_file_scope_are_unchanged(self):
+        self.assertEqual(A.REBUILD_TAG, 'v0.1.4')
+        self.assertEqual(A.REBUILD_SOURCE, '80ef5fba078822c7b6ba2e2c94b396908a1ef55e')
+        self.assertEqual(A.REBUILD_TESTED, 'd2d806834821701f9ffbaad4c21cad5cc1fa18e7')
+        self.assertEqual(set(A.V015_SOURCE_BLOBS), {
+            'src/device-sdk/Cargo.toml', 'src/device-sdk/Cargo.lock',
+            'release/build-request.json', 'release/approved-plan.json'})
+        self.assertEqual(A.V015_TESTED, '5076a2224fbb43cde66eec3287b5af1a95c92b6c')
+
 if __name__ == '__main__':
     unittest.main()
