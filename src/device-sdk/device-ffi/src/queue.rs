@@ -2,7 +2,7 @@
 //! reserve its slot before the corresponding operation is admitted.
 use crate::{
     budget::{Budget, Permit as Bytes},
-    state::FULL,
+    state::{CLOSED, FULL},
 };
 use std::{
     collections::VecDeque,
@@ -60,8 +60,11 @@ pub struct Reservation<T> {
     lane: usize,
     live: bool,
 }
-pub struct SendError<T>(pub T);
+pub struct SendError<T>(pub T, u32);
 impl<T> SendError<T> {
+    pub fn status(&self) -> u32 {
+        self.1
+    }
     pub fn into_inner(self) -> T {
         self.0
     }
@@ -109,7 +112,7 @@ impl<T> Sender<T> {
         }
         let mut state = self.0.state.lock().map_err(|_| FULL)?;
         if state.closed {
-            return Err(FULL);
+            return Err(CLOSED);
         }
         let q = &mut state.lanes[lane];
         let required = q
@@ -151,7 +154,7 @@ impl<T: Item> Sender<T> {
     pub fn try_send(&self, item: T) -> Result<(), SendError<T>> {
         match self.try_reserve_lane(item.lane()) {
             Ok(permit) => permit.send(item),
-            Err(_) => Err(SendError(item)),
+            Err(status) => Err(SendError(item, status)),
         }
     }
 }
@@ -167,7 +170,7 @@ impl<T> Reservation<T> {
         q.reserved -= 1;
         self.live = false;
         if state.closed {
-            return Err(SendError(item));
+            return Err(SendError(item, CLOSED));
         }
         state.lanes[self.lane].values.push_back(item);
         drop(state);
@@ -329,6 +332,33 @@ mod tests {
             id,
             barrier: false,
         }
+    }
+    #[test]
+    fn closed_receiver_and_reserved_send_are_not_budget_full() {
+        let b = Budget::new(crate::budget::MIN_BYTES).unwrap();
+        let (sender, mut receiver) = channel(b.clone());
+        let reserved = sender.try_reserve(false).unwrap();
+        // Exhaust real data capacity while the queue is still live.
+        let fill = b.reserve(b.remaining_lane(0), false).unwrap();
+        assert_eq!(
+            sender.try_send(value(1, false, 1)).err().unwrap().status(),
+            FULL
+        );
+        receiver.close();
+        // Close wins over capacity, including a reservation taken before close.
+        assert_eq!(
+            sender.try_send(value(1, false, 2)).err().unwrap().status(),
+            CLOSED
+        );
+        assert_eq!(
+            reserved.send(value(1, false, 3)).err().unwrap().status(),
+            CLOSED
+        );
+        assert!(receiver.try_recv().is_err());
+        drop(fill);
+        drop(receiver);
+        drop(sender);
+        assert_eq!(b.snapshot(), (crate::budget::MIN_BYTES, 0, 0));
     }
     #[test]
     fn round_robin_management_and_terminal_barrier() {

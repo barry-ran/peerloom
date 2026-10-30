@@ -77,7 +77,7 @@ completion 可能早于 `submit` 返回；宿主应按 request ID 关联，不�
 - 消息 SEND 返回本地 `sent` 或明确策略 `dropped`，不是远端业务确认。发送队列按配置支持 Fail/DropOldest/DropNewest 与 TTL；从 ABI 受理开始计算绝对截止，不因转发 worker 重新起算。
 - 流 READ 的 `max_bytes` 为 1..65536，返回原始部分数据，零字节成功表示 EOF；单流最多一个 pending READ，但其反向 WRITE、其他通道与控制面继续运行。
 - WRITE 返回实际 `written`，调用方只推进该数量；不得自动重发未知结果。FIN 仅结束写半边，反向读仍可用。流拒绝消息 queue 配置；WRITE/FIN 当前固定 30 秒发送截止，包含 ABI 排队时间。超期关闭整个流，不跳过中间字节。接收端只有有界回压，没有新接收 TTL。
-- 关闭 child 不关闭兄弟；关闭父连接、租约失效、generation 替换或 reset 立即使子对象失效。FIN/close 接受后不可取消。READ 已接受后即使授权过期也必须结算一次：清除数据并返回 CLOSED，不能悄悄丢 completion。
+- 关闭 child 不关闭兄弟；关闭父连接、租约失效、generation 替换或 reset 立即使子对象失效。FIN/close 接受后不可取消。已受理 CLOSE 与 worker 排空交错时，命令到达已关闭的接收队列返回 CLOSED，而非表示容量不足的 BUFFER_FULL；CLOSED completion 不替代 CHANNEL_CLOSED 的排空通知。READ 已接受后即使授权过期也必须结算一次：清除数据并返回 CLOSED，不能悄悄丢 completion。
 - native callback 与宿主实际消费时均重验 validity。Kotlin 的 READ 宿主交付使用独立动态信用与字节预算，直到 applicationExecutor 实际处理和 validity 检查后才释放；Swift READ 完整传递 caller isolation，在调用者 actor 恢复后重验并释放操作信用；旧系统 AsyncSequence 的事件不公开 Data，必须同步调用单次 `consumePayload()`，事件信用持有到消费或丢弃。native callback 返回不代表 UI 已消费。包装层自己的信用持有到实际交付；库移交 Data/完成 Future 后，应用自行再次排队、复制或长期持有不属于 SDK 可撤回或计费范围。
 
 Kotlin 暴露 MessageChannel/ByteStream、typed send disposition/partial-write count/read bytes、resetIdentity 与可注入异步 IdentityStorage（默认仍 Keystore）。Swift 对应 PeerloomChannel 的模式检查和 async read/write/FIN/reset；Swift 编译器最低为 Swift 6.0（当前 CI Xcode 16.4），语言模式保留 v5、最低系统仍 iOS 15/macOS 12；不依赖仅新系统可用的 AsyncIterator runtime。新增真实编译、暂停 actor 与消费信用测试必须由 Xcode CI 给出证据。

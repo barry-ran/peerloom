@@ -26,8 +26,8 @@ flowchart LR
 - `open_message(label, mode, QueueConfig)` 只接可靠消息/低延迟消息；`open_stream(label)` 采用现有 `peerloom.stream.v1`，不新增协议或密码学。相同 label 不用来猜类型。
 - 一个 worker 独占 `accept_incoming`，按协议/可靠性元数据严格分派。`take_incoming_channels()` 一次性取得独立接收器，避免默认消息 receive 与通道 accept 抢同一可变借用；丢弃接收器不会关闭父连接，无法交付的新子通道自行关闭。
 - 消息 `sender()` 可克隆并与 receive 并发；发送完成仅代表本地传输受理，`Dropped` 明确表示整条策略丢弃，不是送达确认。发送能力的克隆被丢弃不关闭 owner；owner 关闭/失效后克隆也不可用。
-- `SdkByteStream::split()` 返回独立 reader/writer，挂起 read 不阻止 write/FIN。write 可部分受理，调用者按返回 n 前进；FIN 仅关闭本端写方向，之后误 write 被拒，但反向读仍可继续。任一半显式 close/drop 关闭整个子流；正常 FIN 不是 drop。
-- 每个子 handle 保存父 session/generation 与只读 `ChannelValidity`。关闭子通道不关闭兄弟；父租约失效、撤销、reset 或旧代关闭同步禁止所有旧子通道收发。raw transport 不外泄。
+- `SdkByteStream::split()` 返回独立 reader/writer，挂起 read 不阻止 write/FIN。write 可部分受理，调用者按返回 n 前进；FIN 仅关闭本端写方向，之后误 write 被拒，但反向读仍可继续。任一半显式 close/drop 关闭整个子流；正常 FIN 不是 drop。读到 EOF 后，worker 仍观察底层完全关闭，不重复投递 EOF，也不影响反向写入。
+- 每个子 handle 保存父 session/generation 与只读 `ChannelValidity`。关闭子通道不关闭兄弟；父租约失效、撤销、reset 或旧代关闭同步禁止所有旧子通道收发。`ChannelValidity::invalidated()` 可取消地等待子通道或父授权失效；失效不等于资源已排空。FFI 的空闲 stream 即使没有挂起 READ 也观察失效并排空 worker，按原有借用规则结算操作后投递一次 CHANNEL_CLOSED，无需宿主再提交 CLOSE 或关闭父连接。raw transport 不外泄。
 
 活动通道额度与底层累计创建预算不同：`transport.max_channels` 默认 0（不设人工累计上限），正数为可选累计预算，初始默认通道计入；正常关闭释放活动额度，但不回收累计预算，创建超时也保留底层不确定名额。需要新累计预算应按正常会话授权创建新 PeerConnection，不能绕过既有租约或静默重置身份。
 

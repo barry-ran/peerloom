@@ -96,6 +96,12 @@ impl ChannelValidity {
     pub fn is_valid(&self) -> bool {
         self.0.check().is_ok()
     }
+    /// Wait until this child or its parent is invalidated. FIN alone does not
+    /// invalidate a stream. This signals invalidation, not completed cleanup.
+    /// Cancellation is safe; a later wait also observes prior invalidation.
+    pub async fn invalidated(&self) {
+        self.0.invalidated().await;
+    }
 }
 
 #[derive(Clone)]
@@ -542,6 +548,41 @@ mod gate_tests {
         assert_eq!(active.used.load(Ordering::Acquire), 1);
         drop(second);
         assert_eq!(active.used.load(Ordering::Acquire), 0);
+    }
+    #[tokio::test]
+    async fn validity_wait_observes_close_before_and_after_registration() {
+        use futures_util::{pin_mut, poll};
+        let parent = Arc::new(Gate::default());
+        parent.update(Some(Instant::now() + Duration::from_secs(60)));
+        let gate = ChannelGate::new(parent.clone());
+        let sibling = ChannelValidity(ChannelGate::new(parent.clone()));
+        let validity = ChannelValidity(gate.clone());
+        {
+            let cancelled = validity.invalidated();
+            pin_mut!(cancelled);
+            assert!(poll!(&mut cancelled).is_pending());
+        }
+        let waiting = validity.invalidated();
+        pin_mut!(waiting);
+        assert!(poll!(&mut waiting).is_pending());
+        gate.close();
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), validity.invalidated())
+            .await
+            .unwrap();
+        assert!(sibling.is_valid());
+        let sibling_wait = sibling.invalidated();
+        pin_mut!(sibling_wait);
+        assert!(poll!(&mut sibling_wait).is_pending());
+        gate.close();
+        assert!(poll!(&mut sibling_wait).is_pending());
+        parent.installation_closed.store(true, Ordering::Release);
+        parent.update(Some(Instant::now() + Duration::from_secs(60)));
+        tokio::time::timeout(Duration::from_secs(1), sibling_wait)
+            .await
+            .unwrap();
     }
     #[tokio::test]
     async fn lease_and_installation_invalidate_all_children_but_child_close_is_local() {

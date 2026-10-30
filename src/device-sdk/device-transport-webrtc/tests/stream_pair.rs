@@ -19,6 +19,12 @@ async fn actual_byte_stream_preserves_bytes_and_half_close() {
     let (a, b) = tokio::join!(outgoing.wait_open(), incoming.wait_open());
     a.unwrap();
     b.unwrap();
+    assert_eq!(
+        incoming.wait_closed_after_fin().await,
+        Err(StreamError::Transport(
+            device_transport_webrtc::TransportError::NotReady
+        ))
+    );
     let input: Vec<u8> = (0..(256 << 10)).map(|i| (i % 251) as u8).collect();
     let mut sent = 0;
     while sent < input.len() {
@@ -42,6 +48,16 @@ async fn actual_byte_stream_preserves_bytes_and_half_close() {
         received.extend_from_slice(&buffer[..n]);
     }
     assert_eq!(received, input);
+    // Waiting for full close after FIN is cancellable and must not close the
+    // reverse direction or consume/produce another EOF.
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            incoming.wait_closed_after_fin()
+        )
+        .await
+        .is_err()
+    );
     // A FIN only closes one direction; the receiver can still send its response.
     assert_eq!(incoming.write("已接收".as_bytes()).await.unwrap(), 9);
     incoming.shutdown_write().await.unwrap();
@@ -49,7 +65,13 @@ async fn actual_byte_stream_preserves_bytes_and_half_close() {
     assert_eq!(&buffer[..n], "已接收".as_bytes());
     assert_eq!(outgoing.read(&mut buffer).await.unwrap(), 0);
     outgoing.close().await.unwrap();
-    incoming.close().await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        incoming.wait_closed_after_fin(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     source.close().await.unwrap();
     target.close().await.unwrap();
 }
@@ -300,6 +322,10 @@ async fn idle_read_timeout_preserves_sequence_partial_buffer_and_fin() {
         );
         source.shutdown_write().await.unwrap();
         assert_eq!(target.read(&mut bytes).await.unwrap(), 0);
+        assert_eq!(
+            target.wait_closed_after_fin().await,
+            Err(StreamError::Transport(TransportError::Timeout))
+        );
         target.write(b"ok").await.unwrap();
         assert_eq!(source.read(&mut bytes).await.unwrap(), 2);
         assert_eq!(&bytes, b"ok");

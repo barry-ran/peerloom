@@ -752,6 +752,57 @@ mod reset_tests {
             .to_string()
             .into_bytes()
     }
+    #[tokio::test]
+    async fn accepted_close_routed_after_worker_exit_completes_closed_once() {
+        let (instance, commands, events) = setup();
+        let instance = Arc::new(instance);
+        let (parent, child) = {
+            let mut handles = instance.handles.lock().unwrap();
+            let allocate = || next_id().map_err(|_| HandleError::Allocator);
+            let parent = handles.add_connection(Authority::Test, allocate).unwrap();
+            let child = handles
+                .add_channel(
+                    parent,
+                    ChannelKind::ReliableStream,
+                    Authority::Test,
+                    allocate,
+                )
+                .unwrap();
+            (parent, child)
+        };
+        let request = instance.submit_channel(5, parent, child, b"").unwrap();
+        // Deterministic barrier: admission/fence is complete, but routing is
+        // deliberately held until the receiving worker has exited.
+        let operation = commands.try_recv().unwrap();
+        assert_eq!(operation.phase.load(Ordering::Acquire), 4);
+        let task = crate::channels::Task::closed_queue_for_test(&instance);
+        task.route(&instance, operation);
+        let event = events.try_recv().unwrap();
+        assert_eq!(
+            (event.kind, event.request, event.status),
+            (COMPLETE, request, CLOSED)
+        );
+        assert!(events.try_recv().is_err());
+        assert!(
+            instance
+                .operations
+                .lock()
+                .unwrap()
+                .get_mut(&request)
+                .is_some()
+        );
+        instance.release_credit(event);
+        assert!(
+            instance
+                .operations
+                .lock()
+                .unwrap()
+                .get_mut(&request)
+                .is_none()
+        );
+        drop(task);
+        assert!(events.try_recv().is_err());
+    }
     #[test]
     fn object_lifetime_is_returned_on_suppression_failure_and_unused_ticket_drop() {
         let (instance, _commands, mut events) = setup();

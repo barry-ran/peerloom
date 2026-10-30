@@ -5,6 +5,8 @@
 #![recursion_limit = "256"]
 #[path = "../../device-core/tests/support/capacity.rs"]
 mod capacity;
+#[path = "support/terminal_collector.rs"]
+mod terminal_collector;
 use capacity::*;
 use device_core::sdk::{
     Connection, SdkChannel, SdkError, SdkEvent, SdkStreamReader, SdkStreamWriter,
@@ -16,6 +18,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
+use terminal_collector::TerminalCollector;
 use tokio::sync::{Notify, mpsc};
 
 const OK: u32 = 0;
@@ -805,14 +808,25 @@ async fn one_c_pc_five_hundred_real_native_streams() {
         }
         assert!(Instant::now() < deadline);
     }
-    let mut pc_terminal = BTreeSet::new();
+    let mut pc_terminal = TerminalCollector::new(
+        terminated_indices
+            .iter()
+            .map(|index| (pairs[index].connection, pairs[index].session.clone()))
+            .collect(),
+    );
     while pc_terminal.len() < terminated {
-        let event = host.next().await;
+        // 与远端终态共用原30秒总截止，不因零句柄通知或子通道事件续期。
+        assert!(
+            Instant::now() < deadline,
+            "bounded PC termination collection"
+        );
+        let event = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), host.next())
+            .await
+            .expect("bounded PC termination collection");
         if event.kind == 7 {
-            if !terminated_indices
-                .iter()
-                .any(|i| pairs[i].connection == event.connection)
-            {
+            let accepted =
+                pc_terminal.observe(event.kind, event.status, event.connection, &event.bytes);
+            if !accepted {
                 let matched = pairs
                     .iter()
                     .find(|(_, pair)| pair.connection == event.connection)
@@ -854,11 +868,9 @@ async fn one_c_pc_five_hundred_real_native_streams() {
                 );
             }
             assert!(
-                terminated_indices
-                    .iter()
-                    .any(|i| pairs[i].connection == event.connection)
+                accepted,
+                "only expected connection or closed target-session notification"
             );
-            pc_terminal.insert(event.connection);
         } else {
             assert_eq!(
                 event.kind, 13,

@@ -36,13 +36,27 @@ impl Task {
             instance: instance.clone(),
             operation: Some(operation),
         }) {
-            let status = FULL;
+            // Local admission fences before cross-actor routing. The worker may
+            // already have closed its receiver; that is CLOSED, not budget FULL.
+            let status = reason.status();
             // A failed critical route must still wake all pending READs under
             // this task; its local fence has already made rollback impossible.
             if critical {
                 self.stop.send_replace(true);
             }
             instance.finish(reason.into_inner().take(), status, Vec::new());
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn closed_queue_for_test(instance: &Arc<Instance>) -> Self {
+        let (commands, mut receiver) = queue::channel(instance.budget.clone());
+        receiver.close();
+        let (stop, _) = watch::channel(false);
+        Self {
+            commands,
+            closed: None,
+            stop,
+            join: tokio::spawn(async {}),
         }
     }
     pub async fn close(mut self) -> u32 {
@@ -380,6 +394,9 @@ async fn stream_worker(
     mut commands: queue::Receiver<Queued>,
     mut stop: watch::Receiver<bool>,
 ) {
+    // An idle stream has no read future to observe peer close. Keep a separate
+    // core validity waiter so it drains registrations even without host traffic.
+    let validity = channel.validity();
     let (mut reader, writer) = channel.split();
     let (write_tx, mut write_rx) = queue::channel::<Queued>(instance.budget.clone());
     let writer_instance = instance.clone();
@@ -435,11 +452,13 @@ async fn stream_worker(
         }
         tokio::select! {
             _ = stop.changed() => {},
+            _ = validity.invalidated() => break,
             operation = commands.recv() => {
                 let Some(queued) = operation else { break };
                 if matches!(queued.operation.as_ref().unwrap().kind, 66 | 67) {
                     if let Err(reason) = write_tx.try_send(queued) {
-                        instance.finish(reason.into_inner().take(), FULL, Vec::new());
+                        let status = reason.status();
+                        instance.finish(reason.into_inner().take(), status, Vec::new());
                     }
                     continue;
                 }

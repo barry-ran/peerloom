@@ -96,6 +96,36 @@ private fun next(queue: ArrayBlockingQueue<Event>, kind: Int): Event {
 private fun await(operation: Operation): Completion =
     operation.completion.get(30, TimeUnit.SECONDS).also { assertEquals(0, it.status) }
 
+/** CLOSE 的状态不等于排空；仅此 helper 接受已受理关闭竞态中的 CLOSED。 */
+private fun closeChannelAndAwaitDrain(
+    local: Channel,
+    remote: Channel,
+    localConnection: Connection,
+    remoteConnection: Connection,
+    localQueue: ArrayBlockingQueue<Event>,
+    remoteQueue: ArrayBlockingQueue<Event>,
+) {
+    val operation = local.close()
+    assertNotEquals(0L, operation.requestId)
+    val completion = operation.completion.get(30, TimeUnit.SECONDS)
+    assertTrue(
+        "CLOSE completion must be OK or CLOSED",
+        completion.status == 0 || completion.status == 5,
+    )
+    for ((queue, channel, connection) in
+        listOf(
+            Triple(localQueue, local, localConnection),
+            Triple(remoteQueue, remote, remoteConnection),
+        )) {
+        val closed = next(queue, 13)
+        assertSame("CHANNEL_CLOSED must identify the exact channel", channel, closed.channel)
+        assertEquals(channel.label, closed.channel!!.label)
+        assertTrue(closed.connection!!.sameConnection(connection))
+        assertFalse(channel.isValid())
+        assertTrue(connection.isValid())
+    }
+}
+
 /** Test-only inspection: prove the exact real payload is queued before revocation. */
 private fun awaitQueuedMessage(sdk: PeerloomSdk, connection: Connection, payload: ByteArray) {
     val lock =
@@ -334,11 +364,15 @@ class ServiceTest {
                 )
                 await(remoteStream.finishWrite())
                 assertEquals(0, stream.read(4093).completion.get(30, TimeUnit.SECONDS).size)
-                await(typed.close())
-                assertFalse(typed.isValid())
-                assertTrue(ca.isValid())
-                await(low.close())
-                await(stream.close())
+                closeChannelAndAwaitDrain(typed, remoteTyped, ca, cb, sourceQueue, targetQueue)
+                assertTrue(low.isValid())
+                assertTrue(remoteLow.isValid())
+                assertTrue(stream.isValid())
+                assertTrue(remoteStream.isValid())
+                closeChannelAndAwaitDrain(low, remoteLow, ca, cb, sourceQueue, targetQueue)
+                assertTrue(stream.isValid())
+                assertTrue(remoteStream.isValid())
+                closeChannelAndAwaitDrain(stream, remoteStream, ca, cb, sourceQueue, targetQueue)
                 finiteBackgroundAndResume()
                 await(ca.send(message))
                 assertArrayEquals(message, next(targetQueue, 6).payload)

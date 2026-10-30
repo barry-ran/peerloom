@@ -265,6 +265,32 @@ impl ByteStream {
         Ok(self.copy_pending(output))
     }
 
+    /// 已收到 FIN 后继续等待底层完全关闭；FIN 本身不关闭反向写入。
+    /// 只能在读到 EOF 后调用，避免消费尚未交付的正常字节。
+    /// 可取消；接收超时不改变状态，调用方可继续等待。
+    pub async fn wait_closed_after_fin(&mut self) -> Result<(), StreamError> {
+        self.ensure_valid()?;
+        if !self.read_closed {
+            return Err(TransportError::NotReady.into());
+        }
+        match self.channel.receive().await {
+            Err(TransportError::Timeout) => Err(TransportError::Timeout.into()),
+            Err(TransportError::Closed) => {
+                self.failed = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.failed = true;
+                Err(error.into())
+            }
+            Ok(_) => {
+                // FIN 已终止对方发送方向，后续任何帧都是协议错误。
+                self.failed = true;
+                Err(StreamError::Protocol)
+            }
+        }
+    }
+
     fn copy_pending(&mut self, output: &mut [u8]) -> usize {
         let n = output.len().min(self.pending.len() - self.offset);
         output[..n].copy_from_slice(&self.pending[self.offset..self.offset + n]);

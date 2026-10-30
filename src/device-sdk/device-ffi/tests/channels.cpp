@@ -28,6 +28,7 @@ struct Host {
     unsigned online = 0, shutdown = 0, default_messages = 0;
     std::map<std::string, uint64_t> connections, channels;
     std::map<uint64_t, Completion> completions;
+    std::set<uint64_t> closed_channels;
     std::set<uint64_t> seen;
     std::map<uint64_t, std::vector<std::vector<uint8_t>>> messages;
 };
@@ -86,6 +87,8 @@ static void callback(uint64_t context, const dp_event *event) noexcept {
             host.messages[event->channel].push_back(std::move(bytes));
             break;
         case DP_EVENT_CHANNEL_CLOSED:
+            assert(event->channel && host.closed_channels.insert(event->channel).second);
+            break;
         case DP_EVENT_CONNECTION_CLOSED: break;
         case DP_EVENT_SHUTDOWN: assert(event->status == DP_OK); ++host.shutdown; break;
         default: assert(false && "unexpected native channel event");
@@ -102,6 +105,7 @@ static Completion completion(Host &host, uint64_t request) {
     std::lock_guard<std::mutex> lock(mutex);
     auto value = std::move(host.completions.at(request));
     host.completions.erase(request);
+    if (value.status != DP_OK) std::fprintf(stderr, "completion status=%u request=%llu channel=%llu\n", value.status, static_cast<unsigned long long>(request), static_cast<unsigned long long>(value.channel));
     assert(value.status == DP_OK);
     return value;
 }
@@ -115,6 +119,16 @@ static uint64_t child(Host &host, uint64_t connection, uint64_t channel, uint32_
     uint64_t request = 0;
     assert(dp_channel_submit(host.sdk, connection, channel, kind, bytes.data(), bytes.size(), &request) == DP_OK && request);
     return request;
+}
+static void close_child(Host &host, uint64_t connection, uint64_t channel) {
+    const auto request = child(host, connection, channel, DP_CHANNEL_CLOSE);
+    wait([&] { return host.completions.count(request) != 0; });
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto result = host.completions.at(request);
+    // The admission fence can retire the worker before its command is routed.
+    // CLOSED is not proof of drain: callers separately wait for both terminals.
+    assert(result.status == DP_OK || result.status == DP_CLOSED);
+    host.completions.erase(request);
 }
 static std::vector<uint8_t> text(const std::string &value) { return {value.begin(), value.end()}; }
 static uint64_t open(Host &host, uint64_t connection, const char *mode, const char *label) {
@@ -209,11 +223,67 @@ int main() {
     assert(completion(hosts[0], read(hosts[0], a, stream, 64)).bytes == binary);
     completion(hosts[1], child(hosts[1], b, remote_stream, DP_CHANNEL_FINISH_WRITE));
     assert(completion(hosts[0], read(hosts[0], a, stream, 64)).bytes.empty());
-    const auto close_child = child(hosts[0], a, reliable, DP_CHANNEL_CLOSE);
+    // FIN is directional EOF, not full close: both workers must remain live.
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        assert(!hosts[0].closed_channels.count(stream));
+        assert(!hosts[1].closed_channels.count(remote_stream));
+    }
+    // Neither endpoint has a pending read. Remote full close must still retire
+    // the child and deliver its terminal event without closing its parent.
+    close_child(hosts[0], a, low);
+    wait([&] { return hosts[0].closed_channels.count(low) && hosts[1].closed_channels.count(remote_low); });
+    const auto idle_stream = open(hosts[0], a, "reliable_stream", "idle-close");
+    const auto remote_idle = incoming(hosts[1], "idle-close");
+    close_child(hosts[0], a, idle_stream);
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        assert(changed.wait_for(lock, std::chrono::seconds(45), [&] {
+            return hosts[0].closed_channels.count(idle_stream) && hosts[1].closed_channels.count(remote_idle);
+        }) && "idle peer close must emit both child terminals without parent close");
+    }
+    assert(dp_connection_is_valid(hosts[0].sdk, a) == DP_OK);
+    assert(dp_connection_is_valid(hosts[1].sdk, b) == DP_OK);
+    assert(dp_channel_is_valid(hosts[0].sdk, a, reliable) == DP_OK);
+    completion(hosts[0], child(hosts[0], a, reliable, DP_CHANNEL_SEND, binary));
+    wait([&] { return hosts[1].messages[remote_reliable].size() == 2; });
+
+    // Reuse the fourth live slot: stale remote registration would prevent this
+    // open. The cleanup path must settle an accepted read exactly once.
+    const auto pending_stream = open(hosts[0], a, "reliable_stream", "pending-close");
+    const auto remote_pending = incoming(hosts[1], "pending-close");
+    const auto pending_read = read(hosts[1], b, remote_pending, 64);
+    const auto pending_write = child(hosts[1], b, remote_pending, DP_CHANNEL_WRITE, binary);
+    close_child(hosts[0], a, pending_stream);
+    wait([&] { return hosts[1].completions.count(pending_read) && hosts[1].closed_channels.count(remote_pending); });
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto result = hosts[1].completions.at(pending_read);
+        assert(result.status == DP_CLOSED && result.bytes.empty());
+        hosts[1].completions.erase(pending_read);
+    }
+    wait([&] { return hosts[1].completions.count(pending_write) != 0; });
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto result = hosts[1].completions.at(pending_write);
+        assert(result.status == DP_OK || result.status == DP_CLOSED || result.status == DP_CANCELLED);
+        if (result.status == DP_OK) assert(written(result) == binary.size());
+        hosts[1].completions.erase(pending_write);
+    }
+    // After EOF, full peer close must still be observed without another READ.
+    close_child(hosts[0], a, stream);
+    wait([&] { return hosts[0].closed_channels.count(stream) && hosts[1].closed_channels.count(remote_stream); });
+    assert(dp_connection_is_valid(hosts[0].sdk, a) == DP_OK);
+    assert(dp_connection_is_valid(hosts[1].sdk, b) == DP_OK);
+    close_child(hosts[0], a, reliable);
     assert(dp_channel_is_valid(hosts[0].sdk, a, reliable) != DP_OK);
-    completion(hosts[0], close_child);
-    assert(dp_channel_is_valid(hosts[0].sdk, a, stream) == DP_OK);
+    wait([&] { return hosts[0].closed_channels.count(reliable) && hosts[1].closed_channels.count(remote_reliable); });
+    const auto parent_stream = open(hosts[0], a, "reliable_stream", "parent-close-after-fin");
+    const auto remote_parent = incoming(hosts[1], "parent-close-after-fin");
+    completion(hosts[0], child(hosts[0], a, parent_stream, DP_CHANNEL_FINISH_WRITE));
+    assert(completion(hosts[1], read(hosts[1], b, remote_parent, 64)).bytes.empty());
     completion(hosts[0], submit(hosts[0], DP_OP_CLOSE_CONNECTION, a));
+    wait([&] { return hosts[0].closed_channels.count(parent_stream) && hosts[1].closed_channels.count(remote_parent); });
     assert(dp_channel_is_valid(hosts[0].sdk, a, stream) != DP_OK);
     assert(dp_connection_is_valid(hosts[0].sdk, other) == DP_OK);
     uint64_t request = 0;
@@ -228,5 +298,5 @@ int main() {
         while ((release_status = dp_sdk_release(host.sdk)) == DP_BUSY) { assert(std::chrono::steady_clock::now() < deadline); }
         assert(release_status == DP_OK);
     }
-    std::puts("C ABI three-device/two-connection typed messages + 256KiB stream/duplex/FIN + parent fencing PASS");
+    std::puts("C ABI three-device/two-connection typed messages + 256KiB stream/duplex/FIN + idle/pending-read close + parent fencing PASS");
 }

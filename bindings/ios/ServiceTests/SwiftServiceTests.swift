@@ -59,12 +59,15 @@ private struct ServiceFixture: Decodable, Sendable {
         return fixture
     }
 }
+private let postClosePayload = Data([3, 2, 0, 1, 255, 0])
+
 private actor ServiceMailbox {
     private var online = false
     private var incoming: [String] = []
     private var connections: [String: UInt64] = [:]
     private var channels: [String: PeerloomChannel] = [:]
     private var messages: [UInt64: [Data]] = [:]
+    private var closedChannels: [UInt64: UInt64] = [:]
     private var defaultMessages = 0
     private var failed = false
     private let binary = Data([0, 255, 1, 0, 2, 3])
@@ -78,7 +81,13 @@ private actor ServiceMailbox {
         let bytes = try event.consumePayload()
         switch event.kind {
         case 2: online = true
-        case 3, 7, 13: break
+        case 3, 7: break
+        case 13:
+            guard event.channel != 0, event.connection != 0,
+                  closedChannels[event.channel] == nil, closedChannels.count < 8 else {
+                throw ServiceFailure.event
+            }
+            closedChannels[event.channel] = event.connection
         case 4:
             struct Incoming: Decodable { let session_id: String }
             let value = try JSONDecoder().decode(Incoming.self, from: bytes)
@@ -94,7 +103,8 @@ private actor ServiceMailbox {
             defaultMessages += 1
             guard defaultMessages <= 16 else { throw ServiceFailure.overflow }
         case 14:
-            guard bytes == binary, messages[event.channel, default: []].count < 16 else { throw ServiceFailure.mismatch }
+            guard (bytes == binary || (bytes == postClosePayload && channels["swift-low"]?.handle == event.channel)),
+                  messages[event.channel, default: []].count < 16 else { throw ServiceFailure.mismatch }
             messages[event.channel, default: []].append(bytes)
         default: throw ServiceFailure.event
         }
@@ -106,7 +116,16 @@ private actor ServiceMailbox {
     func connection(_ peer: String) throws -> UInt64? { try check(); return connections[peer] }
     func channel(_ label: String) throws -> PeerloomChannel? { try check(); return channels[label] }
     func received(_ channel: UInt64) throws -> Bool? { try check(); return messages[channel, default: []].isEmpty ? nil : true }
+    func postCloseCount(_ channel: UInt64) throws -> Int {
+        try check(); return messages[channel, default: []].filter { $0 == postClosePayload }.count
+    }
     func receivedDefault() throws -> Bool? { try check(); return defaultMessages > 0 ? true : nil }
+    func closed(_ channel: PeerloomChannel) throws -> Bool? {
+        try check()
+        guard let parent = closedChannels[channel.handle] else { return nil }
+        guard parent == channel.connection else { throw ServiceFailure.mismatch }
+        return true
+    }
 }
 private func eventually<T>(_ body: () async throws -> T?) async throws -> T {
     let deadline = DispatchTime.now().uptimeNanoseconds + 45_000_000_000
@@ -116,6 +135,19 @@ private func eventually<T>(_ body: () async throws -> T?) async throws -> T {
         try await Task.sleep(nanoseconds: 20_000_000)
     } while DispatchTime.now().uptimeNanoseconds < deadline
     throw ServiceFailure.timeout
+}
+
+// 仅 CLOSE 接受原生 OK/CLOSED 竞态；completion 从不替代两端 CHANNEL_CLOSED 排空证据。
+private func closeChannelAndWait(_ local: PeerloomChannel, remote: PeerloomChannel,
+                                 label: String, sourceBox: ServiceMailbox,
+                                 targetBox: ServiceMailbox) async throws {
+    guard local.label == label, remote.label == label,
+          local.mode == remote.mode else { throw ServiceFailure.mismatch }
+    do { try await local.close() }
+    catch PeerloomError.native(5) { }
+    _ = try await eventually { try await sourceBox.closed(local) }
+    _ = try await eventually { try await targetBox.closed(remote) }
+    guard !local.isValid, !remote.isValid else { throw ServiceFailure.mismatch }
 }
 
 final class SwiftServiceTests: XCTestCase {
@@ -250,8 +282,22 @@ final class SwiftServiceTests: XCTestCase {
                   try await stream.read(maxBytes: 64) == binary else { throw ServiceFailure.mismatch }
             try await remoteStream.finishWrite()
             guard try await stream.read(maxBytes: 64).isEmpty else { throw ServiceFailure.mismatch }
-            try await reliable.close()
-            guard !reliable.isValid, stream.isValid else { throw ServiceFailure.mismatch }
+            try await closeChannelAndWait(reliable, remote: remoteReliable, label: "swift-reliable",
+                                          sourceBox: boxes[0], targetBox: boxes[1])
+            guard low.isValid, remoteLow.isValid, stream.isValid, remoteStream.isValid else {
+                throw ServiceFailure.mismatch
+            }
+            // 固定新增工作量，以新接收计数证明兄弟仍能传输，不用旧消息冒充。
+            guard try await boxes[1].postCloseCount(remoteLow.handle) == 0 else { throw ServiceFailure.mismatch }
+            for _ in 0..<8 { _ = try await low.send(postClosePayload) }
+            _ = try await eventually {
+                try await boxes[1].postCloseCount(remoteLow.handle) > 0 ? true : nil
+            }
+            // 关闭一个 child 不应破坏父连接；使用新的实际消息证明仍可双向通信。
+            try await sdks[0].send(binary, on: parent)
+            _ = try await eventually { try await boxes[1].receivedDefault() }
+            try await sdks[1].send(binary, on: remoteReliable.connection)
+            _ = try await eventually { try await boxes[0].receivedDefault() }
             try await sdks[0].closeConnection(parent)
             guard !stream.isValid else { throw ServiceFailure.mismatch }
             try await sdks[0].send(binary, on: other)

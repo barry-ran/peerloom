@@ -278,7 +278,16 @@ impl StreamWorker {
                         drop(request.charge);
                         if let Some(error) = fatal { return Err(error); }
                     },
-                    result = raw.read(&mut buffer), if read_permit.is_some() => {
+                    result = async {
+                        if eof {
+                            // EOF only ends delivery. Keep observing transport close
+                            // without producing repeated EOF or consuming normal data.
+                            raw.wait_closed_after_fin().await?;
+                            Err(StreamError::Closed)
+                        } else {
+                            raw.read(&mut buffer).await
+                        }
+                    }, if eof || read_permit.is_some() => {
                         let n = match result {
                             Ok(n) => n,
                             Err(StreamError::Transport(TransportError::Timeout)) => continue,
