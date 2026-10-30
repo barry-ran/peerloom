@@ -93,6 +93,7 @@ tasks.configureEach {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     implementation("org.rustls:rustls-platform-verifier:$verifierVersion")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test:core:1.7.0")

@@ -52,7 +52,7 @@ jobs:
       - name: 两个ABI真实构建、AAR和示例APK
         working-directory: bindings/android
         run: |
-          ./gradlew --no-daemon :library:assembleRelease :library:assembleDebugAndroidTest :sample:assembleDebug
+          ./gradlew --no-daemon :library:testDebugUnitTest :library:assembleRelease :library:assembleDebugAndroidTest :sample:assembleDebug
           mkdir -p ../../dist/android
           cp library/build/outputs/aar/library-release.aar ../../dist/android/
           cp library/build/outputs/apk/androidTest/debug/library-debug-androidTest.apk ../../dist/android/

@@ -115,7 +115,7 @@ private fun awaitQueuedMessage(sdk: PeerloomSdk, connection: Connection, payload
                 queue.any {
                     val event = it as Event
                     event.kind == 6 &&
-                        event.connection?.handle == connection.handle &&
+                        event.connection?.sameConnection(connection) == true &&
                         event.payload.contentEquals(payload)
                 }
             }
@@ -266,7 +266,11 @@ class ServiceTest {
                 val cb = next(targetQueue, 5).connection!!
                 val message = byteArrayOf(0, 1, -1, 2, 0)
                 await(ca.send(message))
-                assertArrayEquals(message, next(targetQueue, 6).payload)
+                val received = next(targetQueue, 6)
+                assertArrayEquals(message, received.payload)
+                assertNotSame(cb, received.connection)
+                assertTrue(received.connection!!.sameConnection(cb))
+                assertFalse(received.connection!!.sameConnection(ca))
                 await(cb.send(message))
                 assertArrayEquals(message, next(sourceQueue, 6).payload)
                 val typed =
@@ -379,6 +383,11 @@ class ServiceTest {
                     val event = targetQueue.poll(1, TimeUnit.SECONDS) ?: continue
                     assertNotEquals("revoked queued payload reached application", 6, event.kind)
                     observedClosed = event.kind == 7
+                    if (observedClosed) {
+                        assertNotSame(cb, event.connection)
+                        assertTrue(event.connection!!.sameConnection(cb))
+                        assertFalse(event.connection!!.isValid())
+                    }
                 }
                 assertTrue(observedClosed)
                 assertTrue(targetQueue.none { it.kind == 6 })

@@ -37,6 +37,12 @@ internal constructor(
 }
 
 class Connection internal constructor(private val sdk: PeerloomSdk, internal val handle: Long) {
+    /**
+     * 判断两个事件包装对象是否属于同一 SDK 实例中的同一连接。 连接关闭或 SDK 释放后仍可用于关联迟到的关闭事件；重建的连接不相同。 这不表示连接有效或获得授权；有效性须另行查询
+     * [isValid]。 不改变 equals/hashCode 的对象身份语义，也不暴露原生句柄。
+     */
+    fun sameConnection(other: Connection): Boolean = sdk === other.sdk && handle == other.handle
+
     fun isValid(): Boolean = sdk.valid(handle)
 
     fun send(data: ByteArray): Operation = sdk.submit(4, handle, data)

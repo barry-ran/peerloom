@@ -41,8 +41,11 @@ flowchart LR
 | `connect(target)` / `respond(session, accept)` | 请求或确认服务端授权；CONNECT completion 不等于 Ready |
 | `refreshCredentials()` | 轮换、CAS 保存、新 token 重新认证 WSS |
 | `Connection.send(bytes)` | 单条可靠消息，本地接受不代表业务远端确认 |
+| `Connection.sameConnection(other)` | 比较同一 SDK 实例内的连接身份，失效后仍可关联事件；不代表有效性或授权 |
 | `Connection.close()` | 不可逆地禁止新增收发，然后异步资源清理 |
 | `close()` | 非阻塞停止新操作，等待 native release 和已有宿主事件派发结束 |
+
+事件中的 `Connection` 是独立包装对象，不能用 `===` 或 `==` 判断是否来自同一连接。使用 `event.connection?.sameConnection(retained) == true` 关联消息或迟到的 CLOSED；该比较不调用 native，不要求连接仍有效，SDK 关闭后也保持原身份。不同 SDK 实例、重连或恢复的新一代连接均不相同；同一会话不等于同一连接。需要有效性时另调用 `isValid()`，且它只是瞬时查询，不代替操作结果或授权检查。原生句柄仅内部使用，由进程级不回绕分配器产生，移除、重置或恢复时不复用。`equals/hashCode` 保持原来的对象身份语义。
 
 每次普通调用返回 `Operation(requestId, completion)`；`cancelQueued()` 仅取消尚未开始的工作。运行中的变更与关闭返回 Busy，不冒称回滚。不要在同步 completion continuation 中长时间阻塞原生 callback；使用显式异步 continuation/executor。
 
