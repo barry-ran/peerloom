@@ -1,0 +1,45 @@
+{
+  "utc": "2026-10-30T18:28:56.477309+00:00",
+  "original_sha256": "0182dfd37a21fdf29785d92571acdd51c93f90cd12b6a1b3919c17c5cf25bf02",
+  "original_measurements": 93,
+  "complete_pairs": 46,
+  "orphan_record": {
+    "kind": "measurement",
+    "variant": "full-frame-owned",
+    "repeat": 1,
+    "connections": 500,
+    "size": 16384,
+    "process_wall_s": 44.21842041099444,
+    "exit_code": 0,
+    "stderr": "PERF_MEASURE_BEGIN connections=500 bytes=16384 rounds=64\nPERF_MEASURE_END retries=0\n",
+    "rounds": 64,
+    "payload_bytes": 1048576000,
+    "wall_s": 4.307462,
+    "user_s": 12.47,
+    "sys_s": 4.31,
+    "cpu_ns_per_byte": 16.002655,
+    "mib_per_s": 232.155287,
+    "rtt_p50_us": 65071.207,
+    "rtt_p95_us": 101547.62,
+    "rtt_p99_us": 117135.6,
+    "valid": true
+  },
+  "planned_resume_pairs": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+  "cpu_count": 9,
+  "load_average": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "binaries": {
+    "baseline": "9cd3e0fef8b5bae8579127c25972529f6949053ec72eb1aa2dac18f9a111d07d",
+    "full-frame-owned": "e75f9294e609f22cef102e3e1ecccdc40901072352848dab46d6c21bd3c6bbda"
+  },
+  "git_diff_sha256": "eb4d1bc286687037c1e25bd72248120aeb35edce6e8f2a785e52a95bbd30bb20"
+}

@@ -328,6 +328,7 @@ impl Drop for StreamWorker {
 
 #[cfg(test)]
 mod tests {
+    include!("stream_performance_tests.rs");
     use super::*;
     use futures_util::{pin_mut, poll};
     fn fixture() -> (SdkByteStream, StreamWorker, OutboundBudget, Arc<Gate>) {

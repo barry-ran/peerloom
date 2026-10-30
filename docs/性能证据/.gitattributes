@@ -1,0 +1,4 @@
+# 冻结证据必须保留原始字节；patch 上下文空行和原始日志尾空行不重写。
+* -text
+*.patch -whitespace
+*日志.txt -whitespace

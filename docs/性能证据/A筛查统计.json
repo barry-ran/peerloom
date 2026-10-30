@@ -1,0 +1,386 @@
+[
+  {
+    "connections": 1,
+    "size": 64,
+    "variants": [
+      "baseline",
+      "send-owned"
+    ],
+    "pairs": 5,
+    "metrics": {
+      "cpu_ns_per_byte": {
+        "paired_percent_change": -2.2552677109633783,
+        "bootstrap95": [
+          -5.93608955405519,
+          1.7406192515956642
+        ],
+        "baseline_median": 821.875,
+        "candidate_median": 782.03125,
+        "baseline_range": [
+          773.4375,
+          839.0625
+        ],
+        "candidate_range": [
+          765.625,
+          829.6875
+        ]
+      },
+      "mib_per_s": {
+        "paired_percent_change": 2.546305562921462,
+        "bootstrap95": [
+          -2.5448352237670764,
+          7.469592887494504
+        ],
+        "baseline_median": 1.402869,
+        "candidate_median": 1.475027,
+        "baseline_range": [
+          1.370964,
+          1.502683
+        ],
+        "candidate_range": [
+          1.382234,
+          1.534848
+        ]
+      },
+      "rtt_p50_us": {
+        "paired_percent_change": -1.8597480968461773,
+        "bootstrap95": [
+          -4.640054383870716,
+          1.6822622108598857
+        ],
+        "baseline_median": 72.837,
+        "candidate_median": 69.788,
+        "baseline_range": [
+          70.093,
+          73.389
+        ],
+        "candidate_range": [
+          68.531,
+          73.97
+        ]
+      },
+      "rtt_p95_us": {
+        "paired_percent_change": -3.3173269091668214,
+        "bootstrap95": [
+          -11.352934004165395,
+          4.148101056903435
+        ],
+        "baseline_median": 156.802,
+        "candidate_median": 152.129,
+        "baseline_range": [
+          146.937,
+          172.58
+        ],
+        "candidate_range": [
+          139.175,
+          168.389
+        ]
+      },
+      "rtt_p99_us": {
+        "paired_percent_change": -3.2827373649618288,
+        "bootstrap95": [
+          -13.550389763069001,
+          6.4415059332127615
+        ],
+        "baseline_median": 308.656,
+        "candidate_median": 296.868,
+        "baseline_range": [
+          273.734,
+          352.821
+        ],
+        "candidate_range": [
+          256.393,
+          333.808
+        ]
+      }
+    }
+  },
+  {
+    "connections": 1,
+    "size": 16384,
+    "variants": [
+      "baseline",
+      "send-owned"
+    ],
+    "pairs": 5,
+    "metrics": {
+      "cpu_ns_per_byte": {
+        "paired_percent_change": -8.201893893799353,
+        "bootstrap95": [
+          -9.522948729003646,
+          -6.709342064261528
+        ],
+        "baseline_median": 14.038086,
+        "candidate_median": 12.664795,
+        "baseline_range": [
+          13.179779,
+          15.611649
+        ],
+        "candidate_range": [
+          12.378693,
+          14.057159
+        ]
+      },
+      "mib_per_s": {
+        "paired_percent_change": 10.172053346567992,
+        "bootstrap95": [
+          7.978246779964452,
+          11.884906985027047
+        ],
+        "baseline_median": 94.269621,
+        "candidate_median": 105.881335,
+        "baseline_range": [
+          85.13023,
+          101.607834
+        ],
+        "candidate_range": [
+          95.529917,
+          109.485494
+        ]
+      },
+      "rtt_p50_us": {
+        "paired_percent_change": -5.340328734830142,
+        "bootstrap95": [
+          -6.306706802314927,
+          -4.476342795425812
+        ],
+        "baseline_median": 277.951,
+        "candidate_median": 265.873,
+        "baseline_range": [
+          276.177,
+          318.846
+        ],
+        "candidate_range": [
+          261.472,
+          296.428
+        ]
+      },
+      "rtt_p95_us": {
+        "paired_percent_change": -16.9133134537066,
+        "bootstrap95": [
+          -21.016088236763537,
+          -12.349632841634833
+        ],
+        "baseline_median": 550.293,
+        "candidate_median": 440.315,
+        "baseline_range": [
+          465.047,
+          638.833
+        ],
+        "candidate_range": [
+          418.637,
+          525.746
+        ]
+      },
+      "rtt_p99_us": {
+        "paired_percent_change": -31.191944438630603,
+        "bootstrap95": [
+          -41.60477883415478,
+          -19.705639761771828
+        ],
+        "baseline_median": 980.848,
+        "candidate_median": 669.889,
+        "baseline_range": [
+          725.792,
+          1330.77
+        ],
+        "candidate_range": [
+          617.297,
+          800.061
+        ]
+      }
+    }
+  },
+  {
+    "connections": 32,
+    "size": 64,
+    "variants": [
+      "baseline",
+      "send-owned"
+    ],
+    "pairs": 5,
+    "metrics": {
+      "cpu_ns_per_byte": {
+        "paired_percent_change": 7.218463809493407,
+        "bootstrap95": [
+          -1.2965910357199593,
+          16.394244921806298
+        ],
+        "baseline_median": 425.78125,
+        "candidate_median": 453.90625,
+        "baseline_range": [
+          416.40625,
+          453.90625
+        ],
+        "candidate_range": [
+          403.90625,
+          525.78125
+        ]
+      },
+      "mib_per_s": {
+        "paired_percent_change": -6.326194970068329,
+        "bootstrap95": [
+          -13.949643249329965,
+          2.133848899889506
+        ],
+        "baseline_median": 8.376954,
+        "candidate_median": 7.888178,
+        "baseline_range": [
+          7.855298,
+          8.639041
+        ],
+        "candidate_range": [
+          6.83338,
+          8.924676
+        ]
+      },
+      "rtt_p50_us": {
+        "paired_percent_change": 7.605977591578307,
+        "bootstrap95": [
+          -0.6948446367416066,
+          16.539565589542633
+        ],
+        "baseline_median": 445.507,
+        "candidate_median": 476.929,
+        "baseline_range": [
+          440.34,
+          468.13
+        ],
+        "candidate_range": [
+          422.774,
+          548.425
+        ]
+      },
+      "rtt_p95_us": {
+        "paired_percent_change": 6.778251463233735,
+        "bootstrap95": [
+          -4.462520499262923,
+          19.34159290289434
+        ],
+        "baseline_median": 715.806,
+        "candidate_median": 758.209,
+        "baseline_range": [
+          679.122,
+          769.126
+        ],
+        "candidate_range": [
+          663.058,
+          894.962
+        ]
+      },
+      "rtt_p99_us": {
+        "paired_percent_change": 1.2676318144899203,
+        "bootstrap95": [
+          -16.443480233249097,
+          19.565946774649305
+        ],
+        "baseline_median": 913.794,
+        "candidate_median": 941.836,
+        "baseline_range": [
+          804.758,
+          1103.298
+        ],
+        "candidate_range": [
+          784.558,
+          1190.562
+        ]
+      }
+    }
+  },
+  {
+    "connections": 32,
+    "size": 16384,
+    "variants": [
+      "baseline",
+      "send-owned"
+    ],
+    "pairs": 5,
+    "metrics": {
+      "cpu_ns_per_byte": {
+        "paired_percent_change": 0.4263021159442858,
+        "bootstrap95": [
+          -1.083238340232174,
+          1.9433991756765232
+        ],
+        "baseline_median": 12.130737,
+        "candidate_median": 12.226105,
+        "baseline_range": [
+          12.111664,
+          12.235641
+        ],
+        "candidate_range": [
+          11.968613,
+          12.531281
+        ]
+      },
+      "mib_per_s": {
+        "paired_percent_change": -0.7223016199434351,
+        "bootstrap95": [
+          -2.8260294131844845,
+          1.4269699603974835
+        ],
+        "baseline_median": 304.778125,
+        "candidate_median": 302.094833,
+        "baseline_range": [
+          300.04689,
+          305.525564
+        ],
+        "candidate_range": [
+          292.303797,
+          310.073791
+        ]
+      },
+      "rtt_p50_us": {
+        "paired_percent_change": 0.0651314568660555,
+        "bootstrap95": [
+          -1.47499368315925,
+          1.6293315554791334
+        ],
+        "baseline_median": 3186.193,
+        "candidate_median": 3215.311,
+        "baseline_range": [
+          3183.078,
+          3238.556
+        ],
+        "candidate_range": [
+          3132.89,
+          3263.813
+        ]
+      },
+      "rtt_p95_us": {
+        "paired_percent_change": 2.4690384122354776,
+        "bootstrap95": [
+          -0.9965583682355484,
+          6.055947753632242
+        ],
+        "baseline_median": 4722.267,
+        "candidate_median": 4820.736,
+        "baseline_range": [
+          4658.486,
+          4807.126
+        ],
+        "candidate_range": [
+          4692.141,
+          5094.36
+        ]
+      },
+      "rtt_p99_us": {
+        "paired_percent_change": 6.763972567458247,
+        "bootstrap95": [
+          -0.9274088537885564,
+          16.244494962231233
+        ],
+        "baseline_median": 5535.806,
+        "candidate_median": 5700.966,
+        "baseline_range": [
+          5438.803,
+          5703.099
+        ],
+        "candidate_range": [
+          5534.285,
+          6854.754
+        ]
+      }
+    }
+  }
+]

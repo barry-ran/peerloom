@@ -1,0 +1,185 @@
+diff --git a/src/device-sdk/device-transport-webrtc/src/lib.rs b/src/device-sdk/device-transport-webrtc/src/lib.rs
+index c0933d8..3d5c973 100644
+--- a/src/device-sdk/device-transport-webrtc/src/lib.rs
++++ b/src/device-sdk/device-transport-webrtc/src/lib.rs
+@@ -677,7 +677,7 @@ pub struct MessageChannel {
+     max_message_bytes: usize,
+     timeout: Duration,
+     opened: bool,
+-    pending: Option<Vec<u8>>,
++    pending: Option<BytesMut>,
+ }
+ 
+ /// 不含凭证的 DataChannel 协商元数据；用于拒绝错误通道语义。
+@@ -737,7 +737,7 @@ impl MessageChannel {
+                             return Err(TransportError::MessageTooLarge);
+                         }
+                         // 固定版本保证 OnOpen 先于 OnMessage；仍保留一个有界消息作为防御。
+-                        self.pending = Some(message.data.to_vec());
++                        self.pending = Some(message.data);
+                         self.opened = true;
+                         return Ok(());
+                     }
+@@ -772,6 +772,12 @@ impl MessageChannel {
+     }
+ 
+     pub async fn receive(&mut self) -> Result<Vec<u8>, TransportError> {
++        self.receive_owned().await.map(Vec::from)
++    }
++
++    // Retain a complete backend message until the stream reader has consumed it.
++    // Public message callers still receive the same owned Vec API.
++    async fn receive_owned(&mut self) -> Result<BytesMut, TransportError> {
+         if let Some(message) = self.pending.take() {
+             return Ok(message);
+         }
+@@ -786,7 +792,7 @@ impl MessageChannel {
+                             let _ = self.channel.close().await;
+                             return Err(TransportError::MessageTooLarge);
+                         }
+-                        return Ok(message.data.to_vec());
++                        return Ok(message.data);
+                     }
+                     DataChannelEvent::OnClose | DataChannelEvent::OnError => {
+                         return Err(TransportError::Closed);
+diff --git a/src/device-sdk/device-transport-webrtc/src/stream.rs b/src/device-sdk/device-transport-webrtc/src/stream.rs
+index aed804a..6e2e236 100644
+--- a/src/device-sdk/device-transport-webrtc/src/stream.rs
++++ b/src/device-sdk/device-transport-webrtc/src/stream.rs
+@@ -3,6 +3,7 @@
+ //! 取消正在发送的 future 后该流失败关闭，不能猜测或重放不确定字节。
+ 
+ use crate::{IncomingChannel, MessageChannel, PeerTransport, TransportError, reserve_channel};
++use bytes::BytesMut;
+ use std::sync::atomic::Ordering;
+ use webrtc::data_channel::RTCDataChannelInit;
+ 
+@@ -47,7 +48,7 @@ pub struct ByteStream {
+     write_closed: bool,
+     read_closed: bool,
+     failed: bool,
+-    pending: Vec<u8>,
++    pending: BytesMut,
+     offset: usize,
+ }
+ 
+@@ -113,7 +114,7 @@ impl ByteStream {
+             write_closed: false,
+             read_closed: false,
+             failed: false,
+-            pending: Vec::new(),
++            pending: BytesMut::new(),
+             offset: 0,
+         }
+     }
+@@ -129,7 +130,7 @@ impl ByteStream {
+                 .await?;
+             self.settings_sent = true;
+         }
+-        let frame = match self.channel.receive().await {
++        let frame = match self.channel.receive_owned().await {
+             Ok(frame) => frame,
+             Err(error) => {
+                 self.failed = true;
+@@ -232,7 +233,7 @@ impl ByteStream {
+         if self.read_closed {
+             return Ok(0);
+         }
+-        let frame = match self.channel.receive().await {
++        let frame = match self.channel.receive_owned().await {
+             Ok(frame) => frame,
+             // receive returns complete SCTP messages atomically. A timeout while
+             // awaiting the next event consumed no frame and advances no sequence.
+@@ -243,7 +244,7 @@ impl ByteStream {
+             }
+         };
+         let parsed = decode_frame(&frame, self.rx_seq, self.receive_limit);
+-        let (kind, payload) = match parsed {
++        let (kind, _) = match parsed {
+             Ok(parsed) => parsed,
+             Err(error) => {
+                 self.failed = true;
+@@ -259,9 +260,10 @@ impl ByteStream {
+             self.read_closed = true;
+             return Ok(0);
+         }
+-        self.pending.clear();
+-        self.pending.extend_from_slice(payload);
+-        self.offset = 0;
++        // The backend message already owns the validated payload. Keep it and
++        // skip the header rather than copying through a second pending buffer.
++        self.pending = frame;
++        self.offset = HEADER;
+         Ok(self.copy_pending(output))
+     }
+ 
+@@ -273,7 +275,7 @@ impl ByteStream {
+         if !self.read_closed {
+             return Err(TransportError::NotReady.into());
+         }
+-        match self.channel.receive().await {
++        match self.channel.receive_owned().await {
+             Err(TransportError::Timeout) => Err(TransportError::Timeout.into()),
+             Err(TransportError::Closed) => {
+                 self.failed = true;
+diff --git a/src/device-sdk/device-transport-webrtc/tests/stream_pair.rs b/src/device-sdk/device-transport-webrtc/tests/stream_pair.rs
+index 3de3941..bfd199d 100644
+--- a/src/device-sdk/device-transport-webrtc/tests/stream_pair.rs
++++ b/src/device-sdk/device-transport-webrtc/tests/stream_pair.rs
+@@ -337,3 +337,56 @@ async fn idle_read_timeout_preserves_sequence_partial_buffer_and_fin() {
+     b.close().await.unwrap();
+     result.expect("bounded idle timeout regression").unwrap();
+ }
++
++#[tokio::test]
++#[ignore = "requires local UDP sockets"]
++async fn owned_receive_keeps_mixed_frames_partial_reads_and_empty_reads_exact() {
++    let config = TransportConfig {
++        policy: ConnectionPolicy::DirectOnly,
++        include_loopback: true,
++        ..TransportConfig::default()
++    };
++    let source = PeerTransport::new(config.clone()).await.unwrap();
++    let target = PeerTransport::new(config).await.unwrap();
++    let mut outgoing = source.create_stream("mixed-partial").await.unwrap();
++    let offer = source.create_offer().await.unwrap();
++    let answer = target.answer_offer(offer).await.unwrap();
++    source.apply_answer(answer).await.unwrap();
++    let mut incoming = target.accept_stream().await.unwrap();
++    let (a, b) = tokio::join!(outgoing.wait_open(), incoming.wait_open());
++    a.unwrap();
++    b.unwrap();
++    let mut expected = Vec::new();
++    for (frame, size) in [1, 16384, 63, 1023, 1].into_iter().enumerate() {
++        let payload: Vec<_> = (0..size)
++            .map(|offset| ((offset + frame * 17) % 251) as u8)
++            .collect();
++        assert_eq!(outgoing.write(&payload).await.unwrap(), size);
++        expected.extend(payload);
++    }
++    outgoing.shutdown_write().await.unwrap();
++    let mut actual = Vec::new();
++    let mut output = [0_u8; 20000];
++    let sizes = [1, 7, 128, 20000];
++    let mut read = 0;
++    loop {
++        assert_eq!(incoming.read(&mut []).await.unwrap(), 0);
++        let n = incoming
++            .read(&mut output[..sizes[read % sizes.len()]])
++            .await
++            .unwrap();
++        if n == 0 {
++            break;
++        }
++        actual.extend_from_slice(&output[..n]);
++        read += 1;
++    }
++    assert_eq!(actual, expected);
++    assert_eq!(incoming.write(b"reverse").await.unwrap(), 7);
++    let mut reverse = [0; 7];
++    assert_eq!(outgoing.read(&mut reverse).await.unwrap(), 7);
++    assert_eq!(&reverse, b"reverse");
++    outgoing.close().await.unwrap();
++    source.close().await.unwrap();
++    target.close().await.unwrap();
++}

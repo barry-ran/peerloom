@@ -1,0 +1,12 @@
+正式 C 矩阵基础设施中断记录
+
+原命令 session 44189；输出 c-full-matrix.jsonl / c-full-progress.log。
+最后完整记录：2026-10-30 16:20:58 UTC，32连接 × 16384B，repeat=2 baseline，valid=true，exit_code=0。
+保存 1 条环境记录 + 41 条完整成功测量；下一候选样本没有完整输出，不纳入统计。
+2026-10-30 16:24:57 UTC write_stdin 恢复失败：exec-server transport disconnected; failed to resume exec-server session: recovery timed out after 25s。
+2026-10-30 16:25:34 UTC 再次只读 write_stdin：Unknown process id 44189。
+文件到 16:29:54 UTC 仍无推进。每次 exec 是独立进程 namespace，因此其它 exec 的 ps 无进程不是跨 namespace 终止证明。
+测试本身有 600s timeout，Python child 有 650s timeout；在最后完整输出之后至少等待 650s，再作文件/负载检查，避免与旧负载并行。
+保留中断前全部数据；补测用新输出文件，不覆盖、删改或把未完成样本标为通过。
+16:32:06 UTC（最后输出后668s）：旧会话已不存在、日志和数据未推进，已越过600s测试及650s子进程界限；无可观测继续执行。开始独立补测前记录以上判断依据，不将未知终止码伪造为0。
+补测使用同冻结binary，重新做32×16384B完整3对（旧32条件2对和1个孤立baseline照存但主汇总不混用），随后100/300/500×16384B各3对。新文件c-large-supplement.jsonl；外层flock持锁，最后写runner exit码。

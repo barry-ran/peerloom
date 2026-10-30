@@ -1,0 +1,144 @@
+   Compiling device-transport-webrtc v0.1.5 (/workspace/shared/peerloom-performance/src/device-sdk/device-transport-webrtc)
+   Compiling device-core v0.1.5 (/workspace/shared/peerloom-performance/src/device-sdk/device-core)
+   Compiling device-ffi v0.1.5 (/workspace/shared/peerloom-performance/src/device-sdk/device-ffi)
+    Finished `release` profile [optimized] target(s) in 36.14s
+     Running unittests src/lib.rs (/tmp/peerloom-performance-target/release/deps/device_core-852e03f30bb359e9)
+
+running 81 tests
+test continuous_clock::tests::backward_clock_is_sticky_across_clones ... ok
+test continuous_clock::tests::equal_ticks_and_suspend_jump_are_allowed ... ok
+test continuous_clock::tests::unavailable_clock_is_sticky ... ok
+test lease::continuous_tests::clock_errors_and_backwards_reads_are_sticky_for_authorization ... ok
+test lease::continuous_tests::continuous_deadline_overflow_rejects_instead_of_wrapping ... ok
+test lease::continuous_tests::deadline_equality_and_cap_fail_closed ... ok
+test lease::continuous_tests::failed_hello_clock_cannot_establish_bound ... ok
+test lease::continuous_tests::first_grant_cannot_restart_receive_cap_after_sleep_during_conversion ... ok
+test lease::continuous_tests::legacy_bound_cannot_downgrade_existing_continuous_authorization ... ok
+test lease::continuous_tests::peer_update_and_replay_never_extend_continuous_grant ... ok
+test lease::continuous_tests::queued_renewal_after_sleep_cannot_resurrect_expired_authorization ... ok
+test lease::continuous_tests::sleep_during_hello_counts_even_when_instant_does_not_advance ... ok
+test lease::continuous_tests::sleep_expires_active_authorization_without_timer_progress ... ok
+test lease::continuous_tests::sleep_inside_renewal_conversion_cannot_resurrect_old_grant ... ok
+test lease::continuous_tests::valid_correlated_renewal_extends_both_bounds ... ok
+test relay::tests::managed_configuration_is_bounded_and_session_scoped ... ok
+test relay::tests::negotiation_generations_above_u32_retain_json_safe_protocol_bound ... ok
+test sdk::channels::gate_tests::active_construction_and_workers_share_slot_without_reclaiming_lifetime_counter ... ok
+test sdk::channels::gate_tests::lease_and_installation_invalidate_all_children_but_child_close_is_local ... ok
+test sdk::channels::gate_tests::validity_wait_observes_close_before_and_after_registration ... ok
+test sdk::channels::message::tests::continuous_expiry_is_rechecked_after_select_dequeues_message ... ok
+test sdk::channels::message::tests::continuous_suspend_blocks_queued_messages_senders_and_validity ... ok
+test sdk::channels::message::tests::dropped_oldest_completes_exact_sender_and_cancellation_releases_new ... ok
+test sdk::channels::message::tests::expiration_settles_waiter_and_inflight_cancel_retains_charge_until_drop ... ok
+test sdk::channels::message::tests::global_budget_and_parent_expiry_cover_sibling_channels_and_cloned_senders ... ok
+test sdk::channels::message::tests::newest_drop_does_not_cancel_existing_sender_or_consume_extra_budget ... ok
+test sdk::channels::message::tests::upper_admission_deadline_cannot_be_restarted_after_ffi_queue_delay ... ok
+test sdk::channels::message::tests::worker_drop_settles_queued_sends_and_releases_budget_with_sender_retained ... ok
+test sdk::channels::stream::tests::already_expired_fin_is_fail_closed_without_consuming_budget ... ok
+test sdk::channels::stream::tests::cancel_uncertain_stream_write_closes_stream_but_keeps_charge_until_worker_drop ... ok
+test sdk::channels::stream::tests::continuous_expiry_is_rechecked_after_select_dequeues_stream_chunk ... ok
+test sdk::channels::stream::tests::continuous_suspend_blocks_buffered_stream_bytes_and_writes ... ok
+test sdk::channels::stream::tests::continuous_suspend_invalidates_pending_stream_write_without_timer_expiry ... ok
+test sdk::channels::stream::tests::earlier_ffi_deadline_expires_queued_stream_without_resuming_middle_bytes ... ok
+test sdk::channels::stream::tests::queuefull_is_non_admission_not_stream_failure_and_parent_expiry_blocks_data ... ok
+test sdk::channels::stream::tests::worker_abort_drop_settles_queued_stream_write_and_releases_charge ... ok
+test sdk::channels::stream::tests::worker_performance::full_delivery_queue_keeps_reverse_write_and_parent_expiry_live ... ignored, requires real loopback UDP
+test sdk::channels::stream::tests::worker_performance::full_delivery_queue_observes_unnotified_continuous_expiry ... ignored, requires real loopback UDP
+test sdk::channels::stream::tests::worker_performance::full_delivery_queue_observes_unnotified_installation_close ... ignored, requires real loopback UDP
+test sdk::channels::stream::tests::worker_performance::full_delivery_queue_reader_drop_releases_worker_and_budget ... ignored, requires real loopback UDP
+test sdk::channels::stream::tests::worker_performance::reserved_empty_queue_reader_drop_releases_worker_and_budget ... ignored, requires real loopback UDP
+test sdk::channels::stream::tests::worker_performance::sdk_worker_backpressure_performance ... ignored, requires real loopback UDP; explicit release performance experiment
+test sdk::multiconnection_tests::authority_64_pending_sessions_use_only_32_inflight_without_dropping_rest ... ok
+test sdk::multiconnection_tests::authority_closing_auth_failure_is_fatal_without_reviving_or_forgetting_gate ... ok
+test sdk::multiconnection_tests::authority_healthy_churn_over_4096_has_no_history_floor ... ok
+test sdk::multiconnection_tests::authority_local_closed_cannot_be_revived_by_live_snapshot ... ok
+test sdk::multiconnection_tests::authority_matching_buffered_offer_is_processed_only_after_fresh_snapshot ... ok
+test sdk::multiconnection_tests::authority_offer_before_snapshot_stale_request_and_generation_are_not_consumed ... ok
+test sdk::multiconnection_tests::authority_permanent_denials_release_only_unadmitted_slots ... ok
+test sdk::multiconnection_tests::authority_terminal_before_initial_never_delivers_incoming ... ok
+test sdk::multiconnection_tests::authority_transient_retry_has_cooldown_and_total_operation_deadline ... ok
+test sdk::multiconnection_tests::local_close_releases_active_capacity_but_keeps_replay_fence_until_terminal ... ok
+test sdk::multiconnection_tests::queued_local_description_rechecks_generation_lease_and_reset_gate ... ok
+test sdk::multiconnection_tests::target_closed_session_ignores_late_snapshot_and_offer ... ok
+test sdk::multiconnection_tests::target_rejected_session_ignores_late_snapshot_and_offer ... ok
+test sdk::reset::tests::installation_fence_invalidates_existing_connection_observers ... ok
+test sdk::reset::tests::reset_fence_is_shared_by_recovery_and_replacement_gates ... ok
+test sdk::session_map::tests::configured_capacity_does_not_allocate_or_have_an_artificial_ceiling ... ok
+test sdk::session_map::tests::disconnect_releases_only_unknown_pending_not_live_sessions ... ok
+test sdk::session_map::tests::duplicate_request_binding_preserves_each_reservation ... ok
+test sdk::session_map::tests::failed_correlation_does_not_release_or_overwrite ... ok
+test sdk::session_map::tests::generation_replacement_and_single_failure_leave_siblings ... ok
+test sdk::session_map::tests::identifier_storage_is_bounded_without_mutating_admission ... ok
+test sdk::session_map::tests::pending_authorizing_and_connecting_share_capacity ... ok
+test sdk::session_map::tests::released_slots_have_no_lifetime_cap_and_zero_is_unlimited ... ok
+test sdk::session_map::tests::retiring_releases_active_capacity_without_forgetting_session_identity ... ok
+test sdk::session_map::tests::shutdown_fences_all_before_drain_and_never_reopens ... ok
+test sdk::session_map::tests::stale_reservation_and_counter_wrap_do_not_alias ... ok
+test sdk::tests::close_during_continuous_clock_read_is_observed_before_check_returns ... ok
+test sdk::tests::facade_rejects_wrong_label_protocol_and_unreliable_channels ... ok
+test sdk::tests::managed_ice_fetch_is_cancellable_before_transport_creation ... ok
+test sdk::tests::managed_ice_response_after_authorization_expiry_cannot_start_transport ... ok
+test sdk::tests::managed_relay_policy_defers_only_missing_nodes_and_rejects_mixed_configuration ... ok
+test sdk::tests::queued_payload_is_not_delivered_after_expiry ... ok
+test sdk::tests::readonly_validity_observer_tracks_expiry_and_owner_drop ... ok
+test sdk::tests::recovery_does_not_retry_denial_or_expired_authority ... ok
+test sdk::tests::retry_backoff_is_bounded_and_reaches_thirty_seconds ... ok
+test sdk::tests::revoke_wakes_pending_receive_and_blocks_buffered_delivery ... ok
+test sdk::tests::terminal_worker_notification_cancels_with_full_actor_queue ... ok
+test sdk::tests::terminal_worker_notification_preserves_generation ... ok
+test sdk::tests::uncertain_rotation_retry_fits_old_token_overlap ... ok
+
+test result: ok. 75 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.57s
+
+     Running unittests src/lib.rs (/tmp/peerloom-performance-target/release/deps/device_ffi-3220b3a0f44b22df)
+
+running 29 tests
+test boundary::capacity_tests::more_than_sixteen_instances_can_quiesce_and_release ... ok
+test bridge::tests::ffi_optional_count_caps_match_core_semantics ... ok
+test bridge::tests::rejected_session_close_maps_to_public_internal_without_reason_details ... ok
+test bridge::tests::typed_errors_do_not_collapse_auth_and_timeout_or_expose_details ... ok
+test budget::tests::partitions_and_checked_growth ... ok
+test channels::tests::wire_modes_are_strict_and_stream_rejects_message_drop_options ... ok
+test handles::tests::child_close_does_not_close_sibling_and_removal_releases_slot ... ok
+test handles::tests::clearing_or_dropping_registry_invalidates_retained_events ... ok
+test handles::tests::fin_only_fences_writes_and_message_deadline_is_absolute ... ok
+test handles::tests::generation_and_reset_authority_remain_fail_closed ... ok
+test handles::tests::no_historical_registry_growth_and_limits_are_checked ... ok
+test handles::tests::ownership_and_parent_close_fence_queued_child_clones ... ok
+test handles::tests::unlimited_and_explicit_large_limits_grow_on_demand_and_fence_on_clear ... ok
+test queue::tests::closed_receiver_and_reserved_send_are_not_budget_full ... ok
+test queue::tests::final_sender_cannot_notify_between_predicate_and_condvar_wait ... ok
+test queue::tests::reserved_terminal_needs_no_new_allocation_and_receiver_close_refunds_once ... ok
+test queue::tests::round_robin_management_and_terminal_barrier ... ok
+test state::reset_tests::accepted_close_routed_after_worker_exit_completes_closed_once ... ok
+test state::reset_tests::baseline_terminal_capacity_is_not_thirty_two_pending_operations ... ok
+test state::reset_tests::five_hundred_read_permits_survive_shrink_and_data_exhaustion ... ok
+test state::reset_tests::lifecycle_tickets_survive_paused_callback_and_exhausted_critical_bytes ... ok
+test state::reset_tests::object_lifetime_is_returned_on_suppression_failure_and_unused_ticket_drop ... ok
+test state::reset_tests::queued_closed_lifetimes_keep_management_capacity_until_callback_returns ... ok
+test state::reset_tests::reset_admission_fences_and_cancels_queued_but_not_running_operations ... ok
+test state::reset_tests::terminal_read_allows_reentry_without_releasing_borrowed_credit ... ok
+test storage::tests::async_cas_load_save_delete_and_conflict ... ok
+test storage::tests::cancelled_external_wait_does_not_retain_reply_slot ... ok
+test storage::tests::overflowing_revision_is_rejected_before_host_mutation ... ok
+test storage::tests::revision_must_be_exact_cas_successor ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/lib.rs (/tmp/peerloom-performance-target/release/deps/device_transport_webrtc-c362350aa14d4bf8)
+
+running 12 tests
+test gathering::tests::empty_and_relay_only_snapshots_are_not_direct_fallbacks ... ok
+test stream::tests::frames_validate_sequence_size_type_and_fin ... ok
+test tests::actual_dcep_metadata_preserves_all_six_wire_types ... ignored, requires local UDP sockets
+test tests::backend_categories_do_not_expose_secrets ... ok
+test tests::channel_reservations_are_hard_capped ... ok
+test tests::direct_rejects_remote_relay_candidates ... ok
+test tests::noncanonical_relay_candidate_cannot_bypass_direct_policy ... ok
+test tests::oversized_sdp_rejected_before_backend_parse ... ok
+test tests::relay_policy_needs_explicit_server_and_direct_rejects_turn ... ok
+test tests::stream_not_misrepresented_as_message_channel ... ok
+test tests::typed_incoming_requires_exact_protocol_and_reliability ... ok
+test tests::zero_limits_cannot_enable_upstream_unbounded_send ... ok
+
+test result: ok. 11 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

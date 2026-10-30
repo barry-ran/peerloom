@@ -1,0 +1,28 @@
+diff --git a/src/device-sdk/device-core/src/sdk/channels/stream.rs b/src/device-sdk/device-core/src/sdk/channels/stream.rs
+index 45ddf85..60d3ccb 100644
+--- a/src/device-sdk/device-core/src/sdk/channels/stream.rs
++++ b/src/device-sdk/device-core/src/sdk/channels/stream.rs
+@@ -297,7 +297,14 @@ impl StreamWorker {
+                         read_permit.expect("reserved stream capacity").send(buffer[..n].to_vec());
+                         eof = n == 0;
+                     },
+-                    // Bounded backpressure retry, never busy-spin on a full receiver.
++                    // Capacity release wakes delivery immediately. Only this worker
++                    // produces chunks; release the temporary permit before the next
++                    // loop acquires the permit that guards the actual raw read.
++                    permit = self.received.reserve(), if !eof && read_permit.is_none() => {
++                        drop(permit.map_err(|_| SdkError::Closed)?);
++                    },
++                    // Preserve the original 5ms gate-check backstop, including
++                    // unnotified continuous-clock/installation invalidation.
+                     _ = tokio::time::sleep(Duration::from_millis(5)), if !eof && read_permit.is_none() => {},
+                 }
+             }
+@@ -328,6 +335,7 @@ impl Drop for StreamWorker {
+ 
+ #[cfg(test)]
+ mod tests {
++    include!("stream_performance_tests.rs");
+     use super::*;
+     use futures_util::{pin_mut, poll};
+     fn fixture() -> (SdkByteStream, StreamWorker, OutboundBudget, Arc<Gate>) {

@@ -1,0 +1,95 @@
+diff --git a/src/device-sdk/device-transport-webrtc/src/lib.rs b/src/device-sdk/device-transport-webrtc/src/lib.rs
+index c0933d8..bc05cbe 100644
+--- a/src/device-sdk/device-transport-webrtc/src/lib.rs
++++ b/src/device-sdk/device-transport-webrtc/src/lib.rs
+@@ -757,7 +757,16 @@ impl MessageChannel {
+         if payload.len() > self.max_message_bytes {
+             return Err(TransportError::MessageTooLarge);
+         }
+-        tokio::time::timeout(self.timeout, self.channel.try_send(BytesMut::from(payload)))
++        self.send_owned(BytesMut::from(payload)).await
++    }
++
++    // Private ownership handoff for already-framed streams. Keep the public slice
++    // API and the same atomic try_send/backpressure and timeout semantics.
++    async fn send_owned(&self, payload: BytesMut) -> Result<(), TransportError> {
++        if payload.len() > self.max_message_bytes {
++            return Err(TransportError::MessageTooLarge);
++        }
++        tokio::time::timeout(self.timeout, self.channel.try_send(payload))
+             .await
+             .map_err(|_| TransportError::Timeout)?
+             .map_err(classify_backend)
+diff --git a/src/device-sdk/device-transport-webrtc/src/stream.rs b/src/device-sdk/device-transport-webrtc/src/stream.rs
+index aed804a..f4d9d21 100644
+--- a/src/device-sdk/device-transport-webrtc/src/stream.rs
++++ b/src/device-sdk/device-transport-webrtc/src/stream.rs
+@@ -3,6 +3,7 @@
+ //! 取消正在发送的 future 后该流失败关闭，不能猜测或重放不确定字节。
+ 
+ use crate::{IncomingChannel, MessageChannel, PeerTransport, TransportError, reserve_channel};
++use bytes::{BufMut, BytesMut};
+ use std::sync::atomic::Ordering;
+ use webrtc::data_channel::RTCDataChannelInit;
+ 
+@@ -188,7 +189,7 @@ impl ByteStream {
+         let next = self.tx_seq.checked_add(1).ok_or(StreamError::Protocol)?;
+         let frame = encode_frame(kind, self.tx_seq, payload);
+         self.tx_pending = true;
+-        let outcome = self.channel.send(&frame).await;
++        let outcome = self.channel.send_owned(frame).await;
+         self.tx_pending = false;
+         match outcome {
+             Ok(()) => {
+@@ -310,10 +311,10 @@ impl ByteStream {
+     }
+ }
+ 
+-fn encode_frame(kind: u8, sequence: u64, payload: &[u8]) -> Vec<u8> {
+-    let mut frame = Vec::with_capacity(HEADER + payload.len());
++fn encode_frame(kind: u8, sequence: u64, payload: &[u8]) -> BytesMut {
++    let mut frame = BytesMut::with_capacity(HEADER + payload.len());
+     frame.extend_from_slice(MAGIC);
+-    frame.push(kind);
++    frame.put_u8(kind);
+     frame.extend_from_slice(&sequence.to_be_bytes());
+     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+     frame.extend_from_slice(payload);
+@@ -347,6 +348,28 @@ fn decode_frame(frame: &[u8], sequence: u64, max_chunk: usize) -> Result<(u8, &[
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[test]
++    fn owned_frames_preserve_v1_wire_bytes() {
++        for (kind, payload) in [
++            (DATA, vec![37; MAX_CHUNK]),
++            (FIN, Vec::new()),
++            (SETTINGS, 16384_u32.to_be_bytes().to_vec()),
++        ] {
++            let sequence = 0x0102_0304_0506_0708_u64;
++            let frame = encode_frame(kind, sequence, &payload);
++            assert_eq!(frame.len(), HEADER + payload.len());
++            assert_eq!(&frame[..4], b"PLS1");
++            assert_eq!(frame[4], kind);
++            assert_eq!(&frame[5..13], &sequence.to_be_bytes());
++            assert_eq!(&frame[13..17], &(payload.len() as u32).to_be_bytes());
++            assert_eq!(&frame[HEADER..], &payload);
++            assert_eq!(
++                decode_frame(&frame, sequence, MAX_CHUNK),
++                Ok((kind, payload.as_slice()))
++            );
++        }
++    }
++
+     #[test]
+     fn frames_validate_sequence_size_type_and_fin() {
+         let frame = encode_frame(DATA, 3, b"abc");
+@@ -357,7 +380,7 @@ mod tests {
+             encode_frame(9, 0, b"x"),
+             encode_frame(DATA, 0, b""),
+             encode_frame(FIN, 0, b"x"),
+-            vec![0; 8],
++            BytesMut::from(&[0; 8][..]),
+         ] {
+             assert_eq!(decode_frame(&bad, 0, MAX_CHUNK), Err(StreamError::Protocol));
+         }

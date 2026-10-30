@@ -79,11 +79,21 @@ async fn actual_byte_stream_preserves_bytes_and_half_close() {
 #[tokio::test]
 #[ignore = "requires local UDP sockets"]
 async fn stream_backpressure_does_not_skip_bytes_or_sequence() {
+    backpressure_preserves_bytes_and_sequence(128, 512).await;
+}
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn full_frame_backpressure_does_not_skip_bytes_or_sequence() {
+    backpressure_preserves_bytes_and_sequence(16_401, 16_384).await;
+}
+
+async fn backpressure_preserves_bytes_and_sequence(message_limit: usize, payload_size: usize) {
     let config = TransportConfig {
         policy: ConnectionPolicy::DirectOnly,
         include_loopback: true,
-        send_buffer_bytes: 128,
-        max_message_bytes: 128,
+        send_buffer_bytes: message_limit,
+        max_message_bytes: message_limit,
         ..TransportConfig::default()
     };
     let source = PeerTransport::new(config.clone()).await.unwrap();
@@ -97,9 +107,10 @@ async fn stream_backpressure_does_not_skip_bytes_or_sequence() {
     a.unwrap();
     b.unwrap();
     let mut accepted = 0;
+    let payload = vec![7; payload_size];
     let initial_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     while accepted == 0 {
-        match outgoing.write(&[7; 512]).await {
+        match outgoing.write(&payload).await {
             Ok(n) => accepted += n,
             Err(StreamError::Transport(device_transport_webrtc::TransportError::BufferFull))
                 if tokio::time::Instant::now() < initial_deadline =>
@@ -111,7 +122,7 @@ async fn stream_backpressure_does_not_skip_bytes_or_sequence() {
     }
     let mut full = false;
     for _ in 0..32 {
-        match outgoing.write(&[7; 512]).await {
+        match outgoing.write(&payload).await {
             Ok(n) => accepted += n,
             Err(StreamError::Transport(device_transport_webrtc::TransportError::BufferFull)) => {
                 full = true;
@@ -336,4 +347,57 @@ async fn idle_read_timeout_preserves_sequence_partial_buffer_and_fin() {
     a.close().await.unwrap();
     b.close().await.unwrap();
     result.expect("bounded idle timeout regression").unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn mixed_frame_sizes_keep_partial_reads_empty_reads_and_fin_exact() {
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        ..TransportConfig::default()
+    };
+    let source = PeerTransport::new(config.clone()).await.unwrap();
+    let target = PeerTransport::new(config).await.unwrap();
+    let mut outgoing = source.create_stream("mixed-partial").await.unwrap();
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    let mut incoming = target.accept_stream().await.unwrap();
+    let (a, b) = tokio::join!(outgoing.wait_open(), incoming.wait_open());
+    a.unwrap();
+    b.unwrap();
+    let mut expected = Vec::new();
+    for (frame, size) in [1, 16384, 63, 1023, 1].into_iter().enumerate() {
+        let payload: Vec<_> = (0..size)
+            .map(|offset| ((offset + frame * 17) % 251) as u8)
+            .collect();
+        assert_eq!(outgoing.write(&payload).await.unwrap(), size);
+        expected.extend(payload);
+    }
+    outgoing.shutdown_write().await.unwrap();
+    let mut actual = Vec::new();
+    let mut output = [0_u8; 20000];
+    let sizes = [1, 7, 128, 20000];
+    let mut read = 0;
+    loop {
+        assert_eq!(incoming.read(&mut []).await.unwrap(), 0);
+        let n = incoming
+            .read(&mut output[..sizes[read % sizes.len()]])
+            .await
+            .unwrap();
+        if n == 0 {
+            break;
+        }
+        actual.extend_from_slice(&output[..n]);
+        read += 1;
+    }
+    assert_eq!(actual, expected);
+    assert_eq!(incoming.write(b"reverse").await.unwrap(), 7);
+    let mut reverse = [0; 7];
+    assert_eq!(outgoing.read(&mut reverse).await.unwrap(), 7);
+    assert_eq!(&reverse, b"reverse");
+    outgoing.close().await.unwrap();
+    source.close().await.unwrap();
+    target.close().await.unwrap();
 }

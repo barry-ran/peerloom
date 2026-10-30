@@ -1,0 +1,32 @@
+   Compiling device-transport-webrtc v0.1.5 (/workspace/shared/peerloom-performance/src/device-sdk/device-transport-webrtc)
+    Finished `release` profile [optimized] target(s) in 9.37s
+     Running tests/mixed_channels.rs (/tmp/peerloom-performance-target/release/deps/mixed_channels-dc7991bcf05d4a43)
+
+running 1 test
+test mixed_hot_open_bidirectional_channels_keep_types_and_lifetime_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+
+     Running tests/native_pair.rs (/tmp/peerloom-performance-target/release/deps/native_pair-664ca2c19713cc96)
+
+running 3 tests
+test native_concurrent_sends_obey_hard_buffer_limit ... ok
+test native_direct_100_sequential_connections ... ok
+test native_direct_bidirectional_messages_and_graceful_close ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.49s
+
+     Running tests/stream_pair.rs (/tmp/peerloom-performance-target/release/deps/stream_pair-eaa41e41b7ee7c6d)
+
+running 8 tests
+test actual_byte_stream_preserves_bytes_and_half_close ... ok
+test cancelling_peer_settings_wait_does_not_resend_local_settings ... ok
+test full_frame_backpressure_does_not_skip_bytes_or_sequence ... ok
+test idle_read_timeout_preserves_sequence_partial_buffer_and_fin ... ok
+test mixed_frame_sizes_keep_partial_reads_empty_reads_and_fin_exact ... ok
+test stream_backpressure_does_not_skip_bytes_or_sequence ... ok
+test stream_negotiates_different_receive_limits ... ok
+test stream_rejects_plain_message_channel_protocol ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.62s
+

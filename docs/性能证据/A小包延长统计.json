@@ -1,0 +1,98 @@
+[
+  {
+    "connections": 32,
+    "size": 64,
+    "variants": [
+      "baseline",
+      "send-owned"
+    ],
+    "pairs": 7,
+    "metrics": {
+      "cpu_ns_per_byte": {
+        "paired_percent_change": 4.296111573283834,
+        "bootstrap95": [
+          -3.090153763426959,
+          11.668210879480762
+        ],
+        "baseline_median": 430.625,
+        "candidate_median": 464.21875,
+        "baseline_range": [
+          403.59375,
+          470.78125
+        ],
+        "candidate_range": [
+          378.59375,
+          502.65625
+        ]
+      },
+      "mib_per_s": {
+        "paired_percent_change": -4.36156590594869,
+        "bootstrap95": [
+          -10.783113893809567,
+          3.1189909497393797
+        ],
+        "baseline_median": 8.333746,
+        "candidate_median": 7.698456,
+        "baseline_range": [
+          7.641433,
+          8.881372
+        ],
+        "candidate_range": [
+          7.1461,
+          9.491505
+        ]
+      },
+      "rtt_p50_us": {
+        "paired_percent_change": 4.495227613398635,
+        "bootstrap95": [
+          -2.3155933117616474,
+          11.06137729150663
+        ],
+        "baseline_median": 449.394,
+        "candidate_median": 488.922,
+        "baseline_range": [
+          418.863,
+          490.634
+        ],
+        "candidate_range": [
+          396.881,
+          518.955
+        ]
+      },
+      "rtt_p95_us": {
+        "paired_percent_change": 3.8994455530092216,
+        "bootstrap95": [
+          -5.742879680804036,
+          14.108413255693097
+        ],
+        "baseline_median": 710.108,
+        "candidate_median": 770.708,
+        "baseline_range": [
+          684.17,
+          788.909
+        ],
+        "candidate_range": [
+          630.06,
+          877.896
+        ]
+      },
+      "rtt_p99_us": {
+        "paired_percent_change": 4.708713361955978,
+        "bootstrap95": [
+          -8.636345848085304,
+          19.155897234446652
+        ],
+        "baseline_median": 883.509,
+        "candidate_median": 984.724,
+        "baseline_range": [
+          823.516,
+          1003.186
+        ],
+        "candidate_range": [
+          754.504,
+          1079.919
+        ]
+      }
+    }
+  }
+]

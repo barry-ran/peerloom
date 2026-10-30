@@ -1,0 +1,7 @@
+
+running 2 tests
+test sdk::channels::stream::tests::worker_performance::reserved_empty_queue_reader_drop_releases_worker_and_budget ... ok
+test sdk::channels::stream::tests::worker_performance::reserved_empty_queue_receiver_close_survives_raw_timeout ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 81 filtered out; finished in 21.21s
+

@@ -1,0 +1,20 @@
+{
+  "src/device-sdk/device-transport-webrtc/src/lib.rs": {
+    "current_sha256": "99a76fd76d3014295f320e8fd31f9855d6d916ddaf7f62c510f8e551d66dfca0",
+    "baseline_sha256": "99a76fd76d3014295f320e8fd31f9855d6d916ddaf7f62c510f8e551d66dfca0",
+    "runtime_source_identical": true,
+    "difference": "无"
+  },
+  "src/device-sdk/device-transport-webrtc/src/stream.rs": {
+    "current_sha256": "07b54be6e3eb78d0d5dcd02a5a3432c48df8f84f7a90aa4f8658190c5ff88085",
+    "baseline_sha256": "07b54be6e3eb78d0d5dcd02a5a3432c48df8f84f7a90aa4f8658190c5ff88085",
+    "runtime_source_identical": true,
+    "difference": "无"
+  },
+  "src/device-sdk/device-core/src/sdk/channels/stream.rs": {
+    "current_sha256": "e8e9e0ac2ee79810e465d0f6575d815d787fd69acb6933d8deef129f6985a754",
+    "baseline_sha256": "2c4550a284a02764f8832c880eb7c0f5f5c2a7c15f4d704f37483771e5e475fe",
+    "runtime_source_identical": true,
+    "difference": "仅cfg(test)模块内include"
+  }
+}
