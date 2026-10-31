@@ -11,12 +11,13 @@
   },
   "patch": {
     "file": "应用补丁.patch",
-    "sha256": "28a541a63d8aff5601c012b655c33bbcb85d51cfc62ea75ba8707be52a5b9579",
+    "sha256": "7666432c0038c01a1ca2eac34347d2ece92bf1afdee3bf3652882d486d26e19e",
     "modified_files": [
       "Cargo.toml",
-      "src/peer_connection/driver.rs"
+      "src/peer_connection/driver.rs",
+      "src/peer_connection/mod.rs"
     ],
-    "kind": "Peerloom local TURN output flush correctness patch and deterministic regression; not claimed upstream merged"
+    "kind": "Peerloom本地TURN同轮排空与可选缓冲阈值通知交付补丁，包含确定性回归；不宣称上游已合并"
   },
   "files": [
     {
@@ -81,12 +82,12 @@
     },
     {
       "path": "src/peer_connection/driver.rs",
-      "sha256": "19f187152aa1c34db707cce05f17b0a80745f43dcc809eabcfc5834c28f8e208",
+      "sha256": "7e5cace980dd37f7817bcec5e61d183fd92d2febedc6ca149713015b2d322d60",
       "upstream_sha256": "0edb347b10805852911709b15ce21af2682f9f0580765834ca2b3b1adb7b8292"
     },
     {
       "path": "src/peer_connection/mod.rs",
-      "sha256": "360c56d83f7f52b84f04a762105327af1733d4b2177b1d824d7708f73113ee61",
+      "sha256": "87df62cf65944f22ef7ce0e96a4c3f93dcb89a16213a8ab5c7239bd308f384cb",
       "upstream_sha256": "360c56d83f7f52b84f04a762105327af1733d4b2177b1d824d7708f73113ee61"
     },
     {

@@ -1,471 +1,461 @@
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -48,393 +48,90 @@
- name = "webrtc"
- path = "src/lib.rs"
- 
+@@ -51,4 +50,0 @@
 -[[example]]
 -name = "bandwidth-estimation-from-disk"
 -path = "examples/bandwidth-estimation-from-disk/bandwidth-estimation-from-disk.rs"
 -bench = false
- 
+@@ -56,4 +51,0 @@
 -[[example]]
 -name = "broadcast"
 -path = "examples/broadcast/broadcast.rs"
 -bench = false
- 
+@@ -61,4 +52,0 @@
 -[[example]]
 -name = "custom-runtime"
 -path = "examples/custom-runtime/custom-runtime.rs"
 -bench = false
- 
+@@ -66,4 +53,0 @@
 -[[example]]
 -name = "data-channels"
 -path = "examples/data-channels/data-channels.rs"
 -bench = false
- 
+@@ -71,5 +54,0 @@
 -[[example]]
 -name = "data-channels-answer"
 -path = "examples/data-channels-offer-answer/data-channels-answer.rs"
 -bench = false
 -required-features = ["runtime-tokio"]
- 
+@@ -77,4 +55,0 @@
 -[[example]]
 -name = "data-channels-close"
 -path = "examples/data-channels-close/data-channels-close.rs"
 -bench = false
- 
+@@ -82,4 +56,0 @@
 -[[example]]
 -name = "data-channels-create"
 -path = "examples/data-channels-create/data-channels-create.rs"
 -bench = false
- 
+@@ -87,4 +57,0 @@
 -[[example]]
 -name = "data-channels-flow-control"
 -path = "examples/data-channels-flow-control/data-channels-flow-control.rs"
 -bench = false
- 
+@@ -92,4 +58,0 @@
 -[[example]]
 -name = "data-channels-flow-control-multi"
 -path = "examples/data-channels-flow-control-multi/data-channels-flow-control-multi.rs"
 -bench = false
- 
+@@ -97,5 +59,0 @@
 -[[example]]
 -name = "data-channels-offer"
 -path = "examples/data-channels-offer-answer/data-channels-offer.rs"
 -bench = false
 -required-features = ["runtime-tokio"]
- 
+@@ -103,5 +60,0 @@
 -[[example]]
 -name = "data-channels-simple"
 -path = "examples/data-channels-simple/data-channels-simple.rs"
 -bench = false
 -required-features = ["runtime-tokio"]
- 
+@@ -109,4 +61,0 @@
 -[[example]]
 -name = "data-channels-stress-bench"
 -path = "examples/data-channels-stress-bench/data-channels-stress-bench.rs"
 -bench = false
- 
+@@ -114,5 +62,0 @@
 -[[example]]
 -name = "ice-restart"
 -path = "examples/ice-restart/ice-restart.rs"
 -bench = false
 -required-features = ["runtime-tokio"]
- 
+@@ -120,5 +63,0 @@
 -[[example]]
 -name = "ice-tcp"
 -path = "examples/ice-tcp/ice-tcp.rs"
 -bench = false
 -required-features = ["runtime-tokio"]
- 
+@@ -126,5 +64,0 @@
 -[[example]]
 -name = "ice-tcp-active-offer"
 -path = "examples/ice-tcp-active-passive/ice-tcp-active-offer.rs"
 -bench = false
 -required-features = ["runtime-tokio"]
- 
+@@ -132,5 +65,0 @@
 -[[example]]
 -name = "ice-tcp-passive-answer"
 -path = "examples/ice-tcp-active-passive/ice-tcp-passive-answer.rs"
 -bench = false
 -required-features = ["runtime-tokio"]
- 
+@@ -138,4 +66,0 @@
 -[[example]]
 -name = "insertable-streams"
 -path = "examples/insertable-streams/insertable-streams.rs"
 -bench = false
- 
+@@ -143,4 +67,0 @@
 -[[example]]
 -name = "mdns-query-and-gather"
 -path = "examples/mdns-query-and-gather/mdns-query-and-gather.rs"
 -bench = false
- 
+@@ -148,4 +68,0 @@
 -[[example]]
 -name = "play-from-disk-fec"
 -path = "examples/play-from-disk-fec/play-from-disk-fec.rs"
 -bench = false
- 
+@@ -153,4 +69,0 @@
 -[[example]]
 -name = "play-from-disk-h26x"
 -path = "examples/play-from-disk-h26x/play-from-disk-h26x.rs"
 -bench = false
- 
+@@ -158,5 +70,0 @@
 -[[example]]
 -name = "play-from-disk-playlist-control"
 -path = "examples/play-from-disk-playlist-control/play-from-disk-playlist-control.rs"
 -bench = false
 -required-features = ["runtime-tokio"]
- 
+@@ -164,5 +71,0 @@
 -[[example]]
 -name = "play-from-disk-renegotiation"
 -path = "examples/play-from-disk-renegotiation/play-from-disk-renegotiation.rs"
 -bench = false
 -required-features = ["runtime-tokio"]
- 
+@@ -170,4 +72,0 @@
 -[[example]]
 -name = "play-from-disk-vpx"
 -path = "examples/play-from-disk-vpx/play-from-disk-vpx.rs"
 -bench = false
- 
+@@ -175,4 +73,0 @@
 -[[example]]
 -name = "reflect"
 -path = "examples/reflect/reflect.rs"
 -bench = false
- 
+@@ -180,4 +74,0 @@
 -[[example]]
 -name = "rtcp-processing"
 -path = "examples/rtcp-processing/rtcp-processing.rs"
 -bench = false
- 
+@@ -185,4 +75,0 @@
 -[[example]]
 -name = "rtp-forwarder"
 -path = "examples/rtp-forwarder/rtp-forwarder.rs"
 -bench = false
- 
+@@ -190,4 +76,0 @@
 -[[example]]
 -name = "rtp-to-webrtc"
 -path = "examples/rtp-to-webrtc/rtp-to-webrtc.rs"
 -bench = false
- 
+@@ -195,4 +77,0 @@
 -[[example]]
 -name = "save-to-disk-av1"
 -path = "examples/save-to-disk-av1/save-to-disk-av1.rs"
 -bench = false
- 
+@@ -200,4 +78,0 @@
 -[[example]]
 -name = "save-to-disk-fec"
 -path = "examples/save-to-disk-fec/save-to-disk-fec.rs"
 -bench = false
- 
+@@ -205,4 +79,0 @@
 -[[example]]
 -name = "save-to-disk-h26x"
 -path = "examples/save-to-disk-h26x/save-to-disk-h26x.rs"
 -bench = false
- 
+@@ -210,4 +80,0 @@
 -[[example]]
 -name = "save-to-disk-vpx"
 -path = "examples/save-to-disk-vpx/save-to-disk-vpx.rs"
 -bench = false
- 
+@@ -215,4 +81,0 @@
 -[[example]]
 -name = "simulcast"
 -path = "examples/simulcast/simulcast.rs"
 -bench = false
- 
+@@ -220,4 +82,0 @@
 -[[example]]
 -name = "simulcast_add_transceiver_from_kind"
 -path = "examples/simulcast_add_transceiver_from_kind/simulcast_add_transceiver_from_kind.rs"
 -bench = false
- 
+@@ -225,4 +83,0 @@
 -[[example]]
 -name = "stats"
 -path = "examples/stats/stats.rs"
 -bench = false
- 
+@@ -230,4 +84,0 @@
 -[[example]]
 -name = "swap-tracks"
 -path = "examples/swap-tracks/swap-tracks.rs"
 -bench = false
- 
+@@ -235,4 +85,0 @@
 -[[example]]
 -name = "trickle-ice"
 -path = "examples/trickle-ice/trickle-ice.rs"
 -bench = false
- 
+@@ -240,4 +86,0 @@
 -[[example]]
 -name = "trickle-ice-host"
 -path = "examples/trickle-ice-host/trickle-ice-host.rs"
 -bench = false
- 
+@@ -245,4 +87,0 @@
 -[[example]]
 -name = "trickle-ice-relay"
 -path = "examples/trickle-ice-relay/trickle-ice-relay.rs"
 -bench = false
- 
+@@ -250,4 +88,0 @@
 -[[example]]
 -name = "trickle-ice-srflx"
 -path = "examples/trickle-ice-srflx/trickle-ice-srflx.rs"
 -bench = false
- 
+@@ -255,3 +89,0 @@
 -[[test]]
 -name = "bind_failures_skip_addresses"
 -path = "tests/bind_failures_skip_addresses.rs"
- 
+@@ -259,3 +90,0 @@
 -[[test]]
 -name = "close_ends_event_streams"
 -path = "tests/close_ends_event_streams.rs"
- 
+@@ -263,3 +91,0 @@
 -[[test]]
 -name = "close_releases_connection_with_transceivers"
 -path = "tests/close_releases_connection_with_transceivers.rs"
- 
+@@ -267,3 +92,0 @@
 -[[test]]
 -name = "codec_negotiation"
 -path = "tests/codec_negotiation.rs"
- 
+@@ -271,3 +93,0 @@
 -[[test]]
 -name = "configuration_test"
 -path = "tests/configuration_test.rs"
- 
+@@ -275,3 +94,0 @@
 -[[test]]
 -name = "crypto_provider_features"
 -path = "tests/crypto_provider_features.rs"
- 
+@@ -279,3 +95,0 @@
 -[[test]]
 -name = "crypto_provider_integration"
 -path = "tests/crypto_provider_integration.rs"
- 
+@@ -283,3 +96,0 @@
 -[[test]]
 -name = "custom_runtime_interop"
 -path = "tests/custom_runtime_interop.rs"
- 
+@@ -287,3 +97,0 @@
 -[[test]]
 -name = "data_channel_close_wakes_send"
 -path = "tests/data_channel_close_wakes_send.rs"
- 
+@@ -291,3 +98,0 @@
 -[[test]]
 -name = "data_channel_dropped_handle_does_not_stall"
 -path = "tests/data_channel_dropped_handle_does_not_stall.rs"
- 
+@@ -295,3 +99,0 @@
 -[[test]]
 -name = "data_channel_send_after_close"
 -path = "tests/data_channel_send_after_close.rs"
- 
+@@ -299,3 +100,0 @@
 -[[test]]
 -name = "data_channel_send_backpressure"
 -path = "tests/data_channel_send_backpressure.rs"
- 
+@@ -303,3 +101,0 @@
 -[[test]]
 -name = "data_channel_send_blocking"
 -path = "tests/data_channel_send_blocking.rs"
- 
+@@ -307,3 +102,0 @@
 -[[test]]
 -name = "data_channel_send_unbounded"
 -path = "tests/data_channel_send_unbounded.rs"
- 
+@@ -311,3 +103,0 @@
 -[[test]]
 -name = "data_channel_slow_consumer"
 -path = "tests/data_channel_slow_consumer.rs"
- 
+@@ -315,3 +104,0 @@
 -[[test]]
 -name = "data_channel_stall_does_not_block_media"
 -path = "tests/data_channel_stall_does_not_block_media.rs"
- 
+@@ -319,3 +105,0 @@
 -[[test]]
 -name = "data_channel_survives_send_failure"
 -path = "tests/data_channel_survives_send_failure.rs"
- 
+@@ -323,3 +106,0 @@
 -[[test]]
 -name = "data_channels_close_by_rtc_interop"
 -path = "tests/data_channels_close_by_rtc_interop.rs"
- 
+@@ -327,3 +107,0 @@
 -[[test]]
 -name = "data_channels_close_by_webrtc_interop"
 -path = "tests/data_channels_close_by_webrtc_interop.rs"
- 
+@@ -331,3 +108,0 @@
 -[[test]]
 -name = "data_channels_create_interop"
 -path = "tests/data_channels_create_interop.rs"
- 
+@@ -335,3 +109,0 @@
 -[[test]]
 -name = "data_channels_interop"
 -path = "tests/data_channels_interop.rs"
- 
+@@ -339,3 +110,0 @@
 -[[test]]
 -name = "dedicated_reactor_data_channel"
 -path = "tests/dedicated_reactor_data_channel.rs"
- 
+@@ -343,3 +111,0 @@
 -[[test]]
 -name = "dedicated_reactor_drop"
 -path = "tests/dedicated_reactor_drop.rs"
- 
+@@ -347,3 +112,0 @@
 -[[test]]
 -name = "flexfec03_encoder_decoder"
 -path = "tests/flexfec03_encoder_decoder.rs"
- 
+@@ -351,3 +113,0 @@
 -[[test]]
 -name = "ice_restart_by_rtc_interop"
 -path = "tests/ice_restart_by_rtc_interop.rs"
- 
+@@ -355,3 +114,0 @@
 -[[test]]
 -name = "ice_restart_by_webrtc_interop"
 -path = "tests/ice_restart_by_webrtc_interop.rs"
- 
+@@ -359,3 +115,0 @@
 -[[test]]
 -name = "ice_restart_rebinds_sockets"
 -path = "tests/ice_restart_rebinds_sockets.rs"
- 
+@@ -363,3 +116,0 @@
 -[[test]]
 -name = "ice_test"
 -path = "tests/ice_test.rs"
- 
+@@ -367,3 +117,0 @@
 -[[test]]
 -name = "mdns_query_and_gather_webrtc2webrtc"
 -path = "tests/mdns_query_and_gather_webrtc2webrtc.rs"
- 
+@@ -371,3 +118,0 @@
 -[[test]]
 -name = "media_only_negotiation_no_sctp"
 -path = "tests/media_only_negotiation_no_sctp.rs"
- 
+@@ -375,3 +119,0 @@
 -[[test]]
 -name = "media_rejection"
 -path = "tests/media_rejection.rs"
- 
+@@ -379,3 +120,0 @@
 -[[test]]
 -name = "offer_answer_webrtc2webrtc"
 -path = "tests/offer_answer_webrtc2webrtc.rs"
- 
+@@ -383,3 +121,0 @@
 -[[test]]
 -name = "on_data_channel_only_for_remote"
 -path = "tests/on_data_channel_only_for_remote.rs"
- 
+@@ -387,3 +122,0 @@
 -[[test]]
 -name = "on_track_codings_ready"
 -path = "tests/on_track_codings_ready.rs"
- 
+@@ -391,3 +123,0 @@
 -[[test]]
 -name = "peer_connection_test"
 -path = "tests/peer_connection_test.rs"
- 
+@@ -395,3 +124,0 @@
 -[[test]]
 -name = "play_save_disk"
 -path = "tests/play_save_disk.rs"
- 
+@@ -399,3 +125,0 @@
 -[[test]]
 -name = "remote_certificate_fingerprint"
 -path = "tests/remote_certificate_fingerprint.rs"
- 
+@@ -403,3 +126,0 @@
 -[[test]]
 -name = "renegotiation"
 -path = "tests/renegotiation.rs"
- 
+@@ -407,3 +127,0 @@
 -[[test]]
 -name = "rtcp_processing_webrtc2webrtc"
 -path = "tests/rtcp_processing_webrtc2webrtc.rs"
- 
+@@ -411,3 +128,0 @@
 -[[test]]
 -name = "sctp_receive_buffer"
 -path = "tests/sctp_receive_buffer.rs"
- 
+@@ -415,3 +129,0 @@
 -[[test]]
 -name = "simulcast_rtc_to_webrtc_interop"
 -path = "tests/simulcast_rtc_to_webrtc_interop.rs"
- 
+@@ -419,3 +130,0 @@
 -[[test]]
 -name = "statistics"
 -path = "tests/statistics.rs"
- 
+@@ -423,3 +131,0 @@
 -[[test]]
 -name = "transport_objects"
 -path = "tests/transport_objects.rs"
- 
+@@ -427,3 +132,0 @@
 -[[test]]
 -name = "turn_credential_rotation"
 -path = "tests/turn_credential_rotation.rs"
- 
+@@ -431,3 +133,0 @@
 -[[test]]
 -name = "turn_release_on_close"
 -path = "tests/turn_release_on_close.rs"
- 
+@@ -435,3 +134,0 @@
 -[[test]]
 -name = "wildcard_bind_expands_interfaces"
 -path = "tests/wildcard_bind_expands_interfaces.rs"
- 
- [dependencies.async-broadcast]
- version = "0.7.2"
-@@ -481,47 +178,16 @@
- ]
- optional = true
- 
+@@ -484,2 +180,0 @@
 -[dev-dependencies.anyhow]
 -version = "1.0.103"
- 
+@@ -487,2 +181,0 @@
 -[dev-dependencies.async-executor]
 -version = "1.14.0"
- 
+@@ -490,2 +182,0 @@
 -[dev-dependencies.async-io]
 -version = "2.6.0"
- 
+@@ -493,2 +183,0 @@
 -[dev-dependencies.base64]
 -version = "0.22.1"
- 
+@@ -496,2 +184,0 @@
 -[dev-dependencies.chrono]
 -version = "0.4.45"
- 
+@@ -499,3 +185,0 @@
 -[dev-dependencies.clap]
 -version = "4.6.1"
 -features = ["derive"]
- 
+@@ -503,2 +186,0 @@
 -[dev-dependencies.ctrlc]
 -version = "3.5.2"
- 
+@@ -506,2 +187,0 @@
 -[dev-dependencies.env_logger]
 -version = "0.11.11"
- 
+@@ -509,2 +188,0 @@
 -[dev-dependencies.futures-lite]
 -version = "2.6.1"
- 
+@@ -512,3 +189,0 @@
 -[dev-dependencies.hyper]
 -version = "0.14.32"
 -features = ["full"]
- 
+@@ -516,2 +190,0 @@
 -[dev-dependencies.rand]
 -version = "0.10.1"
- 
+@@ -519,2 +191,0 @@
 -[dev-dependencies.serde_json]
 -version = "1.0.150"
- 
+@@ -522,3 +192,0 @@
 -[dev-dependencies.signal]
 -version = "0.21.1"
 -package = "rtc-signal"
- 
+@@ -526,2 +193,0 @@
 -[dev-dependencies.socket2]
 -version = "0.6.5"
 --- a/src/peer_connection/driver.rs
 +++ b/src/peer_connection/driver.rs
-@@ -499,6 +499,8 @@
-     inner: Arc<PeerConnectionRef>,
-     stun_gatherer: RTCStunGatherer,
-     turn_relayer: RTCTurnRelayer,
+@@ -501,0 +502,2 @@
 +    #[cfg(test)]
 +    test_core_writes: Vec<TaggedBytesMut>,
-     tcp_transport: RTCTcpTransport,
-     mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
-     udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
-@@ -565,6 +567,8 @@
-     ) -> Self {
-         let runtime = Arc::clone(&inner.runtime);
-         Self {
+@@ -567,0 +570,2 @@
 +            #[cfg(test)]
 +            test_core_writes: Vec::new(),
-             inner,
-             // Placeholders until `bind_transports` runs; constructing them costs no I/O.
-             stun_gatherer: RTCStunGatherer::new(
-@@ -1949,7 +1953,26 @@
-             }
-         }
- 
+@@ -1302,0 +1307,13 @@
++                // Opt-out wrappers never expose these advisory notifications. Filter before
++                // staging into the bounded application queue, otherwise an unread send-only
++                // channel can block delivery on every sibling channel. SCTP byte releases and
++                // writable wakeups use independent paths and must never be filtered here.
++                if !self.inner.data_channel_buffered_amount_events
++                    && matches!(
++                        &evt,
++                        RTCDataChannelEvent::OnBufferedAmountLow(_)
++                            | RTCDataChannelEvent::OnBufferedAmountHigh(_)
++                    )
++                {
++                    return;
++                }
+@@ -1952 +1969,20 @@
 -        // 1.b turn_relayer poll_write()
 +        self.flush_turn_writes().await;
 +
@@ -487,13 +477,7 @@
 +    }
 +
 +    async fn flush_turn_writes(&mut self) {
-         while let Some(msg) = self.turn_relayer.poll_write() {
-             let four_tuple: FourTuple = FourTuple::from(&msg.transport);
-             if let Err(err) = self.handle_write(msg).await {
-@@ -1968,13 +1991,6 @@
-                 }
-             }
-         }
+@@ -1971,7 +2006,0 @@
 -
 -        // 1.c peer_connection poll_write() - Send all outgoing packets, coalescing
 -        // consecutive same-destination datagrams into single UDP GSO syscalls.
@@ -501,13 +485,7 @@
 -        self.flush_writes(writes).await;
 -
 -        Ok(())
-     }
- 
-     /// Send a drained batch of outgoing packets, coalescing maximal runs of
-@@ -2539,3 +2555,155 @@
-         );
-     }
- }
+@@ -2541,0 +2571,374 @@
 +
 +#[cfg(all(test, feature = "runtime-tokio", feature = "crypto-ring"))]
 +mod turn_flush_regression {
@@ -660,3 +638,270 @@
 +        }));
 +    }
 +}
++
++#[cfg(all(test, feature = "runtime-tokio", feature = "crypto-ring"))]
++mod buffered_amount_advisory_regression {
++    use super::*;
++    use crate::data_channel::RTCDataChannelMessage;
++    use crate::peer_connection::{
++        PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, PeerConnectionImpl,
++    };
++    use rtc::peer_connection::configuration::setting_engine::SettingEngineBuilder;
++
++    const CHANNEL: RTCDataChannelId = 37;
++    const SEND_LIMIT: usize = 4096;
++
++    struct Handler;
++    #[async_trait::async_trait]
++    impl PeerConnectionEventHandler for Handler {}
++
++    async fn fixture(
++        enabled: Option<bool>,
++    ) -> (
++        PeerConnectionImpl,
++        PeerConnectionDriver<SocketAddr>,
++        Receiver<DataChannelEvent>,
++    ) {
++        // This queue-policy fixture needs no multicast interface or external network.
++        let settings = SettingEngineBuilder::new()
++            .with_include_loopback_candidate(true)
++            .with_multicast_dns_mode(MulticastDnsMode::Disabled)
++            .build();
++        let builder = PeerConnectionBuilder::new()
++            .with_setting_engine(settings)
++            .with_handler(Arc::new(Handler))
++            .with_udp_addrs(vec!["127.0.0.1:0".parse::<SocketAddr>().unwrap()])
++            .with_data_channel_send_buffer_limit(SEND_LIMIT);
++        let builder = match enabled {
++            Some(enabled) => builder.with_data_channel_buffered_amount_events(enabled),
++            None => builder,
++        };
++        // Exercise the exact production build path, not a separately initialized test flag.
++        let peer = builder.build_inner().await.unwrap();
++        assert_eq!(
++            peer.inner.data_channel_buffered_amount_events,
++            enabled.unwrap_or(true)
++        );
++        assert_eq!(peer.inner.data_channel_send_buffer_limit, SEND_LIMIT);
++        let driver = PeerConnectionDriver::new(
++            peer.inner.clone(),
++            Vec::<SocketAddr>::new(),
++            Vec::new(),
++            MulticastDnsMode::Disabled,
++            Vec::new(),
++            RTCIceTransportPolicy::All,
++            rtc::crypto::default_provider().unwrap(),
++            false,
++            None,
++        );
++        // A deliberately small test consumer exercises the unchanged full-queue ordering.
++        // The production DRIVER_TO_DATA_CHANNEL_EVENT_CHANNEL_CAPACITY stays 256.
++        let (tx, rx) = channel(2);
++        driver
++            .inner
++            .data_channel_events_tx
++            .lock()
++            .await
++            .insert(CHANNEL, tx);
++        assert!(driver.pending_data_channel_events.is_empty());
++        (peer, driver, rx)
++    }
++
++    async fn event(driver: &mut PeerConnectionDriver<SocketAddr>, event: RTCDataChannelEvent) {
++        driver
++            .handle_rtc_event(RTCPeerConnectionEvent::OnDataChannel(event))
++            .await;
++    }
++
++    async fn message(driver: &mut PeerConnectionDriver<SocketAddr>, byte: u8) {
++        driver
++            .handle_rtc_message(TaggedRTCMessage {
++                now: Instant::now(),
++                message: RTCMessage::DataChannelMessage(
++                    CHANNEL,
++                    RTCDataChannelMessage {
++                        is_string: false,
++                        data: BytesMut::from(&[byte][..]),
++                    },
++                ),
++            })
++            .await;
++    }
++
++    fn description(event: DataChannelEvent) -> String {
++        match event {
++            DataChannelEvent::OnOpen => "open".into(),
++            DataChannelEvent::OnError => "error".into(),
++            DataChannelEvent::OnClosing => "closing".into(),
++            DataChannelEvent::OnClose => "close".into(),
++            DataChannelEvent::OnBufferedAmountLow => "low".into(),
++            DataChannelEvent::OnBufferedAmountHigh => "high".into(),
++            DataChannelEvent::OnMessage(message) => format!("message:{:?}", message.data.as_ref()),
++        }
++    }
++
++    #[test]
++    fn buffered_amount_advisory_default_and_explicit_true_preserve_delivery_and_retention() {
++        let runtime = crate::runtime::default_runtime().unwrap();
++        runtime.block_on(Box::pin(async {
++            for enabled in [None, Some(true)] {
++                let (peer, mut driver, mut rx) = fixture(enabled).await;
++                event(
++                    &mut driver,
++                    RTCDataChannelEvent::OnBufferedAmountLow(CHANNEL),
++                )
++                .await;
++                event(
++                    &mut driver,
++                    RTCDataChannelEvent::OnBufferedAmountHigh(CHANNEL),
++                )
++                .await;
++                event(
++                    &mut driver,
++                    RTCDataChannelEvent::OnBufferedAmountLow(CHANNEL),
++                )
++                .await;
++                assert_eq!(
++                    driver
++                        .pending_data_channel_events
++                        .get(&CHANNEL)
++                        .map(VecDeque::len),
++                    Some(1)
++                );
++                assert!(driver.flush_pending_data_channel_events().await);
++                assert_eq!(description(rx.try_recv().unwrap()), "low");
++                assert_eq!(description(rx.try_recv().unwrap()), "high");
++                assert!(!driver.flush_pending_data_channel_events().await);
++                assert_eq!(description(rx.try_recv().unwrap()), "low");
++                assert!(rx.try_recv().is_err());
++                assert!(driver.pending_data_channel_events.is_empty());
++                peer.close().await.unwrap();
++            }
++        }));
++    }
++
++    #[test]
++    fn buffered_amount_advisory_opt_out_preserves_messages_lifecycle_order_and_backpressure() {
++        let runtime = crate::runtime::default_runtime().unwrap();
++        runtime.block_on(Box::pin(async {
++            let (peer, mut driver, mut rx) = fixture(Some(false)).await;
++            for _ in 0..1024 {
++                event(
++                    &mut driver,
++                    RTCDataChannelEvent::OnBufferedAmountLow(CHANNEL),
++                )
++                .await;
++                event(
++                    &mut driver,
++                    RTCDataChannelEvent::OnBufferedAmountHigh(CHANNEL),
++                )
++                .await;
++            }
++            assert!(rx.try_recv().is_err());
++            assert!(driver.pending_data_channel_events.is_empty());
++            assert!(
++                !driver
++                    .inner
++                    .data_channel_delivery_blocked
++                    .load(Ordering::Acquire)
++            );
++            event(&mut driver, RTCDataChannelEvent::OnOpen(CHANNEL)).await;
++            message(&mut driver, 7).await;
++            event(
++                &mut driver,
++                RTCDataChannelEvent::OnBufferedAmountLow(CHANNEL),
++            )
++            .await;
++            event(&mut driver, RTCDataChannelEvent::OnError(CHANNEL)).await;
++            event(&mut driver, RTCDataChannelEvent::OnClosing(CHANNEL)).await;
++            message(&mut driver, 9).await;
++            event(
++                &mut driver,
++                RTCDataChannelEvent::OnBufferedAmountHigh(CHANNEL),
++            )
++            .await;
++            event(&mut driver, RTCDataChannelEvent::OnClose(CHANNEL)).await;
++            assert!(
++                driver.flush_pending_data_channel_events().await,
++                "real payload/lifecycle backpressure remains"
++            );
++            let mut observed = Vec::new();
++            for _ in 0..4 {
++                while let Ok(event) = rx.try_recv() {
++                    observed.push(description(event));
++                }
++                if !driver.flush_pending_data_channel_events().await {
++                    while let Ok(event) = rx.try_recv() {
++                        observed.push(description(event));
++                    }
++                    break;
++                }
++            }
++            assert_eq!(
++                observed,
++                [
++                    "open",
++                    "message:[7]",
++                    "error",
++                    "closing",
++                    "message:[9]",
++                    "close"
++                ]
++            );
++            assert!(driver.pending_data_channel_events.is_empty());
++            assert!(
++                !driver
++                    .inner
++                    .data_channel_delivery_blocked
++                    .load(Ordering::Acquire)
++            );
++            assert_eq!(driver.inner.data_channel_send_buffer_limit, SEND_LIMIT);
++            peer.close().await.unwrap();
++        }));
++    }
++}
+--- a/src/peer_connection/mod.rs
++++ b/src/peer_connection/mod.rs
+@@ -188,0 +189 @@
++    data_channel_buffered_amount_events: bool,
+@@ -207,0 +209 @@
++            data_channel_buffered_amount_events: true,
+@@ -335,0 +338,15 @@
++    /// Controls delivery of buffered-amount advisory events to application data channels.
++    ///
++    /// Enabled by default, preserving the upstream `OnBufferedAmountLow` and
++    /// `OnBufferedAmountHigh` event contract. Wrappers that do not expose these advisories
++    /// may disable them so a send-only channel cannot fill its unread event queue with
++    /// notifications that the wrapper would only discard.
++    ///
++    /// This affects only advisory delivery. Message/lifecycle handling, SCTP byte-release
++    /// accounting, send-buffer limits and `writable()` wakeups are unchanged. Set once per
++    /// peer connection; it does not alter either buffered-amount threshold.
++    pub fn with_data_channel_buffered_amount_events(mut self, enabled: bool) -> Self {
++        self.data_channel_buffered_amount_events = enabled;
++        self
++    }
++
+@@ -342 +359,9 @@
+-    pub async fn build(mut self) -> Result<impl PeerConnection>
++    pub async fn build(self) -> Result<impl PeerConnection>
++    where
++        A: Send + 'static,
++    {
++        self.build_inner().await
++    }
++
++    // Keep the concrete construction path testable without adding a public inspection API.
++    async fn build_inner(mut self) -> Result<PeerConnectionImpl>
+@@ -403,0 +429 @@
++            self.data_channel_buffered_amount_events,
+@@ -785,0 +812,3 @@
++    /// Immutable delivery policy for Low/High advisories only; defaults to true.
++    /// Independent of send-buffer accounting, limits, and wakeups.
++    pub(crate) data_channel_buffered_amount_events: bool,
+@@ -991,0 +1021 @@
++        data_channel_buffered_amount_events: bool,
+@@ -1014,0 +1045 @@
++                data_channel_buffered_amount_events,
+@@ -1621,0 +1653 @@
++            data_channel_buffered_amount_events: true,

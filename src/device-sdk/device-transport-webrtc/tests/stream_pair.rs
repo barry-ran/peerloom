@@ -337,3 +337,169 @@ async fn idle_read_timeout_preserves_sequence_partial_buffer_and_fin() {
     b.close().await.unwrap();
     result.expect("bounded idle timeout regression").unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn unidirectional_stream_notifications_do_not_starve_reverse_reliable_channel() {
+    use device_protocol::ChannelMode;
+    use device_transport_webrtc::{ByteStream, CandidateKind, MessageChannel, TransportError};
+    use std::{sync::Arc, time::Duration};
+
+    async fn write_frame(stream: &mut ByteStream, bytes: &[u8], sequence: u64) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match stream.write(bytes).await {
+                Ok(n) => {
+                    assert_eq!(n, bytes.len(), "8KiB fits the negotiated stream chunk");
+                    return;
+                }
+                Err(StreamError::Transport(TransportError::BufferFull))
+                    if tokio::time::Instant::now() < deadline =>
+                {
+                    // BufferFull means nothing was accepted; never retry an uncertain write.
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                other => panic!("unidirectional stream write frame {sequence}: {other:?}"),
+            }
+        }
+    }
+
+    async fn send_ack(channel: &MessageChannel, bytes: &[u8]) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match channel.send(bytes).await {
+                Ok(()) => return,
+                Err(TransportError::BufferFull) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                other => panic!("independent reliable ACK send: {other:?}"),
+            }
+        }
+    }
+
+    async fn finish(stream: &mut ByteStream) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match stream.shutdown_write().await {
+                Ok(()) => return,
+                Err(StreamError::Transport(TransportError::BufferFull))
+                    if tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                other => panic!("unidirectional stream FIN: {other:?}"),
+            }
+        }
+    }
+
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        bind_address: "127.0.0.1:0".parse().unwrap(),
+        include_loopback: true,
+        operation_timeout: Duration::from_secs(3),
+        ..TransportConfig::default()
+    };
+    let source = Arc::new(PeerTransport::new(config.clone()).await.unwrap());
+    let target = match PeerTransport::new(config).await {
+        Ok(peer) => Arc::new(peer),
+        Err(error) => {
+            let closed = source.close().await;
+            assert!(closed.is_ok(), "source cleanup after target setup failure");
+            panic!("target setup: {error:?}");
+        }
+    };
+    let left = source.clone();
+    let right = target.clone();
+    // Isolate every assertion so both peers are closed even after panic or timeout.
+    let mut operation = tokio::spawn(async move {
+        let mut outgoing = left.create_stream("one-way-notifications").await.unwrap();
+        let offer = left.create_offer().await.unwrap();
+        assert!(offer.sdp.contains("a=fingerprint:"), "DTLS remains enabled");
+        let answer = right.answer_offer(offer).await.unwrap();
+        assert!(
+            answer.sdp.contains("a=fingerprint:"),
+            "DTLS remains enabled"
+        );
+        left.apply_answer(answer).await.unwrap();
+        let mut incoming = right.accept_stream().await.unwrap();
+        let (a, b) = tokio::join!(outgoing.wait_open(), incoming.wait_open());
+        a.unwrap();
+        b.unwrap();
+
+        let mut ack_sender = right
+            .create_channel("reverse-reliable-ack", ChannelMode::ReliableMessage)
+            .await
+            .unwrap();
+        let mut ack_receiver = left.accept_channel().await.unwrap();
+        ack_sender.wait_open().await.unwrap();
+        ack_receiver.wait_open().await.unwrap();
+        assert!(ack_sender.metadata().await.unwrap().is_reliable_ordered());
+        assert!(ack_receiver.metadata().await.unwrap().is_reliable_ordered());
+        for peer in [&left, &right] {
+            assert_eq!(
+                peer.selected_candidate_types().await.unwrap(),
+                Some((CandidateKind::Host, CandidateKind::Host))
+            );
+        }
+
+        let mut payload: Vec<_> = (0..8192).map(|offset| (offset % 251) as u8).collect();
+        let mut received = vec![0_u8; payload.len()];
+        let mut ack = [0xa5_u8; 64];
+        // More than the backend's 256-event queue, without changing its capacity.
+        // A receiver verifies the entire frame before sending its independent ACK.
+        // No task reads outgoing or ack_sender to drain write-side notifications.
+        for sequence in 0_u64..1152 {
+            payload[..8].copy_from_slice(&sequence.to_be_bytes());
+            ack[..8].copy_from_slice(&sequence.to_be_bytes());
+            write_frame(&mut outgoing, &payload, sequence).await;
+            let mut offset = 0;
+            while offset < received.len() {
+                let n = incoming
+                    .read(&mut received[offset..])
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("stream receive frame {sequence} offset {offset}: {error:?}")
+                    });
+                assert!(n > 0, "frame {sequence} cannot end before all bytes arrive");
+                offset += n;
+            }
+            assert_eq!(received, payload, "all bytes of frame {sequence}");
+            send_ack(&ack_sender, &ack).await;
+            assert_eq!(
+                ack_receiver.receive().await.unwrap_or_else(|error| {
+                    panic!("reverse reliable ACK frame {sequence}: {error:?}")
+                }),
+                ack,
+                "reverse reliable ACK {sequence} must not be starved"
+            );
+            // Separate bursts so acknowledgments can lower SCTP outstanding bytes.
+            // This pacing is not a performance assertion or a transport-setting change.
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        finish(&mut outgoing).await;
+        let mut eof = [0_u8; 1];
+        assert_eq!(incoming.read(&mut eof).await.unwrap(), 0);
+        finish(&mut incoming).await;
+        // The first outgoing-stream read is deliberately AFTER every frame/ACK.
+        assert_eq!(outgoing.read(&mut eof).await.unwrap(), 0);
+        send_ack(&ack_sender, b"control survives both stream FINs").await;
+        assert_eq!(
+            ack_receiver.receive().await.unwrap(),
+            b"control survives both stream FINs"
+        );
+    });
+    let outcome = tokio::time::timeout(Duration::from_secs(15), &mut operation).await;
+    if !outcome.as_ref().is_ok_and(|result| result.is_ok()) {
+        operation.abort();
+        if outcome.is_err() {
+            let _ = operation.await;
+        }
+    }
+    let (source_closed, target_closed) = tokio::join!(source.close(), target.close());
+    outcome
+        .expect("bounded unidirectional stream/reverse reliable regression")
+        .expect("unidirectional notifications cannot block another channel");
+    source_closed.unwrap();
+    target_closed.unwrap();
+}

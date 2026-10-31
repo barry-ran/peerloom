@@ -1304,6 +1304,19 @@ where
                 self.inner.handler.on_connection_state_change(state).await;
             }
             RTCPeerConnectionEvent::OnDataChannel(evt) => {
+                // Opt-out wrappers never expose these advisory notifications. Filter before
+                // staging into the bounded application queue, otherwise an unread send-only
+                // channel can block delivery on every sibling channel. SCTP byte releases and
+                // writable wakeups use independent paths and must never be filtered here.
+                if !self.inner.data_channel_buffered_amount_events
+                    && matches!(
+                        &evt,
+                        RTCDataChannelEvent::OnBufferedAmountLow(_)
+                            | RTCDataChannelEvent::OnBufferedAmountHigh(_)
+                    )
+                {
+                    return;
+                }
                 let channel_id = match evt {
                     RTCDataChannelEvent::OnOpen(id) => id,
                     RTCDataChannelEvent::OnError(id) => id,
@@ -2704,6 +2717,228 @@ mod turn_flush_regression {
                 sent && !retained,
                 "single flush stranded relay output: socket_sent={sent}, retained={retained}"
             );
+        }));
+    }
+}
+
+#[cfg(all(test, feature = "runtime-tokio", feature = "crypto-ring"))]
+mod buffered_amount_advisory_regression {
+    use super::*;
+    use crate::data_channel::RTCDataChannelMessage;
+    use crate::peer_connection::{
+        PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, PeerConnectionImpl,
+    };
+    use rtc::peer_connection::configuration::setting_engine::SettingEngineBuilder;
+
+    const CHANNEL: RTCDataChannelId = 37;
+    const SEND_LIMIT: usize = 4096;
+
+    struct Handler;
+    #[async_trait::async_trait]
+    impl PeerConnectionEventHandler for Handler {}
+
+    async fn fixture(
+        enabled: Option<bool>,
+    ) -> (
+        PeerConnectionImpl,
+        PeerConnectionDriver<SocketAddr>,
+        Receiver<DataChannelEvent>,
+    ) {
+        // This queue-policy fixture needs no multicast interface or external network.
+        let settings = SettingEngineBuilder::new()
+            .with_include_loopback_candidate(true)
+            .with_multicast_dns_mode(MulticastDnsMode::Disabled)
+            .build();
+        let builder = PeerConnectionBuilder::new()
+            .with_setting_engine(settings)
+            .with_handler(Arc::new(Handler))
+            .with_udp_addrs(vec!["127.0.0.1:0".parse::<SocketAddr>().unwrap()])
+            .with_data_channel_send_buffer_limit(SEND_LIMIT);
+        let builder = match enabled {
+            Some(enabled) => builder.with_data_channel_buffered_amount_events(enabled),
+            None => builder,
+        };
+        // Exercise the exact production build path, not a separately initialized test flag.
+        let peer = builder.build_inner().await.unwrap();
+        assert_eq!(
+            peer.inner.data_channel_buffered_amount_events,
+            enabled.unwrap_or(true)
+        );
+        assert_eq!(peer.inner.data_channel_send_buffer_limit, SEND_LIMIT);
+        let driver = PeerConnectionDriver::new(
+            peer.inner.clone(),
+            Vec::<SocketAddr>::new(),
+            Vec::new(),
+            MulticastDnsMode::Disabled,
+            Vec::new(),
+            RTCIceTransportPolicy::All,
+            rtc::crypto::default_provider().unwrap(),
+            false,
+            None,
+        );
+        // A deliberately small test consumer exercises the unchanged full-queue ordering.
+        // The production DRIVER_TO_DATA_CHANNEL_EVENT_CHANNEL_CAPACITY stays 256.
+        let (tx, rx) = channel(2);
+        driver
+            .inner
+            .data_channel_events_tx
+            .lock()
+            .await
+            .insert(CHANNEL, tx);
+        assert!(driver.pending_data_channel_events.is_empty());
+        (peer, driver, rx)
+    }
+
+    async fn event(driver: &mut PeerConnectionDriver<SocketAddr>, event: RTCDataChannelEvent) {
+        driver
+            .handle_rtc_event(RTCPeerConnectionEvent::OnDataChannel(event))
+            .await;
+    }
+
+    async fn message(driver: &mut PeerConnectionDriver<SocketAddr>, byte: u8) {
+        driver
+            .handle_rtc_message(TaggedRTCMessage {
+                now: Instant::now(),
+                message: RTCMessage::DataChannelMessage(
+                    CHANNEL,
+                    RTCDataChannelMessage {
+                        is_string: false,
+                        data: BytesMut::from(&[byte][..]),
+                    },
+                ),
+            })
+            .await;
+    }
+
+    fn description(event: DataChannelEvent) -> String {
+        match event {
+            DataChannelEvent::OnOpen => "open".into(),
+            DataChannelEvent::OnError => "error".into(),
+            DataChannelEvent::OnClosing => "closing".into(),
+            DataChannelEvent::OnClose => "close".into(),
+            DataChannelEvent::OnBufferedAmountLow => "low".into(),
+            DataChannelEvent::OnBufferedAmountHigh => "high".into(),
+            DataChannelEvent::OnMessage(message) => format!("message:{:?}", message.data.as_ref()),
+        }
+    }
+
+    #[test]
+    fn buffered_amount_advisory_default_and_explicit_true_preserve_delivery_and_retention() {
+        let runtime = crate::runtime::default_runtime().unwrap();
+        runtime.block_on(Box::pin(async {
+            for enabled in [None, Some(true)] {
+                let (peer, mut driver, mut rx) = fixture(enabled).await;
+                event(
+                    &mut driver,
+                    RTCDataChannelEvent::OnBufferedAmountLow(CHANNEL),
+                )
+                .await;
+                event(
+                    &mut driver,
+                    RTCDataChannelEvent::OnBufferedAmountHigh(CHANNEL),
+                )
+                .await;
+                event(
+                    &mut driver,
+                    RTCDataChannelEvent::OnBufferedAmountLow(CHANNEL),
+                )
+                .await;
+                assert_eq!(
+                    driver
+                        .pending_data_channel_events
+                        .get(&CHANNEL)
+                        .map(VecDeque::len),
+                    Some(1)
+                );
+                assert!(driver.flush_pending_data_channel_events().await);
+                assert_eq!(description(rx.try_recv().unwrap()), "low");
+                assert_eq!(description(rx.try_recv().unwrap()), "high");
+                assert!(!driver.flush_pending_data_channel_events().await);
+                assert_eq!(description(rx.try_recv().unwrap()), "low");
+                assert!(rx.try_recv().is_err());
+                assert!(driver.pending_data_channel_events.is_empty());
+                peer.close().await.unwrap();
+            }
+        }));
+    }
+
+    #[test]
+    fn buffered_amount_advisory_opt_out_preserves_messages_lifecycle_order_and_backpressure() {
+        let runtime = crate::runtime::default_runtime().unwrap();
+        runtime.block_on(Box::pin(async {
+            let (peer, mut driver, mut rx) = fixture(Some(false)).await;
+            for _ in 0..1024 {
+                event(
+                    &mut driver,
+                    RTCDataChannelEvent::OnBufferedAmountLow(CHANNEL),
+                )
+                .await;
+                event(
+                    &mut driver,
+                    RTCDataChannelEvent::OnBufferedAmountHigh(CHANNEL),
+                )
+                .await;
+            }
+            assert!(rx.try_recv().is_err());
+            assert!(driver.pending_data_channel_events.is_empty());
+            assert!(
+                !driver
+                    .inner
+                    .data_channel_delivery_blocked
+                    .load(Ordering::Acquire)
+            );
+            event(&mut driver, RTCDataChannelEvent::OnOpen(CHANNEL)).await;
+            message(&mut driver, 7).await;
+            event(
+                &mut driver,
+                RTCDataChannelEvent::OnBufferedAmountLow(CHANNEL),
+            )
+            .await;
+            event(&mut driver, RTCDataChannelEvent::OnError(CHANNEL)).await;
+            event(&mut driver, RTCDataChannelEvent::OnClosing(CHANNEL)).await;
+            message(&mut driver, 9).await;
+            event(
+                &mut driver,
+                RTCDataChannelEvent::OnBufferedAmountHigh(CHANNEL),
+            )
+            .await;
+            event(&mut driver, RTCDataChannelEvent::OnClose(CHANNEL)).await;
+            assert!(
+                driver.flush_pending_data_channel_events().await,
+                "real payload/lifecycle backpressure remains"
+            );
+            let mut observed = Vec::new();
+            for _ in 0..4 {
+                while let Ok(event) = rx.try_recv() {
+                    observed.push(description(event));
+                }
+                if !driver.flush_pending_data_channel_events().await {
+                    while let Ok(event) = rx.try_recv() {
+                        observed.push(description(event));
+                    }
+                    break;
+                }
+            }
+            assert_eq!(
+                observed,
+                [
+                    "open",
+                    "message:[7]",
+                    "error",
+                    "closing",
+                    "message:[9]",
+                    "close"
+                ]
+            );
+            assert!(driver.pending_data_channel_events.is_empty());
+            assert!(
+                !driver
+                    .inner
+                    .data_channel_delivery_blocked
+                    .load(Ordering::Acquire)
+            );
+            assert_eq!(driver.inner.data_channel_send_buffer_limit, SEND_LIMIT);
+            peer.close().await.unwrap();
         }));
     }
 }

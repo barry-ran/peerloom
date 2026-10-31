@@ -186,6 +186,7 @@ pub struct PeerConnectionBuilder<A: ToSocketAddrs> {
     tcp_addrs: Vec<A>,
     dedicated_reactor_pool_size: usize,
     data_channel_send_buffer_limit: usize,
+    data_channel_buffered_amount_events: bool,
     /// Held rather than forwarded immediately, so [`build`](Self::build) can resolve the crypto
     /// provider and inject it before the core connection is constructed — see there for why.
     setting_engine: SettingEngine,
@@ -205,6 +206,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A> {
             // opts in via `with_data_channel_send_buffer_limit`. This keeps `send`/
             // `send_text` non-blocking by default (zero behaviour change).
             data_channel_send_buffer_limit: usize::MAX,
+            data_channel_buffered_amount_events: true,
         }
     }
 }
@@ -333,13 +335,36 @@ impl<A: ToSocketAddrs> PeerConnectionBuilder<A> {
         self
     }
 
+    /// Controls delivery of buffered-amount advisory events to application data channels.
+    ///
+    /// Enabled by default, preserving the upstream `OnBufferedAmountLow` and
+    /// `OnBufferedAmountHigh` event contract. Wrappers that do not expose these advisories
+    /// may disable them so a send-only channel cannot fill its unread event queue with
+    /// notifications that the wrapper would only discard.
+    ///
+    /// This affects only advisory delivery. Message/lifecycle handling, SCTP byte-release
+    /// accounting, send-buffer limits and `writable()` wakeups are unchanged. Set once per
+    /// peer connection; it does not alter either buffered-amount threshold.
+    pub fn with_data_channel_buffered_amount_events(mut self, enabled: bool) -> Self {
+        self.data_channel_buffered_amount_events = enabled;
+        self
+    }
+
     /// Builds the [`PeerConnection`] and starts the background event loop driver.
     ///
     /// `A: Send + 'static` because the configured addresses are handed to the driver unresolved
     /// and re-resolved on every bind (see [`with_udp_addrs`](Self::with_udp_addrs)), so they live
     /// as long as the connection. Owned addresses — `String`, `SocketAddr`, `(String, u16)`,
     /// `&'static str` — all qualify; a `&str` borrowed from a local does not, so pass it owned.
-    pub async fn build(mut self) -> Result<impl PeerConnection>
+    pub async fn build(self) -> Result<impl PeerConnection>
+    where
+        A: Send + 'static,
+    {
+        self.build_inner().await
+    }
+
+    // Keep the concrete construction path testable without adding a public inspection API.
+    async fn build_inner(mut self) -> Result<PeerConnectionImpl>
     where
         A: Send + 'static,
     {
@@ -401,6 +426,7 @@ impl<A: ToSocketAddrs> PeerConnectionBuilder<A> {
             self.tcp_addrs,
             self.dedicated_reactor_pool_size,
             data_channel_send_buffer_limit,
+            self.data_channel_buffered_amount_events,
             turn_allocation_refresh_interval_cap,
             crypto_provider,
         )
@@ -783,6 +809,9 @@ pub(crate) struct PeerConnectionRef {
     /// `ErrSendBufferFull` — an opt-in bound on send-side memory. Set once at build time via
     /// [`PeerConnectionBuilder::with_data_channel_send_buffer_limit`].
     pub(crate) data_channel_send_buffer_limit: usize,
+    /// Immutable delivery policy for Low/High advisories only; defaults to true.
+    /// Independent of send-buffer accounting, limits, and wakeups.
+    pub(crate) data_channel_buffered_amount_events: bool,
     /// Woken by the driver once per event-loop iteration after it applies SCTP buffer
     /// releases (acknowledged/abandoned bytes) to each channel's `outstanding_bytes`,
     /// and by `close()`/`Drop`. A [`DataChannel::writable`] future blocked on the
@@ -989,6 +1018,7 @@ impl PeerConnectionImpl {
         tcp_addrs: Vec<A>,
         dedicated_reactor_pool_size: usize,
         data_channel_send_buffer_limit: usize,
+        data_channel_buffered_amount_events: bool,
         turn_allocation_refresh_interval_cap: Option<Duration>,
         crypto_provider: Arc<dyn crypto::RTCCryptoProvider>,
     ) -> Result<Self> {
@@ -1012,6 +1042,7 @@ impl PeerConnectionImpl {
                 write_backpressure: std::sync::atomic::AtomicUsize::new(0),
                 closing: AtomicBool::new(false),
                 data_channel_send_buffer_limit,
+                data_channel_buffered_amount_events,
                 data_channel_backpressure: crate::runtime::Notify::new(),
                 data_channel_delivery_blocked: AtomicBool::new(false),
                 data_channel_consumed: crate::runtime::Notify::new(),
@@ -1619,6 +1650,7 @@ mod tests {
             write_backpressure: AtomicUsize::new(0),
             closing: AtomicBool::new(false),
             data_channel_send_buffer_limit: usize::MAX,
+            data_channel_buffered_amount_events: true,
             data_channel_backpressure: crate::runtime::Notify::new(),
             data_channel_delivery_blocked: AtomicBool::new(false),
             data_channel_consumed: crate::runtime::Notify::new(),

@@ -439,6 +439,9 @@ impl PeerTransport {
             .with_configuration(rtc_config)
             .with_setting_engine(settings)
             .with_data_channel_send_buffer_limit(config.send_buffer_bytes)
+            // These backend advisories are not exposed by MessageChannel or ByteStream.
+            // A send-only channel must not block sibling channels on unread notices.
+            .with_data_channel_buffered_amount_events(false)
             .with_handler(Arc::new(handler))
             .with_udp_addrs(vec![config.bind_address]);
         let peer = tokio::time::timeout(config.operation_timeout, builder.build())
