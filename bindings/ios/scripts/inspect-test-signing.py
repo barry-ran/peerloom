@@ -23,11 +23,15 @@ def targets(value):
 
 
 def resolve_path(original, products, developer, host=None):
+    # Validate placeholders in the generated field, not in trusted directory names.
+    unresolved = original.replace("__TESTROOT__", "").replace("__PLATFORMS__", "")
+    if host is not None:
+        unresolved = unresolved.replace("__TESTHOST__", "")
+    if "__" in unresolved:
+        raise ValueError("xctestrun 包含未解析的路径占位符")
     expanded = original.replace("__TESTROOT__", str(products)).replace("__PLATFORMS__", str(developer / "Platforms"))
     if host is not None:
         expanded = expanded.replace("__TESTHOST__", str(host))
-    if "__" in expanded:
-        raise ValueError("xctestrun 包含未解析的路径占位符")
     target = Path(expanded).resolve(strict=True)
     if not (target.is_relative_to(products) or target.is_relative_to(developer)):
         raise ValueError("拒绝检查本次产物/指定 Xcode 目录以外的文件")
