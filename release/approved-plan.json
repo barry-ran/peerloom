@@ -1,36 +1,6 @@
 {
   "format_version": 1,
   "repository": "barry-ran/peerloom",
-  "approved": true,
-  "administration_sha": "event",
-  "operation": "release",
-  "release_sha": "214b36b32af38f784fb08aa6746e3667a7641bbe",
-  "tag_sha": "event",
-  "tag": "v0.1.5",
-  "prerelease": false,
-  "final_scope_accepted": true,
-  "validation_mode": "compiled-from-verified-tree",
-  "artifacts": {
-    "linux-x86_64": {
-      "id": 12962353242,
-      "sha256": "ab9ceed47afbc24901a55857d4679715bf229be787484d8777f5a61d0849bcc2"
-    },
-    "server-linux-amd64": {
-      "id": 12962009535,
-      "sha256": "704180e72661c34cb2d0ec2e0ca1cc588370f3b31c4b60669f645997787e1c14"
-    },
-    "windows-x86_64": {
-      "id": 12962907073,
-      "sha256": "30970ad42a7edbddfaaff1a103f484807838d1c1c736f1cff47b7e911d3c27ec"
-    },
-    "android": {
-      "id": 12962713152,
-      "sha256": "8370bdcbcbfb845a7e5a29eca3bb8dbca1f63f45fb8b1cd12061c6a4f1d68995"
-    },
-    "apple": {
-      "id": 12961939497,
-      "sha256": "1cee9ebc8aae8966f1ea683821af043546151e41fd62e1c6d97daf85bb03619b"
-    }
-  },
-  "notes": "# Peerloom v0.1.5\n\n本版修复通用SDK的连接关联与字节流生命周期问题，不包含业务专用策略，不改变公开C ABI或线协议。\n\n## 修复\n\n- Android新增 `Connection.sameConnection(other)`：关联同一SDK实例中的同一连接，关闭后仍可匹配迟到事件；不同实例、新代连接不相同。不改变equals/hashCode，不暴露原生句柄，也不表示连接有效或获得授权。\n- 空闲字节流即使没有挂起READ，也观察子通道或父授权失效并推进worker清理，无需宿主额外发数据、CLOSE或关闭父连接。Rust `ChannelValidity::invalidated()` 提供可取消的失效等待；失效不等于资源排空。\n- 读到EOF后继续观察底层完全关闭，不重复投递EOF，FIN仍仅关闭单向写入，反向写入继续可用。底层Rust `ByteStream::wait_closed_after_fin()` 仅在读取EOF后使用，不提前消费正常数据。\n- 已受理CLOSE与worker排空交错时，已关闭的接收队列返回CLOSED，不再误报BUFFER_FULL；真正容量不足仍保留背压语义。CLOSED completion不替代CHANNEL_CLOSED排空通知，也不是远端业务送达确认。\n\n## 测试契约与诊断\n\n容量测试区分连接句柄终态与同一目标会话的后续关闭通知：仅对本轮已请求终止的目标、kind7、零句柄、状态5或255且公开session_id精确匹配的通知进行关联，不计入连接完成数；仍必须在原30秒总截止内收齐20个原非零句柄终态。队列尾部复用同一严格谓词，未知、兄弟、空或畸形会话及其它零句柄status仍失败，不修改产品事件语义。\n\n保留早期a6b85、7dd822的500 FFI失败与后续PC255诊断证据，不改写历史失败。实际PC255的私有原因未记录，不能仅凭通用状态推断具体原因；接纳相关通知不等于操作成功。最终5076的真实500容量用例及全部功能门禁均已通过。\n\n此前Apple host launch timeout及TLS缺少counter的具体原因仍未证实。匿名诊断用于提高可观测性，不宣称修复了网络、信任链或模拟器。508f真实Swift service与TLS counter `1/1/0/0/0` 已通过；最终5076本轮真实Swift service和full-slice TLS counter `1/1/0/0/0` 也通过。\n\n## 构建与验证来源\n\n- 功能验证源码：`5076a2224fbb43cde66eec3287b5af1a95c92b6c`，完整树 `840c03d148d13aa11609d426bc8dc6a97dfe0fcf`。四条正常push工作流、八个必要job全部成功：[基础与500](https://github.com/barry-ran/peerloom/actions/runs/41019278856)、[Windows与Apple](https://github.com/barry-ran/peerloom/actions/runs/41019278782)、[Android build/4K/16K](https://github.com/barry-ran/peerloom/actions/runs/41019278798)、[Chromium](https://github.com/barry-ran/peerloom/actions/runs/41019278772)。\n- 五包实际构建源码：`214b36b32af38f784fb08aa6746e3667a7641bbe`，版本统一为0.1.5，单父为上述验证提交。差异仅为精确四文件版本调整和禁用旧发布计划，没有再修改产品实现。\n- [发布编译工作流](https://github.com/barry-ran/peerloom/actions/runs/41023091779)四个平台job全部成功，仅重新编译、链接和打包，不重复功能联调。五个实际ZIP已按原发布规则核查源码、版本、内外SHA清单、SBOM及许可证证据；不把旧产物改名冒充新版本。\n- 标签指向经审核的发布管理提交，包内保留真实构建源码SHA；不把管理提交或版本重编译表述成重新运行全部功能测试。服务端功能未变，本次同步版本并重新编译打包。\n\n## 下载\n\n- 服务端：`peerloom-server-v0.1.5-linux-amd64.zip`\n- Linux SDK：`peerloom-sdk-v0.1.5-linux-x86_64.zip`\n- Windows SDK：`peerloom-sdk-v0.1.5-windows-x86_64.zip`\n- Apple SDK：`peerloom-sdk-v0.1.5-apple.zip`\n- Android SDK：`peerloom-sdk-v0.1.5-android.zip`\n\n## 已知边界\n\n- CLOSED、失效、EOF、FIN与资源排空是不同状态。未读正常字节仍受有界背压，不承诺不消费宿主的无限缓存或立即检测远端关闭。\n- Android交付arm64-v8a/x86_64，不包含ARM32扩展。模拟器和原生平台测试不等于物理手机、整机休眠或生产签名验收；Apple包为未签名分发产物。\n- 500个原生模拟实例/C宿主压测不等于500台真机或500路视频；公网和长期负载仍需目标环境验收。\n- 第三方材料保留 `collected_with_documented_gaps_not_legally_reviewed`、`release_evidence_complete=false` 与逐项已知缺项；技术可交付不是法律清关。候选依赖清单不冒充最终二进制精确链接清单。\n- 不覆盖或替换v0.1.4及其它历史资产。\n"
+  "approved": false,
+  "reason": "v0.1.6 版本重编译准备；五包校验与独立发布批准完成前不发布。"
 }

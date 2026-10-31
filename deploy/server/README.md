@@ -1,6 +1,6 @@
 # Peerloom 服务端运行包
 
-本说明适用于 `server-linux-amd64` 的解压后安装载荷，不是 SDK 安装说明。v0.1.1 拆包须通过对应版本完整 CI 并正式发布后下载使用；本说明本身不证明已发布或已部署生产环境。v0.1.0 已发布资产不覆盖。
+本说明适用于 `server-linux-amd64` 的解压后安装载荷，不是 SDK 安装说明。请从正式 Release 选择实际可下载的服务端包，并核对该版本的功能验收来源、实际构建源码、版本元数据及校验清单；本说明本身不证明特定版本已发布或已部署生产环境。历史已发布资产不覆盖。
 
 ## 包含什么、仍需什么
 
@@ -18,10 +18,12 @@
 先从正式 Release 核对外层 ZIP 的版本、摘要与来源。外层 ZIP 仅供封装；**安装使用其中的 `peerloom-server-linux-amd64.tar.gz`**，它保留 Unix 可执行位，不使用 ZIP 松散文件替代程序。
 
 ```sh
-# 在一个全新目录操作；路径以实际下载文件为准，不覆盖已有部署。
-mkdir peerloom-server-0.1.1
-cd peerloom-server-0.1.1
-unzip ../peerloom-server-v0.1.1-linux-amd64.zip -d archive
+# 在一个全新目录操作，不覆盖已有部署。
+# 先将 PEERLOOM_VERSION 设为已实际下载的发布版本号（不含 v），不要填写未发布版本。
+: "${PEERLOOM_VERSION:?请先设置实际下载的发布版本号（不含 v）}"
+mkdir "peerloom-server-${PEERLOOM_VERSION}"
+cd "peerloom-server-${PEERLOOM_VERSION}"
+unzip "../peerloom-server-v${PEERLOOM_VERSION}-linux-amd64.zip" -d archive
 mkdir runtime
 tar -xzf archive/peerloom-server-linux-amd64.tar.gz -C runtime
 cd runtime
@@ -44,7 +46,7 @@ curl --fail http://127.0.0.1:18080/readyz
 
 初始化只新建 `.secrets`，不生成账户或 `.env`、不启动服务。已有同名目录/文件/符号链接、路径或权限不安全时拒绝；中途失败保留本次目录供运维核对，不能靠删除后重试恢复已有数据库。**不要删除秘密后复用旧数据库卷。**
 
-新 `.secrets` 父目录为 0700，授权单文件为 0444，并只挂载给需要它的容器。父目录阻止其他宿主 UID 遍历；单文件只读权限用于 Compose bind-secret 的非 root 容器兼容，不表示可放入公开目录。Docker daemon、宿主 root 及获授权挂载容器属于信任边界。运行时镜像构建上下文仅允许 5 个程序及 18 个 SQL，不复制 secrets。
+新 `.secrets` 父目录为 0700，授权单文件为 0444，并只挂载给需要它的容器。父目录阻止其他宿主 UID 遍历；单文件只读权限用于 Compose bind-secret 的非 root 容器兼容，不表示可放入公开目录。Docker daemon、宿主 root 及获授权挂载容器属于信任边界。运行时镜像构建上下文仅允许 5 个程序及 20 个 SQL，不复制 secrets。
 
 默认端口仅 `127.0.0.1:18080`。PostgreSQL/Redis 不发布宿主端口，网关拒绝 `/metrics`；管理后台默认关闭，没有默认管理员。只有 `device-server` 另接独立 `egress` 网络，用于策略允许的 HTTPS Webhook 等出站；不会新增宿主监听端口，PostgreSQL/Redis/迁移仍只在内部网络。出口网络不绕过 Webhook 的 SSRF、DNS、重定向和授权检查。明文 HTTP/WS 仅供回环开发，不能把端口改成公网绑定后就当生产部署。
 
