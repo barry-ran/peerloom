@@ -1631,5 +1631,232 @@ class V015ReviewedRebuildTests(unittest.TestCase):
             'release/build-request.json', 'release/approved-plan.json'})
         self.assertEqual(A.V015_TESTED, '5076a2224fbb43cde66eec3287b5af1a95c92b6c')
 
+
+class V016ReviewedRebuildTests(unittest.TestCase):
+    """本版真实构建身份与管理父链必须完整匹配；全部 API 均为离线 mock。"""
+    def fixture(self):
+        from unittest.mock import Mock
+        import urllib.parse
+        plan = {'format_version': 1, 'repository': P.REPO, 'approved': True,
+                'administration_sha': MASTER, 'operation': 'release', 'release_sha': A.V016_SOURCE,
+                'tag_sha': MASTER, 'tag': A.V016_TAG, 'prerelease': False, 'notes': 'fixture',
+                'final_scope_accepted': True, 'validation_mode': A.REBUILD_MODE,
+                'artifacts': {name: {'id': i} for i, name in enumerate(P.PLATFORMS, 1)}}
+        commits = {
+            A.V016_TESTED: {'sha': A.V016_TESTED, 'tree': {'sha': A.V016_TESTED_TREE}},
+            A.V016_SOURCE: {'sha': A.V016_SOURCE, 'tree': {'sha': A.V016_SOURCE_TREE},
+                            'parents': [{'sha': A.V016_TESTED}]},
+            A.V016_ADMIN_PARENT: {'sha': A.V016_ADMIN_PARENT, 'tree': {'sha': A.V016_ADMIN_PARENT_TREE},
+                                  'parents': [{'sha': A.V016_SOURCE}]},
+            MASTER: {'sha': MASTER, 'parents': [{'sha': A.V016_ADMIN_PARENT}]},
+        }
+        source_files = [{'filename': name, 'status': 'modified', 'sha': item['after_blob']}
+                        for name, item in A.V016_SOURCE_BLOBS.items()]
+        admin_files = [{'filename': A.EXECUTION_FILE, 'status': 'modified', 'sha': TREE},
+                       {'filename': 'release/approved-plan.json', 'status': 'modified', 'sha': A.V016_PLAN_BLOB}]
+        admin_files += [{'filename': name, 'status': 'modified', 'sha': item['after_blob']}
+                        for name, item in A.V016_ADMIN_BLOBS.items()]
+        def comparison(before, files):
+            return {'base_commit': {'sha': before}, 'merge_base_commit': {'sha': before},
+                    'status': 'ahead', 'behind_by': 0, 'ahead_by': 1, 'total_commits': 1, 'files': files}
+        comparisons = {(A.V016_TESTED, A.V016_SOURCE): comparison(A.V016_TESTED, source_files),
+                       (A.V016_SOURCE, MASTER): comparison(A.V016_SOURCE, admin_files),
+                       (A.V016_ADMIN_PARENT, MASTER): comparison(A.V016_ADMIN_PARENT, admin_files)}
+        before = {name: value['before_blob'] for name, value in A.V016_SOURCE_BLOBS.items()}
+        before.update({name: value['before_blob'] for name, value in A.V016_ADMIN_BLOBS.items()})
+        before[A.EXECUTION_FILE] = A.V016_EXECUTION_BEFORE
+        runs, jobs = {}, {}
+        for i, (workflow, names) in enumerate(P.WORKFLOWS.items(), 100):
+            runs[workflow] = [{'id': i, 'head_sha': A.V016_TESTED, 'head_branch': 'codex/verify-peerloom-correctness-20261031',
+                              'event': 'push', 'head_repository': {'full_name': P.REPO}, 'run_attempt': 1,
+                              'status': 'completed', 'conclusion': 'success', 'path': '.github/workflows/' + workflow}]
+            jobs[i] = [{'name': name, 'head_sha': A.V016_TESTED, 'status': 'completed', 'conclusion': 'success',
+                        'steps': [{'name': 'required', 'conclusion': 'success'}]} for name in names]
+        runs['release-build.yml'] = [{'id': A.V016_BUILD_RUN, 'head_sha': A.V016_SOURCE, 'head_branch': 'master',
+                                     'event': 'push', 'head_repository': {'full_name': P.REPO}, 'run_attempt': 1,
+                                     'status': 'completed', 'conclusion': 'success', 'path': '.github/workflows/release-build.yml'}]
+        jobs[A.V016_BUILD_RUN] = [{'name': name, 'head_sha': A.V016_SOURCE, 'status': 'completed', 'conclusion': 'success',
+                                  'steps': [{'name': 'compile', 'conclusion': 'success'}]} for name in A.REBUILD_JOBS]
+        state = {'commits': commits, 'comparisons': comparisons, 'before': before, 'runs': runs, 'jobs': jobs,
+                 'source_files': source_files, 'admin_files': admin_files, 'master': MASTER}
+        def call(endpoint, **kwargs):
+            if kwargs.get('method', 'GET') != 'GET':
+                raise AssertionError('offline fixture forbids writes')
+            path = endpoint.removeprefix('/repos/' + P.REPO)
+            if path == '/git/ref/heads/master':
+                return {'object': {'sha': state['master']}}
+            if path.startswith('/git/commits/'):
+                return commits[path.rsplit('/', 1)[1]]
+            if path.startswith('/compare/'):
+                pair = tuple(path.split('/compare/', 1)[1].split('?', 1)[0].split('...'))
+                return comparisons[pair]
+            if path.startswith('/contents/'):
+                name = urllib.parse.unquote(path.split('/contents/', 1)[1].split('?', 1)[0])
+                return {'type': 'file', 'sha': before[name]}
+            raise AssertionError('unexpected offline endpoint ' + path)
+        def pages(endpoint, key):
+            if key == 'workflow_runs':
+                return runs[endpoint.split('/actions/workflows/', 1)[1].split('/runs', 1)[0]]
+            return jobs[int(endpoint.split('/actions/runs/', 1)[1].split('/', 1)[0])]
+        api = Mock(); api.call.side_effect = call; api.pages.side_effect = pages
+        return A.Admin(api, plan, MASTER), state
+
+    def test_exact_pinned_identity_and_eight_source_paths(self):
+        self.assertEqual(A.V016_SOURCE, '150b29b428bf5c98bb0bc3864b9bfa00e74231f4')
+        self.assertEqual(A.V016_SOURCE_TREE, 'a0f51d6dda2a6583a4440be7419c1482fa7be012')
+        self.assertEqual(A.V016_TESTED, 'e4943daf70ee2267abe19f39c6d915c267997967')
+        self.assertEqual(A.V016_RETAINED, A.V016_TESTED)
+        self.assertEqual(A.V016_ADMIN_PARENT, '6dd6d244c86ab5b63bb5adc8f8e3b32abce72628')
+        self.assertNotEqual(A.V016_ADMIN_PARENT, A.V016_SOURCE)
+        self.assertEqual(A.V016_BUILD_RUN, 41176651461)
+        self.assertEqual(set(A.V016_SOURCE_BLOBS), {
+            'src/device-sdk/Cargo.toml', 'src/device-sdk/Cargo.lock', 'release/build-request.json',
+            'release/approved-plan.json', 'deploy/server/README.md', 'docs/部署指南.md',
+            'docs/用户使用说明.md', 'docs/发布与分支清理模块.md'})
+        self.assertEqual(set(P.ADMINISTRATION_FILES), {'README.md', 'docs/assets/peerloom-banner.svg', 'release/approved-plan.json'})
+
+    def test_full_validate_exercises_original_functional_and_exact_compile_gates(self):
+        admin, _ = self.fixture()
+        self.assertEqual(admin.validate(), {workflow: A.V016_BUILD_RUN for workflow in P.WORKFLOWS})
+        queried = [call.args[0] for call in admin.api.pages.call_args_list]
+        for workflow in P.WORKFLOWS:
+            self.assertTrue(any(workflow + '/runs?head_sha=' + A.V016_TESTED in url for url in queried))
+        self.assertTrue(any('release-build.yml/runs?head_sha=' + A.V016_SOURCE in url for url in queried))
+
+    def test_zero_other_tag_or_management_sha_cannot_be_build_source(self):
+        from unittest.mock import patch
+        for source, commit, tag in ((None, A.V016_SOURCE, A.V016_TAG), ('0' * 40, '0' * 40, A.V016_TAG),
+                                    (A.V016_SOURCE, A.V016_ADMIN_PARENT, A.V016_TAG),
+                                    (A.V016_SOURCE, A.V016_SOURCE, 'v0.1.7')):
+            with self.subTest(source=source, commit=commit, tag=tag), patch.object(A, 'V016_SOURCE', source), self.assertRaises(P.Rejected):
+                A.require_v016_identity(commit, tag)
+        admin, _ = self.fixture()
+        with patch.object(A, 'V016_ADMIN_BLOBS', {}), self.assertRaises(P.Rejected):
+            admin.rebuild_gates(A.V016_SOURCE)
+        admin.api.call.assert_not_called()
+
+    def test_exact_tested_tree_source_tree_and_unique_parent(self):
+        for target, field, value in ((A.V016_TESTED, 'tree', {'sha': TREE}),
+                                     (A.V016_SOURCE, 'tree', {'sha': TREE}),
+                                     (A.V016_SOURCE, 'parents', []),
+                                     (A.V016_SOURCE, 'parents', [{'sha': A.V016_ADMIN_PARENT}]),
+                                     (A.V016_SOURCE, 'parents', [{'sha': A.V016_TESTED}, {'sha': MASTER}])):
+            admin, state = self.fixture(); state['commits'][target][field] = value
+            with self.subTest(target=target, field=field, value=value), self.assertRaises(P.Rejected):
+                admin.validate()
+        from unittest.mock import patch
+        admin, _ = self.fixture()
+        with patch.object(A, 'V016_RETAINED', MASTER), self.assertRaises(P.Rejected):
+            admin.rebuild_gates(A.V016_SOURCE)
+        admin.api.call.assert_not_called()
+
+    def test_each_source_before_and_after_blob_is_required(self):
+        for name in A.V016_SOURCE_BLOBS:
+            for field in ('before', 'after'):
+                admin, state = self.fixture()
+                if field == 'before':
+                    state['before'][name] = MASTER
+                else:
+                    next(row for row in state['source_files'] if row['filename'] == name)['sha'] = MASTER
+                with self.subTest(name=name, field=field), self.assertRaises(P.Rejected):
+                    admin.validate()
+
+    def test_source_missing_extra_rename_and_truncated_comparison_rejected(self):
+        for kind in ('missing', 'extra', 'rename', 'truncated', 'diverged'):
+            admin, state = self.fixture(); files = state['source_files']; compare = state['comparisons'][(A.V016_TESTED, A.V016_SOURCE)]
+            if kind == 'missing': files.pop()
+            if kind == 'extra': files.append({'filename': 'src/unreviewed.rs', 'status': 'modified', 'sha': TREE})
+            if kind == 'rename': files[0]['previous_filename'] = 'old'
+            if kind == 'truncated': compare['files'] = [dict(files[0], filename=str(i)) for i in range(300)]
+            if kind == 'diverged': compare['status'] = 'diverged'
+            with self.subTest(kind=kind), self.assertRaises(P.Rejected): admin.validate()
+
+    def test_each_functional_workflow_latest_failure_or_pending_is_not_bypassed(self):
+        for workflow in P.WORKFLOWS:
+            for status in ('failure', 'pending', 'absent'):
+                admin, state = self.fixture(); rows = state['runs'][workflow]
+                if status == 'absent': rows.clear()
+                else: rows.append(dict(rows[0], id=rows[0]['id'] + 1000, status='in_progress' if status == 'pending' else 'completed', conclusion=None if status == 'pending' else 'failure'))
+                if status == 'failure': state['jobs'][rows[-1]['id']] = state['jobs'][rows[0]['id']]
+                with self.subTest(workflow=workflow, status=status), self.assertRaises(P.Rejected): admin.validate()
+
+    def test_all_functional_jobs_and_steps_still_required(self):
+        for workflow in P.WORKFLOWS:
+            for field in ('job', 'step'):
+                admin, state = self.fixture(); run = state['runs'][workflow][0]; jobs = state['jobs'][run['id']]
+                if field == 'job': jobs.pop()
+                else: jobs[0]['steps'][0]['conclusion'] = 'skipped'
+                with self.subTest(workflow=workflow, field=field), self.assertRaises(P.Rejected): admin.validate()
+
+    def test_latest_build_and_attempt_must_be_the_reviewed_success(self):
+        for changes in ({'id': A.V016_BUILD_RUN + 1}, {'run_attempt': 2}, {'conclusion': 'failure'}, {'status': 'in_progress', 'conclusion': None}):
+            admin, state = self.fixture(); rows = state['runs']['release-build.yml']
+            if 'id' in changes or 'run_attempt' in changes:
+                rows.append(dict(rows[0], **changes))
+            else:
+                rows[0].update(changes)
+            state['jobs'][rows[-1]['id']] = state['jobs'][A.V016_BUILD_RUN]
+            with self.subTest(changes=changes), self.assertRaises(P.Rejected): admin.validate()
+        admin, state = self.fixture(); state['runs']['release-build.yml'].clear()
+        with self.assertRaises(A.Pending): admin.validate()
+
+    def test_compile_run_fields_and_every_job_or_step_rejected_if_wrong(self):
+        for changes in ({'head_sha': A.V016_ADMIN_PARENT}, {'head_branch': 'feat/other'}, {'event': 'workflow_dispatch'},
+                        {'head_repository': {'full_name': 'other/repo'}}, {'path': '.github/workflows/ci.yml'}):
+            admin, state = self.fixture(); state['runs']['release-build.yml'][0].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(P.Rejected): admin.validate()
+        for name in A.REBUILD_JOBS:
+            for kind in ('missing', 'failed', 'skipped', 'wrong_source', 'duplicate'):
+                admin, state = self.fixture(); jobs = state['jobs'][A.V016_BUILD_RUN]; job = next(j for j in jobs if j['name'] == name)
+                if kind == 'missing': jobs.remove(job)
+                if kind == 'failed': job['conclusion'] = 'failure'
+                if kind == 'skipped': job['steps'][0]['conclusion'] = 'skipped'
+                if kind == 'wrong_source': job['head_sha'] = A.V016_ADMIN_PARENT
+                if kind == 'duplicate': jobs.append(copy.deepcopy(job))
+                with self.subTest(name=name, kind=kind), self.assertRaises(P.Rejected): admin.validate()
+
+    def test_management_parent_and_intermediate_tree_are_bound(self):
+        for target, field, value in ((MASTER, 'parents', [{'sha': A.V016_SOURCE}]),
+                                     (MASTER, 'parents', [{'sha': A.V016_ADMIN_PARENT}, {'sha': SHA}]),
+                                     (A.V016_ADMIN_PARENT, 'tree', {'sha': TREE}),
+                                     (A.V016_ADMIN_PARENT, 'parents', [{'sha': A.V016_TESTED}])):
+            admin, state = self.fixture(); state['commits'][target][field] = value
+            with self.subTest(target=target, field=field), self.assertRaisesRegex(P.Rejected, 'ADMIN_PARENT'): admin.validate()
+
+    def test_management_inventory_plan_and_test_hashes_are_exact(self):
+        for kind in ('missing', 'extra', 'generic_readme', 'rename', 'plan', 'test', 'before'):
+            admin, state = self.fixture(); files = state['admin_files']
+            if kind == 'missing': files.pop()
+            if kind in ('extra', 'generic_readme'): files.append({'filename': 'README.md' if kind == 'generic_readme' else 'scripts/unreviewed.py', 'status': 'modified', 'sha': TREE})
+            if kind == 'rename': files[0]['previous_filename'] = 'other'
+            if kind == 'plan': next(f for f in files if f['filename'] == 'release/approved-plan.json')['sha'] = TREE
+            if kind == 'test': next(f for f in files if f['filename'] == 'scripts/test-release-admin.py')['sha'] = TREE
+            if kind == 'before': state['before'][A.EXECUTION_FILE] = TREE
+            with self.subTest(kind=kind), self.assertRaises(P.Rejected): admin.validate()
+
+    def test_master_drift_false_approval_unknown_mode_and_wrong_source_reject(self):
+        for kind in ('master', 'approval', 'mode', 'source'):
+            admin, state = self.fixture()
+            if kind == 'master': state['master'] = SHA
+            if kind == 'approval': admin.plan['approved'] = False
+            if kind == 'mode': admin.plan['validation_mode'] = 'skip'
+            if kind == 'source': admin.plan['release_sha'] = A.V016_ADMIN_PARENT
+            with self.subTest(kind=kind), self.assertRaises(P.Rejected): admin.validate()
+
+    def test_final_plan_and_candidate_test_bytes_match_the_reviewed_inventory(self):
+        root = Path(__file__).resolve().parents[1]
+        data = (root / 'release/approved-plan.json').read_bytes()
+        plan = json.loads(data)
+        # A disabled plan is allowed without publishing; an approved v016 must be exact.
+        if plan.get('approved') is True and plan.get('tag') == A.V016_TAG:
+            self.assertEqual(hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest(), A.V016_PLAN_BLOB)
+            self.assertEqual(plan['release_sha'], A.V016_SOURCE)
+            self.assertEqual(plan['tag_sha'], 'event')
+            self.assertEqual(plan['validation_mode'], A.REBUILD_MODE)
+            self.assertEqual(set(plan['artifacts']), set(P.PLATFORMS))
+        data = Path(__file__).read_bytes()
+        self.assertEqual(hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest(), A.V016_ADMIN_BLOBS['scripts/test-release-admin.py']['after_blob'])
+
+
 if __name__ == '__main__':
     unittest.main()

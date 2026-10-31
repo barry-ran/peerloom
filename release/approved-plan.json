@@ -1,8 +1,36 @@
 {
   "format_version": 1,
   "repository": "barry-ran/peerloom",
-  "approved": false,
+  "approved": true,
   "administration_sha": "event",
   "operation": "release",
-  "reason": "v0.1.6 版本重编译准备；五包校验与独立发布批准完成前不发布。"
+  "release_sha": "150b29b428bf5c98bb0bc3864b9bfa00e74231f4",
+  "tag_sha": "event",
+  "tag": "v0.1.6",
+  "prerelease": false,
+  "final_scope_accepted": true,
+  "validation_mode": "compiled-from-verified-tree",
+  "artifacts": {
+    "linux-x86_64": {
+      "id": 13033536595,
+      "sha256": "9e5cb865aaff0e56cb10267895869ea64a79927862909e392e627bacfd49684e"
+    },
+    "server-linux-amd64": {
+      "id": 13032987188,
+      "sha256": "95b76dc5a4687ee3d6e5c2a515bb1769c47531db857f0bef93bbdcd8ad9b7165"
+    },
+    "windows-x86_64": {
+      "id": 13033033280,
+      "sha256": "1081aa26063bfb7e3e82fe7befc3e7d0c119d1a0d3abeeefef34abd6f48a5f2b"
+    },
+    "apple": {
+      "id": 13033442217,
+      "sha256": "760eb8b94821a1899a88697b5514e75b968f4ee27384e1fb7e3637acd31e726a"
+    },
+    "android": {
+      "id": 13032917442,
+      "sha256": "3dd4d0f5408ca0b7c9f41e22c1a7a97ced1aa0b94279789e55a72a85915ac6e2"
+    }
+  },
+  "notes": "# Peerloom v0.1.6\n\n本版是正确性修复，不宣称普遍降低 CPU 或延迟；公开 Peerloom API、C ABI 与线协议不变。\n\n## 修复\n\n- 修复 raw ByteStream 持续写入但不读取时，内部 BufferedAmountLow/High 建议通知积满有界队列，进而阻塞同一连接反向控制消息的问题。仅 Peerloom 内部关闭不公开的建议通知；vendored WebRTC 默认仍保留原公开通知契约。真实消息、状态事件、SCTP 会计与背压容量不变。持续读取的 SDK worker 原本可避开这一触发条件，不代表所有应用都会卡住。\n- Apple 测试签名诊断正确区分可信目录名与未展开的路径占位符，不把普通目录名误报为配置未展开；不是网络、系统信任链或模拟器修复。\n- 部署说明使用实际 Release 版本变量，迁移清单与源码中的 10 对、20 个 SQL 文件一致；历史版本示例保留。\n\n## 验证与构建来源\n\n- 两个独立正确性提交保留原 SHA：Apple `44582c0`，通知积压 `e4943da`。最终功能验证源码 `e4943daf70ee2267abe19f39c6d915c267997967`，树 `4bf727bc6338c868bf0636db028519ce94af79a4`。\n- 四条正常 push 功能工作流、八个必要 job 全部成功：[基础与 500 容量](https://github.com/barry-ran/peerloom/actions/runs/41171102262)、[Windows 与 Apple](https://github.com/barry-ran/peerloom/actions/runs/41171102322)、[Android build/4K/16K](https://github.com/barry-ran/peerloom/actions/runs/41171102287)、[Chromium](https://github.com/barry-ran/peerloom/actions/runs/41171102265)。Linux 实际执行 1152×8KiB 单向写入、逐帧独立反向 ACK 回归；不能据此称该专项已在每个平台执行。\n- 五包真实构建源码 `150b29b428bf5c98bb0bc3864b9bfa00e74231f4`，树 `a0f51d6dda2a6583a4440be7419c1482fa7be012`；唯一父提交为上述功能验证源码。精确差异仅四份版本/计划元数据与四份读者文档，七个自有包统一 0.1.6，318 个外部依赖记录原样。\n- [仅编译打包工作流](https://github.com/barry-ran/peerloom/actions/runs/41176651461)的四个 job 全部成功；重新编译、链接和打包五个独立产物，没有重复功能联调。五包实际 ZIP 的源 SHA、版本、内外 SHA 清单、许可证据与头文件已核验，Android 双 ABI ELF LOAD 对齐满足 16KiB，Apple 保留五 slice。\n- 初始构建提交的停用发布计划缺少两个结构字段，发布管理离线检查失败、apply 跳过，未发布。`6dd6d24` 单独补齐停用字段后，新管理检查 115 项通过、apply 仍跳过；没有重新构建或改写包内真实源码身份。标签指向受审发布管理提交，不能冒称它重新跑过功能测试。\n\n## 下载\n\n- 服务端：`peerloom-server-v0.1.6-linux-amd64.zip`\n- Linux SDK：`peerloom-sdk-v0.1.6-linux-x86_64.zip`\n- Windows SDK：`peerloom-sdk-v0.1.6-windows-x86_64.zip`\n- Apple SDK：`peerloom-sdk-v0.1.6-apple.zip`\n- Android SDK：`peerloom-sdk-v0.1.6-android.zip`\n\n## 已知边界\n\n- 性能研究未确立普遍 CPU 或延迟收益，并观察到部分不利尾延迟信号。例如本地四 worker raw 500 aligned 的 control scheduled p99 运行中位数为 211.617→238.640ms，SDK 32 aligned 为 2.290→2.349ms；这不是生产默认 FFI 线程模型、真机公网或普遍退化的结论。本版只按正确性价值发布，不作“无退化”承诺，目标负载仍需验收。\n- 两个性能测试启动超时的原因尚未确定，不归因为已证实的 open race，也不宣称本版修复了该假设。\n- Android 提供 arm64-v8a/x86_64，不含 ARM32；Apple 为未签名分发产物。模拟器与本地容量验收不等于物理设备、长期公网负载或生产签名验收。\n- 第三方材料保留 `collected_with_documented_gaps_not_legally_reviewed`、`release_evidence_complete=false` 和逐项已知缺项；技术可交付不是法律清关，候选依赖清单不是最终二进制精确链接清单。\n- 不覆盖 v0.1.5 或任何历史标签/资产；不包含性能研究分支或改变 AutoX 的 0.1.5 固定依赖。\n"
 }
