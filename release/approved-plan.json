@@ -2,5 +2,7 @@
   "format_version": 1,
   "repository": "barry-ran/peerloom",
   "approved": false,
+  "administration_sha": "event",
+  "operation": "release",
   "reason": "v0.1.6 版本重编译准备；五包校验与独立发布批准完成前不发布。"
 }
