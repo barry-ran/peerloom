@@ -232,7 +232,7 @@ class WatchdogTests(unittest.TestCase):
                     self.assertNotEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
 
     def test_signing_diagnostics_read_only_bounded_and_redacted(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(prefix="peerloom__signing-") as directory:
             root = Path(directory)
             products, developer = root / "products", root / "developer"
             products.mkdir(); developer.mkdir()
@@ -263,6 +263,36 @@ class WatchdogTests(unittest.TestCase):
                     SIGNING.inspect(products, developer)
                 run.assert_not_called()
 
+    def test_signing_diagnostics_expand_developer_directory_with_double_underscores(self):
+        with tempfile.TemporaryDirectory(prefix="peerloom__signing-") as directory:
+            root = Path(directory).resolve()
+            products, developer = root / "products", root / "developer"
+            products.mkdir(); developer.mkdir()
+            bundle = developer / "Platforms" / "fixture.xctest"
+            bundle.mkdir(parents=True)
+            self.assertEqual(SIGNING.resolve_path("__PLATFORMS__/fixture.xctest", products, developer), bundle)
+
+    def test_signing_diagnostics_reject_unknown_tokens_missing_host_and_symlink_escape(self):
+        with tempfile.TemporaryDirectory(prefix="peerloom__signing-") as directory:
+            root = Path(directory).resolve()
+            products, developer = root / "products", root / "developer"
+            products.mkdir(); developer.mkdir()
+            outside = root / "outside.xctest"
+            outside.mkdir()
+            (products / "link.xctest").symlink_to(outside, target_is_directory=True)
+            document = products / "fixture.xctestrun"
+            for path, reason in (("__UNKNOWN__/fixture.xctest", "占位符"),
+                                 ("__TESTHOST__/fixture.xctest", "占位符"),
+                                 ("__TESTROOT__/__UNKNOWN__/fixture.xctest", "占位符"),
+                                 ("__TESTROOT__/../outside.xctest", "以外"),
+                                 ("__TESTROOT__/link.xctest", "以外")):
+                with self.subTest(path=path):
+                    document.write_bytes(plistlib.dumps({"TestBundlePath": path}))
+                    with mock.patch.object(SIGNING.subprocess, "run") as run, contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaisesRegex(ValueError, reason):
+                            SIGNING.inspect(products, developer)
+                        run.assert_not_called()
+
     def test_application_host_is_simulator_only_and_reuses_original_tests(self):
         root = SCRIPT.parent.parent / "SimulatorHost"
         project = root / "PeerloomSimulatorHost.xcodeproj/project.pbxproj"
@@ -291,7 +321,7 @@ class WatchdogTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
     def test_host_evidence_requires_real_app_path_and_expanded_keychain_group(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(prefix="peerloom__signing-") as directory:
             root = Path(directory)
             products, developer = root / "Build/Products", root / "developer"
             products.mkdir(parents=True); developer.mkdir()
