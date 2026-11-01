@@ -186,6 +186,7 @@ class WatchdogTests(unittest.TestCase):
             path = Path(directory) / "discovery"
             names = ["PeerloomSwiftTests." + suite + "/" + method
                      for suite, methods in VERIFY.EXPECTED.items() for method in methods]
+            self.assertIn("PeerloomSwiftTests.NativeCoreTests/testCustomIceEncodingAndRedaction", names)
             path.write_text("\n".join(names))
             VERIFY.discovery(path)
             for wrong in (names[:-1], names + [names[0]], names + ["OtherTests/testSkipped"]):
@@ -536,7 +537,7 @@ PYMOCK
             path = Path(directory) / "discovery"
             names = sorted("PeerloomSwiftTests." + suite + "/" + method
                            for suite, methods in VERIFY.EXPECTED.items() for method in methods)
-            self.assertEqual(len(names), 15)
+            self.assertEqual(len(names), 16)
             self.assertIn("PeerloomSwiftTests.NativeCoreTests/testTypedChildMetadataAndPartialWriteResult", names)
             self.assertIn("PeerloomSwiftTests.NativeCoreTests/testOptionalCapacityDefaultsAndLargeValuesEncodeWithoutClamping", names)
             path.write_text("\n".join(names))
