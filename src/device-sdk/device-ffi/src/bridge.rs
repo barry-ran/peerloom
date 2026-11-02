@@ -164,6 +164,11 @@ async fn sdk_event(sdk: &mut Option<DeviceSdk>) -> Option<SdkEvent> {
     }
 }
 
+// Optional ABI1 payload evidence, not a replacement for event reason/status or
+// an accepted operation's terminal. Zero is emitted only after actual cleanup succeeds.
+fn closed_payload(session: &str, local_close_status: u32) -> Vec<u8> {
+    json!({"session_id":session,"local_close_status":local_close_status}).to_string().into_bytes()
+}
 async fn close_connections(connections: &mut HashMap<u64, (String, crate::channels::Task)>) {
     let mut closes = tokio::task::JoinSet::new();
     for (_, (_, task)) in connections.drain() {
@@ -262,12 +267,12 @@ pub async fn run(
                     },
                     Some(SdkEvent::ConnectionClosed { session_id, reason }) => {
                         let id = connections.iter().find(|(_, (value, _))| value == &session_id).map(|(id, _)| *id).unwrap_or(0);
-                        let ticket = if let Some((_, mut task)) = connections.remove(&id) {
+                        let (ticket, local_close_status) = if let Some((_, mut task)) = connections.remove(&id) {
                             let ticket = task.closed.take();
-                            task.close().await;
-                            ticket
-                        } else { None };
-                        let event = Event::new(7, 0, id, error(reason), json!({"session_id":session_id}).to_string().into_bytes());
+                            let status = task.close().await;
+                            (ticket, status)
+                        } else { (None, UNKNOWN) };
+                        let event = Event::new(7, 0, id, error(reason), closed_payload(&session_id, local_close_status));
                         if let Some(ticket) = ticket { ticket.send(&instance, event); }
                         else { instance.emit(event); }
                     },
@@ -550,6 +555,14 @@ mod tests {
         assert!(offer.is_ok(), "offer failed: {:?}", offer.as_ref().err());
         received.unwrap();
         assert!(offer.unwrap().sdp.contains("typ srflx"));
+    }
+    #[test]
+    fn closed_payload_preserves_session_and_never_upgrades_unknown() {
+        for status in [OK, CLOSED, UNKNOWN, INTERNAL] {
+            let value: serde_json::Value = serde_json::from_slice(&closed_payload("session", status)).unwrap();
+            assert_eq!(value["session_id"], "session");
+            assert_eq!(value["local_close_status"], status);
+        }
     }
     #[test]
     fn custom_ice_json_preserves_defaults_and_replaces_managed() {

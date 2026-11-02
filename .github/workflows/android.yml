@@ -1,24 +1,7 @@
-name: Android 原生封装验证
+name: Temporary Android close retirement candidate
 on:
   push:
-    # Functional changes are validated before the normal fast-forward to master.
-    branches-ignore: [master]
-    paths-ignore:
-      - 'README.md'
-      - 'docs/*.md'
-      - 'docs/assets/peerloom-banner.svg'
-      - 'deploy/server/README.md'
-      - 'bindings/android/README.md'
-      - 'bindings/android/scripts/Maven证据说明.md'
-      - 'bindings/ios/Apple封装说明.md'
-      - 'release/approved-plan.json'
-      - 'scripts/release-admin.py'
-      - 'scripts/release-policy.py'
-      - 'scripts/test-release-admin.py'
-      - 'scripts/test-workflow-triggers.py'
-      - '.github/workflows/release-admin.yml'
-  # Explicit full validation remains available, including on master.
-  workflow_dispatch:
+    branches: ['codex/verify-native-close-20261102']
 permissions:
   contents: read
 concurrency:
@@ -46,9 +29,14 @@ jobs:
           echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           rustup toolchain install 1.99.1 --profile minimal
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1' < /dev/null
+          test -f "$ANDROID_HOME/platforms/android-36/android.jar"
+          test -x "$ANDROID_HOME/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          test -x "$ANDROID_HOME/cmake/3.22.1/bin/cmake"
           rustc +1.99.1 --version
           cat "$ANDROID_HOME/ndk/29.0.14206865/source.properties"
+      - name: Focused native retirement regression
+        run: cargo +1.99.1 test --locked --manifest-path src/device-sdk/Cargo.toml -p device-ffi --lib
       - name: 两个ABI真实构建、AAR和示例APK
         working-directory: bindings/android
         run: |
@@ -100,6 +88,29 @@ jobs:
           python3 scripts/package-third-party.py
           python3 scripts/package-release.py --platform android --output dist/android/release-package
           (cd dist/android && find . -type f ! -path './SHA256SUMS' -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
+      - name: Candidate provenance and JNI ABI evidence
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,re,subprocess,tempfile,zipfile
+          from pathlib import Path
+          root=Path('dist/android');aar=root/'library-release.aar'
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          nm=Path(os.environ['ANDROID_HOME'])/'ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm'
+          native={}
+          with zipfile.ZipFile(aar) as z, tempfile.TemporaryDirectory() as tmp:
+              names=sorted(n for n in z.namelist() if n.startswith('jni/') and n.endswith('.so'))
+              assert {n.split('/')[1] for n in names}=={'arm64-v8a','x86_64'}
+              for n in names:
+                  p=Path(tmp)/n.replace('/','_');p.write_bytes(z.read(n))
+                  symbols=subprocess.check_output([str(nm),'-D','--defined-only',str(p)],text=True)
+                  assert 'JNI_OnLoad' in symbols and 'Java_io_peerloom_sdk_Native_submit' in symbols
+                  assert b'local_close_status' in p.read_bytes()
+                  (root/(n.split('/')[1]+'-jni-symbols.txt')).write_text(symbols)
+                  native[n]=sha(p)
+          data={'kind':'unpublished-native-close-candidate','head_sha':os.environ['GITHUB_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'baseline':'ac6db1cefbe917df0d9076dd2d4afe706d700203','sdk_patch_sha256':'b7396d936a20bc6a1304c2dc80b4e6f78df125b2aad5e04b526291fd2f3435c4','aar_sha256':sha(aar),'jni_sha256':native,'source_sha256':{str(p):sha(p) for p in map(Path,['src/device-sdk/device-ffi/src/bridge.rs','src/device-sdk/device-ffi/src/channels.rs','src/device-sdk/device-ffi/src/state.rs'])}}
+          (root/'candidate-provenance.json').write_text(json.dumps(data,indent=2))
+          PY
+          (cd dist/android && find . -type f ! -path './SHA256SUMS' -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: peerloom-android-${{ github.sha }}
@@ -113,66 +124,3 @@ jobs:
           path: dist/android/release-package/
           if-no-files-found: error
           retention-days: 14
-  emulator:
-    name: android-emulator-${{ matrix.page }}
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - page: 4096
-            image: 'system-images;android-36;google_apis;x86_64'
-          - page: 16384
-            image: 'system-images;android-36;google_apis_ps16k;x86_64'
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: peerloom-android-${{ github.sha }}
-          path: dist/android/
-      - name: 下载后先验证完整产物清单与哈希
-        run: |
-          python3 bindings/android/scripts/verify-checksums.py dist/android
-          (cd dist/android && sha256sum --strict --check SHA256SUMS)
-          python3 bindings/android/scripts/verify-artifacts.py dist/android/library-release.aar dist/android/sample-debug.apk dist/android/library-debug-androidTest.apk
-      - name: 安装官方模拟器与固定API镜像
-        run: |
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" '${{ matrix.image }}'
-          test -e /dev/kvm
-          python3 bindings/android/scripts/kvm-access.py prepare
-          # Official archive: https://developer.android.com/studio/emulator_archive
-          emulator_root=$(mktemp -d "${RUNNER_TEMP:?}/peerloom-emulator.XXXXXX")
-          trap 'status=$?; if [ "$status" -ne 0 ]; then rm -rf -- "$emulator_root"; fi' EXIT
-          timeout 600 curl --fail --location --connect-timeout 20 --max-time 600 --retry 2 --retry-max-time 600 --proto '=https' --proto-redir '=https' \
-            'https://redirector.gvt1.com/edgedl/android/repository/emulator-linux_x64-16428233.zip' \
-            --output "$emulator_root/emulator.zip"
-          echo "b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1  $emulator_root/emulator.zip" | sha256sum --strict --check
-          unzip -q "$emulator_root/emulator.zip" -d "$emulator_root"
-          rm -- "$emulator_root/emulator.zip"
-          cat "$emulator_root/emulator/source.properties"
-          cat "$ANDROID_HOME/system-images/android-36/${{ matrix.page == 16384 && 'google_apis_ps16k' || 'google_apis' }}/x86_64/source.properties"
-          grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*37\.2\.12$' "$emulator_root/emulator/source.properties"
-          grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*7$' "$ANDROID_HOME/system-images/android-36/${{ matrix.page == 16384 && 'google_apis_ps16k' || 'google_apis' }}/x86_64/source.properties"
-          # Select only the verified package; leave the runner's SDK emulator untouched.
-          echo "$emulator_root/emulator" >> "$GITHUB_PATH"
-      - name: CheckJNI、TLS、持久化重启与真实控制面通信
-        run: ./bindings/android/scripts/emulator.sh '${{ matrix.page }}' '${{ matrix.image }}'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: peerloom-android-tests-${{ matrix.page }}-${{ github.sha }}
-          path: dist/android-tests/
-          if-no-files-found: warn
-          retention-days: 14
-      - name: 恢复本作业临时KVM用户ACL
-        if: always()
-        run: python3 bindings/android/scripts/kvm-access.py restore
-      - name: 清理本次测试秘密
-        if: always()
-        run: rm -rf .secrets

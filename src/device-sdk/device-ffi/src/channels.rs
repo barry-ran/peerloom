@@ -27,7 +27,7 @@ pub struct Task {
     pub commands: queue::Sender<Queued>,
     pub closed: Option<LifecycleTicket>,
     stop: watch::Sender<bool>,
-    join: JoinHandle<()>,
+    join: JoinHandle<u32>,
 }
 impl Task {
     pub fn route(&self, instance: &Arc<Instance>, operation: Operation) {
@@ -56,13 +56,16 @@ impl Task {
             commands,
             closed: None,
             stop,
-            join: tokio::spawn(async {}),
+            join: tokio::spawn(async { OK }),
         }
     }
-    pub async fn close(mut self) -> u32 {
+    pub async fn close(self) -> u32 {
+        self.close_with_budget(Duration::from_secs(15)).await
+    }
+    async fn close_with_budget(mut self, budget: Duration) -> u32 {
         self.stop.send_replace(true);
-        match tokio::time::timeout(Duration::from_secs(15), &mut self.join).await {
-            Ok(Ok(())) => OK,
+        match tokio::time::timeout(budget, &mut self.join).await {
+            Ok(Ok(status)) => status,
             Ok(Err(_)) => INTERNAL,
             Err(_) => {
                 self.join.abort();
@@ -241,7 +244,7 @@ fn spawn_channel(
     };
     let join = tokio::spawn(async move {
         let mut registration = registration;
-        match channel {
+        let status = match channel {
             SdkChannel::Message(channel) => {
                 message_worker(
                     instance.clone(),
@@ -266,8 +269,9 @@ fn spawn_channel(
                 )
                 .await
             }
-        }
+        };
         registration.status = CLOSED;
+        status
     });
     Ok((
         id,
@@ -289,7 +293,7 @@ async fn message_worker(
     mut channel: SdkMessageChannel,
     mut commands: queue::Receiver<Queued>,
     mut stop: watch::Receiver<bool>,
-) {
+) -> u32 {
     let sender = channel.sender();
     let mut sends = JoinSet::new();
     let mut close = None;
@@ -331,7 +335,7 @@ async fn message_worker(
         }
     }
     let pending = drain(&instance, &mut commands);
-    let status = channel.close().await.err().map(error).unwrap_or(OK);
+    let mut status = channel.close().await.err().map(error).unwrap_or(OK);
     // Closing the child resolves all core send futures; abort is a bounded final fallback.
     if tokio::time::timeout(Duration::from_secs(2), async {
         while sends.join_next().await.is_some() {}
@@ -341,11 +345,13 @@ async fn message_worker(
     {
         sends.abort_all();
         while sends.join_next().await.is_some() {}
+        status = UNKNOWN;
     }
     settle_cleanup(&instance, pending, status);
     if let Some(guard) = close {
         guard.finish(status, Vec::new(), None);
     }
+    status
 }
 
 struct ReadScope {
@@ -393,7 +399,7 @@ async fn stream_worker(
     channel: SdkByteStream,
     mut commands: queue::Receiver<Queued>,
     mut stop: watch::Receiver<bool>,
-) {
+) -> u32 {
     // An idle stream has no read future to observe peer close. Keep a separate
     // core validity waiter so it drains registrations even without host traffic.
     let validity = channel.validity();
@@ -512,6 +518,7 @@ async fn stream_worker(
     if let Some(guard) = close {
         guard.finish(status, Vec::new(), None);
     }
+    status
 }
 
 #[derive(Deserialize)]
@@ -582,9 +589,16 @@ pub fn spawn_connection(
         let mut children: HashMap<u64, Task> = HashMap::new();
         let mut sends = JoinSet::new();
         let mut close = None;
+        let mut retired_children_status = OK;
         loop {
-            // Reclaim finished children; closed handles are removed by their own worker.
-            children.retain(|_, child| !child.join.is_finished());
+            // Reclaim finished children without discarding their actual cleanup outcome.
+            let finished: Vec<_> = children.iter().filter(|(_, child)| child.join.is_finished())
+                .map(|(id, _)| *id).collect();
+            for id in finished {
+                if let Some(child) = children.remove(&id) {
+                    if child.close().await != OK { retired_children_status = UNKNOWN; }
+                }
+            }
             if *stopped.borrow() || !gate.is_valid() {
                 break;
             }
@@ -654,6 +668,7 @@ pub fn spawn_connection(
         let pending = drain(&instance, &mut commands);
         // Close core parent first, invalidating every child's in-flight/read gates.
         let mut status = connection.close().await.err().map(error).unwrap_or(OK);
+        if retired_children_status != OK { status = retired_children_status; }
         let mut closes = JoinSet::new();
         for (_, child) in children {
             closes.spawn(child.close());
@@ -671,11 +686,13 @@ pub fn spawn_connection(
         {
             sends.abort_all();
             while sends.join_next().await.is_some() {}
+            status = UNKNOWN;
         }
         settle_cleanup(&instance, pending, status);
         if let Some(guard) = close {
             guard.finish(status, Vec::new(), None);
         }
+        status
     });
     Ok(Task {
         closed: Some(closed),
@@ -712,6 +729,27 @@ fn read_overflow<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Overflow
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn task_with_join(join: JoinHandle<u32>) -> Task {
+        let budget = crate::budget::Budget::new(crate::budget::MIN_BYTES).unwrap();
+        let (commands, _receiver) = queue::channel(budget);
+        let (stop, _) = watch::channel(false);
+        Task { commands, closed: None, stop, join }
+    }
+    #[tokio::test]
+    async fn task_close_preserves_real_cleanup_result_not_just_join_success() {
+        for status in [OK, CLOSED, UNKNOWN, INTERNAL] {
+            assert_eq!(task_with_join(tokio::spawn(async move { status })).close().await, status);
+        }
+    }
+    #[tokio::test]
+    async fn task_close_abort_or_panic_never_proves_cleanup_success() {
+        let aborted = tokio::spawn(std::future::pending::<u32>());
+        aborted.abort();
+        assert_eq!(task_with_join(aborted).close().await, INTERNAL);
+        assert_eq!(task_with_join(tokio::spawn(async { panic!("fixture"); })).close().await, INTERNAL);
+        assert_eq!(task_with_join(tokio::spawn(std::future::pending::<u32>()))
+            .close_with_budget(Duration::ZERO).await, UNKNOWN);
+    }
     #[test]
     fn wire_modes_are_strict_and_stream_rejects_message_drop_options() {
         let stream: Open =
