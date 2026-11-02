@@ -583,7 +583,7 @@ PYMOCK
             self.assertFalse((root / "phase-macos-swift.json").exists())
             failure.write_text(success)
             VERIFY.aggregate(root)
-            self.assertEqual(json.loads((root / "phase-macos-swift.json").read_text())["test_count"], 15)
+            self.assertEqual(json.loads((root / "phase-macos-swift.json").read_text())["test_count"], 16)
 
 
 if __name__ == "__main__":
