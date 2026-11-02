@@ -232,6 +232,61 @@ class WatchdogTests(unittest.TestCase):
                     path.write_text(bad)
                     self.assertNotEqual(subprocess.run([sys.executable, "-c", validator, str(path)], capture_output=True).returncode, 0)
 
+    def test_ios_diagnostic_dispatch_keeps_full_default_and_no_release_claim(self):
+        workflow = SCRIPT.parents[3] / ".github/workflows/native.yml"
+        source = workflow.read_text(encoding="utf-8")
+        condition = "github.event_name != 'workflow_dispatch' || inputs.target != 'ios-diagnostic'"
+        self.assertIn("default: full", source)
+        self.assertIn("options: [full, ios-diagnostic]", source)
+        self.assertIn("windows-native:\n    if: " + condition, source)
+        apple = source[source.index("    runs-on: macos-15"):]
+        blocks = apple.split("      - ")[1:]
+        for marker in ("build-ios-diagnostic.sh", "--stage macos-swift", "--stage macos-rust-tls",
+                       "--stage ios-device", "--stage finalize", "actions/setup-go@", "actions/cache@",
+                       "test-apple-service.py", "id: apple-service-cache", "python3 bindings/ios/scripts/apple-service.py",
+                       "name: peerloom-apple-service-", "scripts/package-release.py --platform apple",
+                       "name: peerloom-apple-release-"):
+            matches = [block for block in blocks if marker in block]
+            self.assertEqual(len(matches), 1, marker)
+            self.assertIn(condition, matches[0], marker)
+        for marker in ("test-watchdog.py", "build-xcframework.sh", "--stage cleanup",
+                       "name: peerloom-apple-diagnostics-"):
+            matches = [block for block in blocks if marker in block]
+            self.assertEqual(len(matches), 1, marker)
+            self.assertNotIn(condition, matches[0], marker)
+        simulator = [block for block in blocks if "--stage ios-simulator" in block]
+        self.assertEqual(len(simulator), 2)
+        self.assertIn(condition, simulator[0])
+        self.assertNotIn(condition, simulator[1])
+
+    def test_artifact_metadata_hashes_executables_without_test_environment(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products, developer = root / "products", root / "developer"
+            products.mkdir()
+            developer.mkdir()
+            bundle = products / "PeerloomSimulatorHost.app"
+            bundle.mkdir()
+            (bundle / "Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "PeerloomSimulatorHost"}))
+            (bundle / "PeerloomSimulatorHost").write_bytes(b"fixture-executable")
+            (products / "test.xctestrun").write_bytes(plistlib.dumps({
+                "Tests": {"TestHostPath": "__TESTROOT__/PeerloomSimulatorHost.app",
+                          "EnvironmentVariables": {"SECRET": "PRIVATE_SENTINEL"}}}))
+            output = io.StringIO()
+            result = subprocess.CompletedProcess([], 0, "arm64\n", "")
+            with mock.patch.object(SIGNING.subprocess, "run", return_value=result) as run, contextlib.redirect_stdout(output):
+                SIGNING.artifact_metadata(products, developer)
+            evidence = json.loads(output.getvalue())
+            self.assertEqual(evidence["sha256"], hashlib.sha256(b"fixture-executable").hexdigest())
+            self.assertEqual(evidence["architectures"], ["arm64"])
+            self.assertEqual(run.call_args.kwargs["timeout"], 5)
+            self.assertNotIn("PRIVATE_SENTINEL", output.getvalue())
+            self.assertNotIn(str(root), output.getvalue())
+            with mock.patch.object(SIGNING.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "PRIVATE_ERROR")):
+                with self.assertRaisesRegex(ValueError, "cannot inspect Mach-O"):
+                    SIGNING.artifact_metadata(products, developer)
+
     def test_signing_diagnostics_read_only_bounded_and_redacted(self):
         with tempfile.TemporaryDirectory(prefix="peerloom__signing-") as directory:
             root = Path(directory)
@@ -507,7 +562,10 @@ PYMOCK
                                     env=dict(env, TEST_CODE=str(test), SIGN_CODE=str(signing)),
                                     capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, test or signing, result.stderr)
-            self.assertIn("ios-simulator\nios-test-signing\n", result.stdout)
+            self.assertIn("ios-simulator\n", result.stdout)
+            self.assertIn("ios-test-signing\n", result.stdout)
+            self.assertEqual("ios-launch-diagnostics" in result.stdout, test != 0)
+            self.assertIn('run ios-launch-diagnostics 20 xcrun simctl spawn "$DEVICE"', block)
             self.assertIn(f"test_exit={test} signing_exit={signing}", result.stdout)
 
     def test_shell_helpers_preserve_failure_under_or_and_if(self):
