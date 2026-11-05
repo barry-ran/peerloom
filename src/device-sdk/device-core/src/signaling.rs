@@ -1,7 +1,7 @@
 //! 原生有界信令连接：后台 heartbeat，显式 close，无自动重连或会话恢复承诺。
 use crate::identity::IdentityClient;
 use device_storage::SecretString;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, stream::FusedStream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -118,6 +118,42 @@ fn timestamp() -> Result<String, SignalError> {
         .map_err(|_| SignalError::InvalidMessage)
 }
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+// Private cleanup observation only: SignalClient::close and its task keep their
+// existing () contract. This result does not replace the original drive error.
+#[derive(Debug)]
+enum SocketCloseError {
+    PreviouslyTerminated,
+    WebSocket(tokio_tungstenite::tungstenite::Error),
+    Timeout,
+}
+
+async fn close_socket_bounded<S>(socket: &mut WebSocketStream<S>) -> Result<(), SocketCloseError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    // poll_next fuses after an error too. A previously consumed error followed
+    // by None is not evidence of a successful close handshake.
+    if socket.is_terminated() {
+        return Err(SocketCloseError::PreviouslyTerminated);
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        // The Sink close operation also supports an already received Close.
+        // Inherent close(None) instead writes a new Close message, which can
+        // fail with SendAfterClosing in that peer-first case.
+        SinkExt::close(socket).await.map_err(SocketCloseError::WebSocket)?;
+        while let Some(message) = socket.next().await {
+            message.map_err(SocketCloseError::WebSocket)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| SocketCloseError::Timeout)?
+}
+
+#[cfg(test)]
+mod bounded_close_tests;
+
 struct Command {
     envelope: Envelope,
     completion: oneshot::Sender<Result<(), SignalError>>,
@@ -229,7 +265,7 @@ impl SignalClient {
             if let Err(error) = result {
                 let _ = events_tx.try_send(Err(error));
             }
-            let _ = tokio::time::timeout(Duration::from_secs(2), socket.close(None)).await;
+            let _ = close_socket_bounded(&mut socket).await;
         });
         Ok(Self {
             commands,
