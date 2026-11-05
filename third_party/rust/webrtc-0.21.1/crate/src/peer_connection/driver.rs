@@ -495,6 +495,28 @@ pub(crate) enum PeerConnectionDriverEvent {
 /// The driver for a peer connection
 ///
 /// Runs the event loop following rtc's EventLoop pattern with select!
+pub(crate) struct DriverInbox {
+    receiver:Receiver<PeerConnectionDriverEvent>,
+    #[cfg(test)] after_drain:Option<Box<dyn FnOnce()+Send>>,
+}
+impl DriverInbox {
+    pub(crate) fn new(receiver:Receiver<PeerConnectionDriverEvent>)->Self{Self{receiver,#[cfg(test)] after_drain:None}}
+}
+impl std::ops::Deref for DriverInbox {
+    type Target=Receiver<PeerConnectionDriverEvent>;
+    fn deref(&self)->&Self::Target{&self.receiver}
+}
+impl std::ops::DerefMut for DriverInbox {
+    fn deref_mut(&mut self)->&mut Self::Target{&mut self.receiver}
+}
+impl Drop for DriverInbox {
+    fn drop(&mut self){
+        self.receiver.close();
+        while let Ok(event)=self.receiver.try_recv(){drop(event);}
+        #[cfg(test)] if let Some(hook)=self.after_drain.take(){hook();}
+    }
+}
+
 pub(crate) struct PeerConnectionDriver<A = SocketAddr> {
     inner: Arc<PeerConnectionRef>,
     stun_gatherer: RTCStunGatherer,
@@ -735,7 +757,7 @@ where
     /// This follows rtc Event Loop pattern exactly with select!
     pub(crate) async fn event_loop(
         &mut self,
-        mut driver_event_rx: Receiver<PeerConnectionDriverEvent>,
+        mut driver_event_rx: DriverInbox,
         init_tx: Sender<Result<()>>,
     ) -> Result<()> {
         // Build the transports before reporting init, so `build()` sees a bind or wrap failure
@@ -842,6 +864,7 @@ where
             // momentarily full channel), this check still guarantees the loop —
             // and thus a dedicated reactor thread — terminates instead of leaking.
             if self.inner.closing.load(Ordering::Acquire) {
+                driver_event_rx.close();
                 self.release_turn_allocations().await;
                 return Ok(());
             }
@@ -957,6 +980,11 @@ where
             .into();
             futures::pin_mut!(tcp_read_future);
 
+            let tcp_connect_future:OptionFuture<_>=if !self.tcp_transport.connect_futures.is_empty(){
+                Some(self.tcp_transport.connect_futures.next())
+            }else{None}.into();
+            futures::pin_mut!(tcp_connect_future);
+
             // Runtime-agnostic select!
             futures::select! {
                 // A blocked consumer freed a slot: hand over what was retained, now.
@@ -970,6 +998,7 @@ where
                 // Driver events (RTP, RTCP, or ICE candidate)
                 evt = driver_event_rx.recv().fuse() => {
                     if let Some(evt) = evt {
+                        if matches!(&evt,PeerConnectionDriverEvent::Close){driver_event_rx.close();}
                         // Rebind before the gathering it must precede. `IceGathering` is the
                         // message that starts a generation gathering, so an ICE restart that
                         // replaces the sockets has to swap them here — gathering over the old
@@ -1118,6 +1147,15 @@ where
                                     return Err(Error::Other("all socket futures completed".to_owned()));
                                 }
                             }
+                        }
+                    }
+                }
+
+                tcp_connect_result = tcp_connect_future => {
+                    if let Some(Some(result))=tcp_connect_result {
+                        match result {
+                            Ok((four_tuple,stream))=>self.tcp_transport.register_stream(four_tuple,stream),
+                            Err(error)=>error!("Failed to connect TCP: {}",error),
                         }
                     }
                 }
@@ -1765,11 +1803,7 @@ where
                 }
             }
             PeerConnectionDriverEvent::RemoteIceTcpPassiveCandidate(candidate) => {
-                RTCTcpTransport::connect(
-                    &candidate,
-                    self.inner.runtime.clone(),
-                    self.inner.driver_event_tx.clone(),
-                );
+                self.tcp_transport.connect(&candidate,self.inner.runtime.clone());
             }
             PeerConnectionDriverEvent::IncomingTcpStream(four_tuple, stream) => {
                 trace!("TCP stream connection established: {:?}", four_tuple);
@@ -2940,5 +2974,202 @@ mod buffered_amount_advisory_regression {
             assert_eq!(driver.inner.data_channel_send_buffer_limit, SEND_LIMIT);
             peer.close().await.unwrap();
         }));
+    }
+}
+#[cfg(all(test,feature="runtime-tokio",feature="crypto-ring"))]
+mod owned_tcp_regression {
+    use super::*;
+    use crate::runtime::{AsyncInterval,AsyncTcpListener,AsyncTcpStream,AsyncUdpSocket,JoinHandle,Runtime,TrySendError};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool,AtomicUsize,Ordering};
+    use std::task::{Context,Poll};
+    use std::io;
+    type ConnectFuture=Pin<Box<dyn Future<Output=io::Result<Arc<dyn AsyncTcpStream>>>+Send>>;
+    struct HeldSpawn{future:std::sync::Mutex<Option<Pin<Box<dyn Future<Output=()>+Send>>>>,finished:AtomicBool}
+    struct HeldHandle(Arc<HeldSpawn>);
+    impl JoinHandle for HeldHandle {
+        fn detach(&self){}
+        fn abort(&self){let future=self.0.future.lock().unwrap().take();drop(future);self.0.finished.store(true,Ordering::SeqCst);}
+        fn is_finished(&self)->bool{self.0.finished.load(Ordering::SeqCst)}
+    }
+    struct HookRuntime{base:Arc<dyn Runtime>,next:std::sync::Mutex<Option<ConnectFuture>>,spawns:AtomicUsize,held:Option<Arc<HeldSpawn>>}
+    impl std::fmt::Debug for HookRuntime{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str("HookRuntime")}}
+    impl Runtime for HookRuntime {
+        fn spawn(&self,f:Pin<Box<dyn Future<Output=()>+Send>>)->Box<dyn JoinHandle>{
+            self.spawns.fetch_add(1,Ordering::SeqCst);
+            if let Some(held)=&self.held{assert!(held.future.lock().unwrap().replace(f).is_none());Box::new(HeldHandle(held.clone()))}else{self.base.spawn(f)}
+        }
+        fn wrap_udp_socket(&self,s:std::net::UdpSocket)->io::Result<Arc<dyn AsyncUdpSocket>>{self.base.wrap_udp_socket(s)}
+        fn wrap_tcp_listener(&self,s:std::net::TcpListener)->io::Result<Arc<dyn AsyncTcpListener>>{self.base.wrap_tcp_listener(s)}
+        fn connect_tcp<'a>(&'a self,_addr:SocketAddr)->Pin<Box<dyn Future<Output=io::Result<Arc<dyn AsyncTcpStream>>>+Send+'a>>{
+            Box::pin(async move{let future={self.next.lock().unwrap().take().expect("one actual runtime connect invocation")};future.await})
+        }
+        fn resolve_host<'a>(&'a self,h:&'a str)->Pin<Box<dyn Future<Output=io::Result<Vec<SocketAddr>>>+Send+'a>>{self.base.resolve_host(h)}
+        fn sleep(&self,d:Duration)->Pin<Box<dyn Future<Output=()>+Send+'static>>{self.base.sleep(d)}
+        fn interval(&self,d:Duration)->Box<dyn AsyncInterval>{self.base.interval(d)}
+        fn block_on(&self,f:Pin<Box<dyn Future<Output=()>+'_>>){self.base.block_on(f)}
+        fn name(&self)->&'static str{"owned-tcp-contract"}
+    }
+    struct PendingConnect{polled:Arc<AtomicBool>,dropped:Arc<AtomicUsize>}
+    impl Future for PendingConnect{
+        type Output=io::Result<Arc<dyn AsyncTcpStream>>;
+        fn poll(self:Pin<&mut Self>,_cx:&mut Context<'_>)->Poll<Self::Output>{self.polled.store(true,Ordering::SeqCst);Poll::Pending}
+    }
+    impl Drop for PendingConnect{fn drop(&mut self){self.dropped.fetch_add(1,Ordering::SeqCst);}}
+    #[derive(Debug)]
+    struct TrackedStream{read_polled:Arc<AtomicBool>,dropped:Arc<AtomicUsize>}
+    impl Drop for TrackedStream{fn drop(&mut self){self.dropped.fetch_add(1,Ordering::SeqCst);}}
+    impl AsyncTcpStream for TrackedStream{
+        fn read<'a,'b>(&'a self,_buf:&'b mut[u8])->Pin<Box<dyn Future<Output=io::Result<usize>>+Send+'b>> where 'a:'b{
+            Box::pin(async move{self.read_polled.store(true,Ordering::SeqCst);futures::future::pending().await})
+        }
+        fn write_all<'a,'b>(&'a self,_buf:&'b[u8])->Pin<Box<dyn Future<Output=io::Result<()>>+Send+'b>> where 'a:'b{Box::pin(async{Ok(())})}
+        fn local_addr(&self)->io::Result<SocketAddr>{Ok("127.0.0.1:40001".parse().unwrap())}
+        fn peer_addr(&self)->io::Result<SocketAddr>{Ok("127.0.0.1:40002".parse().unwrap())}
+    }
+    fn passive_candidate()->rtc::ice::candidate::Candidate{
+        use rtc::peer_connection::transport::{CandidateConfig,CandidateHostConfig};
+        CandidateHostConfig{base_config:CandidateConfig{network:"tcp".into(),address:"127.0.0.1".into(),port:40002,component:1,..Default::default()},tcp_type:rtc::ice::tcp_type::TcpType::Passive}.new_candidate_host().unwrap()
+    }
+    fn hook(base:Arc<dyn Runtime>,future:ConnectFuture)->Arc<HookRuntime>{Arc::new(HookRuntime{base,next:std::sync::Mutex::new(Some(future)),spawns:AtomicUsize::new(0),held:None})}
+    async fn wait_flag(rt:&dyn Runtime,flag:&AtomicBool){
+        crate::runtime::timeout(rt,Duration::from_secs(2),async{while !flag.load(Ordering::SeqCst){rt.sleep(Duration::from_millis(1)).await;}}).await.expect("independent actual IO poll witness");
+    }
+    async fn actual_driver_fixture(runtime:Arc<dyn Runtime>)->(Arc<PeerConnectionRef>,crate::runtime::Receiver<Result<()>>,Box<dyn JoinHandle>){
+        let(mut inner,events)=super::super::tests::new_test_peer_connection().await;
+        Arc::get_mut(&mut inner).unwrap().runtime=runtime.clone();
+        let mut driver=PeerConnectionDriver::new(inner.clone(),vec!["127.0.0.1:0".parse::<SocketAddr>().unwrap()],Vec::new(),MulticastDnsMode::Disabled,Vec::new(),RTCIceTransportPolicy::All,rtc::crypto::default_provider().unwrap(),false,None);
+        let(init_tx,mut init_rx)=channel(1);let(done_tx,done_rx)=channel(1);
+        let events=DriverInbox::new(events);
+        // The test owns this one driver task. Any extra spawn by connect is observable.
+        let task=crate::runtime::default_runtime().unwrap().spawn(Box::pin(async move{
+            let result=driver.event_loop(events,init_tx).await;
+            drop(driver);
+            let _=done_tx.try_send(result);
+        }));
+        crate::runtime::timeout(&*runtime,Duration::from_secs(2),init_rx.recv()).await.unwrap().unwrap().unwrap();
+        (inner,done_rx,task)
+    }
+    async fn stop_driver(inner:&PeerConnectionRef,mut done:crate::runtime::Receiver<Result<()>>,task:&dyn JoinHandle){
+        inner.driver_event_tx.send(PeerConnectionDriverEvent::Close).await.unwrap();
+        crate::runtime::timeout(&*inner.runtime,Duration::from_secs(2),done.recv()).await.expect("actual driver completion").unwrap().unwrap();
+        crate::runtime::timeout(&*inner.runtime,Duration::from_secs(2),async{while !task.is_finished(){inner.runtime.sleep(Duration::from_millis(1)).await;}}).await.unwrap();
+    }
+    #[test]
+    fn actual_driver_drops_pending_tcp_connect_without_detached_task(){
+        let base=crate::runtime::default_runtime().unwrap();let run=base.clone();
+        base.block_on(Box::pin(async move{
+            let polled=Arc::new(AtomicBool::new(false));let dropped=Arc::new(AtomicUsize::new(0));
+            let rt=hook(run,Box::pin(PendingConnect{polled:polled.clone(),dropped:dropped.clone()}));
+            let(inner,done,task)=actual_driver_fixture(rt.clone()).await;
+            inner.driver_event_tx.send(PeerConnectionDriverEvent::RemoteIceTcpPassiveCandidate(passive_candidate())).await.unwrap();
+            wait_flag(&*rt,&polled).await;assert_eq!(dropped.load(Ordering::SeqCst),0,"actual connect remains pending before close");
+            stop_driver(&inner,done,&*task).await;
+            assert_eq!(dropped.load(Ordering::SeqCst),1,"CONTROL_PENDING_TCP_FUTURE_OWNED_BY_DRIVER");
+            assert_eq!(rt.spawns.load(Ordering::SeqCst),0,"CONTROL_CONNECT_HAS_NO_DETACHED_SPAWN");
+        }));
+    }
+    #[test]
+    fn actual_driver_abort_drops_owned_connect_and_closes_inbox_without_success(){
+        let base=crate::runtime::default_runtime().unwrap();let run=base.clone();
+        base.block_on(Box::pin(async move{
+            let polled=Arc::new(AtomicBool::new(false));let dropped=Arc::new(AtomicUsize::new(0));
+            let rt=hook(run,Box::pin(PendingConnect{polled:polled.clone(),dropped:dropped.clone()}));
+            let(inner,mut done,task)=actual_driver_fixture(rt.clone()).await;
+            inner.driver_event_tx.send(PeerConnectionDriverEvent::RemoteIceTcpPassiveCandidate(passive_candidate())).await.unwrap();
+            wait_flag(&*rt,&polled).await;assert_eq!(dropped.load(Ordering::SeqCst),0);
+            task.abort();
+            crate::runtime::timeout(&*rt,Duration::from_secs(2),async{while !task.is_finished(){rt.sleep(Duration::from_millis(1)).await;}}).await.unwrap();
+            assert_eq!(dropped.load(Ordering::SeqCst),1,"CONTROL_ABORT_DROPS_OWNED_TCP_CONNECT");
+            assert!(inner.driver_event_tx.is_closed());
+            assert!(done.recv().await.is_none(),"aborted driver did not fabricate a normal completion result");
+        }));
+    }
+    #[test]
+    fn actual_driver_drops_registered_tcp_stream_and_read_future(){
+        let base=crate::runtime::default_runtime().unwrap();let run=base.clone();
+        base.block_on(Box::pin(async move{
+            let read_polled=Arc::new(AtomicBool::new(false));let dropped=Arc::new(AtomicUsize::new(0));
+            let stream=Arc::new(TrackedStream{read_polled:read_polled.clone(),dropped:dropped.clone()});let weak=Arc::downgrade(&stream);
+            let rt=hook(run,Box::pin(async move{Ok(stream as Arc<dyn AsyncTcpStream>)}));
+            let(inner,done,task)=actual_driver_fixture(rt.clone()).await;
+            inner.driver_event_tx.send(PeerConnectionDriverEvent::RemoteIceTcpPassiveCandidate(passive_candidate())).await.unwrap();
+            wait_flag(&*rt,&read_polled).await;assert_eq!(dropped.load(Ordering::SeqCst),0,"real register/read ownership established");
+            stop_driver(&inner,done,&*task).await;
+            assert_eq!(dropped.load(Ordering::SeqCst),1,"CONTROL_REGISTERED_TCP_RESOURCE_RELEASED");
+            assert!(weak.upgrade().is_none());assert_eq!(rt.spawns.load(Ordering::SeqCst),0);
+        }));
+    }
+    #[test]
+    fn actual_connect_ready_result_is_owned_until_registered_or_dropped(){
+        let base=crate::runtime::default_runtime().unwrap();let run=base.clone();
+        base.block_on(Box::pin(async move{
+            let dropped=Arc::new(AtomicUsize::new(0));let stream=Arc::new(TrackedStream{read_polled:Arc::new(AtomicBool::new(false)),dropped:dropped.clone()});let weak=Arc::downgrade(&stream);
+            let rt=hook(run,Box::pin(async move{Ok(stream as Arc<dyn AsyncTcpStream>)}));
+            let mut transport=RTCTcpTransport::new(HashMap::new());transport.connect(&passive_candidate(),rt.clone());
+            assert_eq!(transport.connect_futures.len(),1,"independent admitted future witness");
+            let result=transport.connect_futures.next().await.unwrap().unwrap();
+            assert!(weak.upgrade().is_some());assert_eq!(dropped.load(Ordering::SeqCst),0,"independent Ready not yet registered witness");
+            drop(transport);assert_eq!(dropped.load(Ordering::SeqCst),0,"taken Ready result remains its caller's responsibility");
+            drop(result);assert_eq!(dropped.load(Ordering::SeqCst),1,"CONTROL_READY_TCP_RESULT_RELEASED");assert!(weak.upgrade().is_none());
+        }));
+    }
+    #[test]
+    fn unpolled_actual_event_loop_drop_drains_inbox_with_sender_alive(){
+        let rt=crate::runtime::default_runtime().unwrap();
+        rt.block_on(Box::pin(async{
+            let(inner,events)=super::super::tests::new_test_peer_connection().await;
+            let dropped=Arc::new(AtomicUsize::new(0));
+            let stream=Arc::new(TrackedStream{read_polled:Arc::new(AtomicBool::new(false)),dropped:dropped.clone()});let weak=Arc::downgrade(&stream);
+            let tuple=FourTuple{local_addr:"127.0.0.1:1".parse().unwrap(),peer_addr:"127.0.0.1:2".parse().unwrap()};
+            inner.driver_event_tx.try_send(PeerConnectionDriverEvent::IncomingTcpStream(tuple,stream)).unwrap();
+            let mut driver=PeerConnectionDriver::new(inner.clone(),Vec::<SocketAddr>::new(),Vec::new(),MulticastDnsMode::Disabled,Vec::new(),RTCIceTransportPolicy::All,rtc::crypto::default_provider().unwrap(),false,None);
+            let(init_tx,mut init_rx)=channel(1);
+            let future=driver.event_loop(DriverInbox::new(events),init_tx);
+            assert_eq!(dropped.load(Ordering::SeqCst),0,"buffered payload exists before unpolled cancellation");
+            assert!(init_rx.try_recv().is_err(),"event loop has not initialized or polled");
+            drop(future);
+            assert_eq!(dropped.load(Ordering::SeqCst),1,"CONTROL_UNPOLLED_INBOX_PAYLOAD_RELEASED");
+            assert!(weak.upgrade().is_none());assert!(inner.driver_event_tx.is_closed());
+        }));
+    }
+    #[test]
+    fn unpolled_outer_driver_spawn_abort_releases_queued_payload(){
+        let base=crate::runtime::default_runtime().unwrap();let run=base.clone();
+        base.block_on(Box::pin(async move{
+            let(inner,events)=super::super::tests::new_test_peer_connection().await;
+            let dropped=Arc::new(AtomicUsize::new(0));
+            let stream=Arc::new(TrackedStream{read_polled:Arc::new(AtomicBool::new(false)),dropped:dropped.clone()});let weak=Arc::downgrade(&stream);
+            let tuple=FourTuple{local_addr:"127.0.0.1:1".parse().unwrap(),peer_addr:"127.0.0.1:2".parse().unwrap()};
+            inner.driver_event_tx.try_send(PeerConnectionDriverEvent::IncomingTcpStream(tuple,stream)).unwrap();
+            let mut driver=PeerConnectionDriver::new(inner.clone(),Vec::<SocketAddr>::new(),Vec::new(),MulticastDnsMode::Disabled,Vec::new(),RTCIceTransportPolicy::All,rtc::crypto::default_provider().unwrap(),false,None);
+            let(init_tx,mut init_rx)=channel(1);let inbox=DriverInbox::new(events);
+            let held=Arc::new(HeldSpawn{future:std::sync::Mutex::new(None),finished:AtomicBool::new(false)});
+            let mut rt=hook(run,Box::pin(async{Err(io::Error::other("unused connect boundary"))}));Arc::get_mut(&mut rt).unwrap().held=Some(held.clone());
+            // Same ownership order as run_driver: guard exists before outer future/spawn.
+            let task=rt.spawn(Box::pin(async move{let _=driver.event_loop(inbox,init_tx).await;}));
+            assert!(held.future.lock().unwrap().is_some());assert!(!task.is_finished());assert!(init_rx.try_recv().is_err());
+            assert_eq!(dropped.load(Ordering::SeqCst),0,"unpolled outer future owns queued payload");
+            task.abort();assert!(task.is_finished());
+            assert_eq!(dropped.load(Ordering::SeqCst),1,"CONTROL_UNPOLLED_OUTER_OWNER_RELEASES_INBOX");
+            assert!(weak.upgrade().is_none());assert!(inner.driver_event_tx.is_closed());assert!(init_rx.recv().await.is_none());
+        }));
+    }
+    #[test]
+    fn actual_driver_inbox_seals_before_empty_drain_and_late_send(){
+        let(tx,rx)=channel(4);let before=Arc::new(AtomicUsize::new(0));let late=Arc::new(AtomicUsize::new(0));
+        let make=|counter:Arc<AtomicUsize>|Arc::new(TrackedStream{read_polled:Arc::new(AtomicBool::new(false)),dropped:counter}) as Arc<dyn AsyncTcpStream>;
+        let tuple=FourTuple{local_addr:"127.0.0.1:1".parse().unwrap(),peer_addr:"127.0.0.1:2".parse().unwrap()};
+        tx.try_send(PeerConnectionDriverEvent::IncomingTcpStream(tuple,make(before.clone()))).unwrap();
+        let mut inbox=DriverInbox::new(rx);let rejected=Arc::new(AtomicBool::new(false));let observed=rejected.clone();let late_count=late.clone();
+        inbox.after_drain=Some(Box::new(move||{
+            let event=PeerConnectionDriverEvent::IncomingTcpStream(tuple,Arc::new(TrackedStream{read_polled:Arc::new(AtomicBool::new(false)),dropped:late_count}));
+            let result=tx.try_send(event);observed.store(matches!(&result,Err(TrySendError::Disconnected(_))),Ordering::SeqCst);drop(result);
+        }));
+        drop(inbox);
+        assert_eq!(before.load(Ordering::SeqCst),1,"queued payload was actually drained");
+        assert_eq!(rejected.load(Ordering::SeqCst),true,"CONTROL_QUEUE_SEALED_BEFORE_LATE_SEND");
+        assert_eq!(late.load(Ordering::SeqCst),1,"rejected late payload dropped with its error");
     }
 }

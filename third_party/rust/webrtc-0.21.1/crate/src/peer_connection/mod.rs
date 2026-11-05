@@ -1068,6 +1068,7 @@ impl PeerConnectionImpl {
         // loop to completion.
         let inner = peer_connection.inner.clone();
         let (driver_stopped_tx, driver_stopped_rx) = channel::<()>(1);
+        let driver_event_rx=driver::DriverInbox::new(driver_event_rx);
         let run_driver = async move {
             // Dropped with this future, which is what `close()` waits for.
             let _driver_stopped = driver_stopped_tx;

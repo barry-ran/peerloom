@@ -268,6 +268,9 @@ impl<T> Clone for Receiver<T> {
 }
 
 impl<T> Receiver<T> {
+    /// Atomically stop all senders while preserving already queued values for drain.
+    pub(crate) fn close(&self)->bool{self.0.close()}
+
     /// Receive the next value, waiting while the channel is empty. Returns `None` once
     /// the channel is closed and drained.
     pub async fn recv(&mut self) -> Option<T> {
