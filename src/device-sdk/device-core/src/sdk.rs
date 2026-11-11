@@ -136,6 +136,15 @@ impl CleanupOutcome {
             *value = Some(result);
         }
     }
+    // Computing a worker's return value must not publish success before its
+    // owner has joined it. Earlier failures remain visible during that interval.
+    fn merge_result(&self, result: Result<(), SdkError>) -> Result<(), SdkError> {
+        let value = self.0.lock().map_err(|_| SdkError::RequestOutcomeUnknown)?;
+        match value.as_ref() {
+            Some(Err(error)) => Err(error.clone()),
+            _ => result,
+        }
+    }
     fn result(&self) -> Result<(), SdkError> {
         self.0
             .lock()
@@ -2074,7 +2083,9 @@ async fn transport_worker(
     diagnostic.enter("closing");
     gate.close();
     let cleanup = peer.close().await.map_err(SdkError::Transport);
-    gate.cleanup.record(cleanup);
+    if let Err(error) = &cleanup {
+        gate.cleanup.record(Err(error.clone()));
+    }
     if let Some(result) = result {
         report_worker_closed(
             &events,
@@ -2085,7 +2096,7 @@ async fn transport_worker(
         )
         .await;
     }
-    gate.cleanup.result()
+    gate.cleanup.merge_result(cleanup)
 }
 
 async fn report_worker_closed(
@@ -2133,6 +2144,48 @@ mod tests {
         outcome.record(Err(failure.clone()));
         outcome.record(Ok(()));
         assert_eq!(outcome.result(), Err(failure));
+    }
+
+    #[tokio::test]
+    async fn worker_success_is_not_published_before_owner_joins() {
+        use super::*;
+        let gate = Arc::new(Gate::default());
+        let worker_gate = gate.clone();
+        let (returned, observed) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = worker_gate.cleanup.merge_result(Ok(()));
+            returned.send(()).unwrap();
+            released.await.unwrap();
+            result
+        });
+        observed.await.unwrap();
+        assert_eq!(gate.cleanup.result(), Err(SdkError::RequestOutcomeUnknown));
+        release.send(()).unwrap();
+        let (control, _) = mpsc::channel(1);
+        let mut worker = Worker {
+            control,
+            stop: None,
+            task,
+        };
+        gate.cleanup
+            .record(worker.retire(Duration::from_secs(1)).await);
+        assert_eq!(gate.cleanup.result(), Ok(()));
+    }
+
+    #[test]
+    fn worker_return_value_keeps_prior_failure_without_publishing_success() {
+        let outcome = super::CleanupOutcome::default();
+        assert_eq!(outcome.merge_result(Ok(())), Ok(()));
+        assert_eq!(
+            outcome.result(),
+            Err(super::SdkError::RequestOutcomeUnknown)
+        );
+        outcome.record(Err(super::SdkError::RequestOutcomeUnknown));
+        assert_eq!(
+            outcome.merge_result(Ok(())),
+            Err(super::SdkError::RequestOutcomeUnknown)
+        );
     }
 
     #[tokio::test]
