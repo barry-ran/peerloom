@@ -15,6 +15,20 @@ HOST_PROCESSES = ("CoreSimulatorService", "com.apple.CoreSimulator.CoreSimulator
 SENSITIVE = re.compile(r"environment|arguments|argv|command.line|password|passwd|secret|token|credential|authorization|bearer|cookie|DYLD_|TLS_ORIGIN", re.I)
 
 
+def host_predicate(pid, command):
+    # 只读日志曾被启动前的全局 debug 噪声撑满；在源头收窄，而非放大证据上限。
+    related = ['eventMessage CONTAINS[c] "io.peerloom.validation.simulatorhost"']
+    for option, value in zip(command, command[1:]):
+        if option == "-destination":
+            match = re.search(r"(?:^|,)id=([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})(?:,|$)", value)
+            if match:
+                related.append(f'eventMessage CONTAINS[c] "{match.group(1)}"')
+    # 保留不带设备 ID 的启动服务错误；绝不拼接原始 destination/命令参数。
+    related.extend(f'eventMessage CONTAINS[c] "{word}"' for word in ("error", "fail", "denied", "timeout", "timed out"))
+    services = " OR ".join(f'process == "{name}"' for name in HOST_PROCESSES)
+    return f'processID == {pid} OR (({services}) AND ({" OR ".join(related)}))'
+
+
 def safe_text(value):
     value = re.sub(r"https?://[^\s\"<>]+", "<url>", value)
     return re.sub(r"/Users/[^/\s]+", "<home>", value)
@@ -57,6 +71,7 @@ class LaunchDiagnostics:
         self.target = target
         self.log_path = Path(log_path)
         self.started = started
+        self.predicate = host_predicate(target.pid, command)
         self.attempted = False
         self.collectors = []
         self.unreaped = []
@@ -78,11 +93,10 @@ class LaunchDiagnostics:
             if self.target.poll() is not None:
                 return
             pid = self.target.pid
-            predicate = f'processID == {pid} OR ' + " OR ".join(f'process == "{name}"' for name in HOST_PROCESSES)
             commands = (
                 ("sample", ["/usr/bin/sample", str(pid), "5", "10", "-file", "/dev/stdout"]),
-                ("host-log", ["/usr/bin/log", "show", "--last", "3m", "--style", "json",
-                              "--info", "--debug", "--predicate", predicate]),
+                ("host-log", ["/usr/bin/log", "show", "--last", "1m", "--style", "json",
+                              "--info", "--predicate", self.predicate]),
             )
             for name, command in commands:
                 item = None

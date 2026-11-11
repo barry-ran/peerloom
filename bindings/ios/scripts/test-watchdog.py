@@ -713,6 +713,8 @@ class LaunchDiagnosticTests(unittest.TestCase):
                 log_args = spawn.call_args_list[1].args[0]
                 self.assertIn("processID == 31415", log_args[-1])
                 self.assertIn("com.apple.CoreSimulator.CoreSimulatorService", log_args[-1])
+                self.assertEqual(log_args[log_args.index("--last") + 1], "1m")
+                self.assertNotIn("--debug", log_args)
                 diagnostic.close()
                 self.assertFalse(diagnostic.holds_target_pid)
             self.assertTrue(all(child.poll() is not None for child in children))
@@ -733,6 +735,21 @@ class LaunchDiagnosticTests(unittest.TestCase):
                     diagnostic.tick(60)
                     diagnostic.close()
                     spawn.assert_not_called()
+
+    def test_host_predicate_scopes_device_and_rejects_untrusted_destination_text(self):
+        device = "F8315ABD-7022-4F0C-BCC1-0D172B16DA50"
+        command = ["xcodebuild", "-destination", "platform=iOS Simulator,id=" + device, "test-without-building"]
+        predicate = DIAGNOSTICS.host_predicate(31415, command)
+        self.assertIn("processID == 31415", predicate)
+        self.assertIn(device, predicate)
+        self.assertIn("io.peerloom.validation.simulatorhost", predicate)
+        self.assertIn('AND (eventMessage CONTAINS', predicate)
+        self.assertIn('eventMessage CONTAINS[c] "denied"', predicate)
+        for bad in ('id=PRIVATE_SENTINEL', 'id=' + device + '\" OR TRUEPREDICATE', 'id=' + device + 'extra'):
+            predicate = DIAGNOSTICS.host_predicate(31415, ["xcodebuild", "-destination", bad])
+            self.assertNotIn("PRIVATE_SENTINEL", predicate)
+            self.assertNotIn("TRUEPREDICATE", predicate)
+            self.assertNotIn(device, predicate)
 
     def test_sample_drops_headers_and_log_drops_environment_and_unrelated_processes(self):
         sample = b"Command line: PRIVATE_ARG\nPath: /Users/operator/work\nCall graph:\n    5 Thread_1 mach_msg_trap\n    secret=PRIVATE_KEY\nBinary Images:\nPRIVATE_IMAGE"
