@@ -31,6 +31,24 @@ pub struct Config {
     pub max_channel_creations_per_connection: usize,
     #[serde(default = "default_ffi_budget")]
     pub ffi_resource_budget_bytes: usize,
+    #[serde(default, deserialize_with = "ice_servers")]
+    pub ice_servers: Option<Vec<IceServer>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub credential: String,
+}
+
+fn ice_servers<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<IceServer>>, D::Error> {
+    Vec::<IceServer>::deserialize(deserializer).map(Some)
 }
 fn default_ffi_budget() -> usize {
     crate::budget::DEFAULT_BYTES
@@ -39,6 +57,10 @@ fn yes() -> bool {
     true
 }
 impl Config {
+    pub fn validate_ice(&self) -> Result<(), u32> {
+        device_transport_webrtc::validate_ice_servers(&self.sdk().transport.ice_servers)
+            .map_err(|value| error(SdkError::Transport(value)))
+    }
     pub fn validate(&self) -> bool {
         self.abi_version == 1
             && (crate::budget::MIN_BYTES..=isize::MAX as usize)
@@ -58,6 +80,17 @@ impl Config {
         c.development_loopback = self.development_loopback;
         c.auto_reconnect = self.auto_reconnect;
         c.transport.include_loopback = self.development_loopback;
+        if let Some(servers) = &self.ice_servers {
+            c.managed_relays = false;
+            c.transport.ice_servers = servers
+                .iter()
+                .map(|server| device_transport_webrtc::RTCIceServer {
+                    urls: server.urls.clone(),
+                    username: server.username.clone(),
+                    credential: server.credential.clone(),
+                })
+                .collect();
+        }
         c
     }
 }
@@ -94,6 +127,12 @@ struct Respond {
 pub(crate) fn error(error: SdkError) -> u32 {
     match error {
         SdkError::InvalidConfiguration => INVALID,
+        SdkError::Transport(device_transport_webrtc::TransportError::InvalidConfiguration) => {
+            INVALID
+        }
+        SdkError::Transport(device_transport_webrtc::TransportError::UnsupportedIceTransport) => {
+            UNSUPPORTED
+        }
         SdkError::Busy => BUSY,
         SdkError::QueueFull => FULL,
         SdkError::Closed => CLOSED,
@@ -466,6 +505,108 @@ impl Drop for SchedulerDiagnostic {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn public_json_stun_configuration_reaches_controlled_udp_fixture() {
+        use device_transport_webrtc::PeerTransport;
+        use std::time::Duration;
+        let listener = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture = tokio::spawn(async move {
+            let mut request = [0u8; 512];
+            let (length, peer) =
+                tokio::time::timeout(Duration::from_secs(5), listener.recv_from(&mut request))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(length >= 20);
+            assert_eq!(&request[..2], &[0, 1]);
+            assert_eq!(&request[4..8], &[0x21, 0x12, 0xa4, 0x42]);
+            let mut response = vec![1, 1, 0, 12];
+            response.extend_from_slice(&request[4..20]);
+            response.extend_from_slice(&[0, 0x20, 0, 8, 0, 1]);
+            response.extend_from_slice(&(peer.port() ^ 0x2112).to_be_bytes());
+            response.extend_from_slice(&[203 ^ 0x21, 0x12, 113 ^ 0xa4, 1 ^ 0x42]);
+            listener.send_to(&response, peer).await.unwrap();
+        });
+        let value = serde_json::json!({"abi_version":1,"origin":"https://localhost",
+            "application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory",
+            "development_loopback":true,"ice_servers":[{"urls":[format!("stun:{address}")]}]});
+        let config: super::Config = serde_json::from_value(value).unwrap();
+        assert_eq!(config.validate_ice(), Ok(()));
+        let mut transport = config.sdk().transport;
+        transport.bind_address = "127.0.0.1:0".parse().unwrap();
+        transport.operation_timeout = Duration::from_secs(3);
+        let peer = PeerTransport::new(transport).await.unwrap();
+        let channel = peer
+            .create_channel("fixture", device_protocol::ChannelMode::ReliableMessage)
+            .await;
+        let offer = if channel.is_ok() {
+            peer.create_offer().await
+        } else {
+            Err(channel.err().unwrap())
+        };
+        let received = fixture.await;
+        peer.close().await.unwrap();
+        assert!(offer.is_ok(), "offer failed: {:?}", offer.as_ref().err());
+        received.unwrap();
+        assert!(offer.unwrap().sdp.contains("typ srflx"));
+    }
+    #[test]
+    fn custom_ice_json_preserves_defaults_and_replaces_managed() {
+        let base = serde_json::json!({"abi_version":1,"origin":"https://localhost",
+            "application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"});
+        let original: super::Config = serde_json::from_value(base.clone()).unwrap();
+        assert!(original.sdk().managed_relays);
+        for servers in [
+            serde_json::json!([]),
+            serde_json::json!([
+                {"urls":["stun:example.com:3478"]},
+                {"urls":["turn:example.com:3478?transport=udp"],"username":"test-user","credential":"test-only"}
+            ]),
+        ] {
+            let mut value = base.clone();
+            value["ice_servers"] = servers.clone();
+            let config: super::Config = serde_json::from_value(value).unwrap();
+            assert_eq!(config.validate_ice(), Ok(()));
+            assert!(!config.sdk().managed_relays);
+            assert_eq!(
+                config.sdk().transport.ice_servers.len(),
+                servers.as_array().unwrap().len()
+            );
+            if !config.sdk().transport.ice_servers.is_empty() {
+                assert_eq!(
+                    config.sdk().transport.ice_servers[1].credential,
+                    "test-only"
+                );
+            }
+        }
+        for servers in [
+            serde_json::Value::Null,
+            serde_json::json!([{"urls":[],"unknown":true}]),
+        ] {
+            let mut value = base.clone();
+            value["ice_servers"] = servers;
+            assert!(serde_json::from_value::<super::Config>(value).is_err());
+        }
+        for (url, expected) in [
+            ("stun:example.com:3478", Ok(())),
+            (
+                "turn:example.com:3478?transport=tcp",
+                Err(super::UNSUPPORTED),
+            ),
+            ("turns:example.com:5349", Err(super::UNSUPPORTED)),
+            ("stuns:example.com:5349", Err(super::UNSUPPORTED)),
+            ("not-a-url", Err(super::INVALID)),
+            ("turn:user:secret@example.com:3478", Err(super::INVALID)),
+        ] {
+            let mut value = base.clone();
+            value["ice_servers"] = serde_json::json!([
+                {"urls":[url],"username":"test-user","credential":"test-only"}
+            ]);
+            let config: super::Config = serde_json::from_value(value).unwrap();
+            assert_eq!(config.validate_ice(), expected);
+        }
+    }
     use super::*;
     use device_core::{identity::IdentityError, signaling::SignalError};
     use device_transport_webrtc::TransportError;

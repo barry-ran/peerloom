@@ -85,6 +85,7 @@ impl Default for TransportConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportError {
     InvalidConfiguration,
+    UnsupportedIceTransport,
     RelayRequired,
     RelayForbidden,
     InvalidCandidate,
@@ -136,6 +137,7 @@ fn classify_backend(error: webrtc::error::Error) -> TransportError {
 
 impl TransportConfig {
     pub fn validate(&self) -> Result<(), TransportError> {
+        validate_ice_servers(&self.ice_servers)?;
         if self.max_message_bytes == 0
             || self.max_message_bytes > 64 * 1024
             || self.send_buffer_bytes < self.max_message_bytes
@@ -160,6 +162,43 @@ impl TransportConfig {
         }
         Ok(())
     }
+}
+
+/// 校验原生 ICE 配置；错误不包含 URL 或凭据。
+pub fn validate_ice_servers(servers: &[RTCIceServer]) -> Result<(), TransportError> {
+    if servers.len() > 16 {
+        return Err(TransportError::InvalidConfiguration);
+    }
+    for server in servers {
+        if server.urls.is_empty()
+            || server.urls.len() > 16
+            || server.username.len() > 4096
+            || server.credential.len() > 4096
+        {
+            return Err(TransportError::InvalidConfiguration);
+        }
+        for url in &server.urls {
+            if url.len() > 2048
+                || !url.is_ascii()
+                || url.contains('@')
+                || url.bytes().any(|byte| byte <= 32 || byte == 127)
+            {
+                return Err(TransportError::InvalidConfiguration);
+            }
+        }
+        let parsed = server
+            .urls()
+            .map_err(|_| TransportError::InvalidConfiguration)?;
+        for url in parsed {
+            use rtc::ice::url::{ProtoType, SchemeType};
+            if !matches!(url.scheme, SchemeType::Stun | SchemeType::Turn)
+                || url.proto != ProtoType::Udp
+            {
+                return Err(TransportError::UnsupportedIceTransport);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn is_turn_url(url: &str) -> bool {
@@ -439,6 +478,9 @@ impl PeerTransport {
             .with_configuration(rtc_config)
             .with_setting_engine(settings)
             .with_data_channel_send_buffer_limit(config.send_buffer_bytes)
+            // These backend advisories are not exposed by MessageChannel or ByteStream.
+            // A send-only channel must not block sibling channels on unread notices.
+            .with_data_channel_buffered_amount_events(false)
             .with_handler(Arc::new(handler))
             .with_udp_addrs(vec![config.bind_address]);
         let peer = tokio::time::timeout(config.operation_timeout, builder.build())
@@ -811,6 +853,37 @@ impl MessageChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn public_ice_server_debug_redacts_credentials_and_unvalidated_urls() {
+        let server = RTCIceServer {
+            urls: vec!["turn:user:url-secret@example.com".into()],
+            username: "private-user".into(),
+            credential: "credential-secret".into(),
+        };
+        assert_eq!(format!("{server:?}"), "RTCIceServer(redacted)");
+        assert_eq!(format!("{server:#?}"), "RTCIceServer(redacted)");
+        assert_eq!(
+            validate_ice_servers(&[server]),
+            Err(TransportError::InvalidConfiguration)
+        );
+    }
+    #[test]
+    fn ice_validation_rejects_empty_urls_and_missing_turn_credentials() {
+        for server in [
+            RTCIceServer::default(),
+            RTCIceServer {
+                urls: vec!["turn:example.com:3478".into()],
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                validate_ice_servers(&[server]),
+                Err(TransportError::InvalidConfiguration)
+            );
+        }
+        assert_eq!(validate_ice_servers(&[]), Ok(()));
+        assert!(!format!("{:?}", TransportError::InvalidConfiguration).contains("test-only"));
+    }
     use webrtc::peer_connection::RTCSdpType;
 
     #[test]
@@ -833,8 +906,9 @@ mod tests {
         };
         assert_eq!(config.validate(), Err(TransportError::RelayRequired));
         config.ice_servers.push(RTCIceServer {
-            urls: vec!["turns:relay.example.invalid:5349".into()],
-            ..Default::default()
+            urls: vec!["turn:relay.example.invalid:3478".into()],
+            username: "test-user".into(),
+            credential: "test-only".into(),
         });
         assert_eq!(config.validate(), Ok(()));
         config.policy = ConnectionPolicy::DirectOnly;

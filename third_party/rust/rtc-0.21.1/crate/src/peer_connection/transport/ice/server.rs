@@ -10,7 +10,7 @@ use shared::error::{Error, Result};
 /// * [W3C]
 ///
 /// [W3C]: https://www.w3.org/TR/webrtc/#dom-rtciceserver
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Hash)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize, Hash)]
 pub struct RTCIceServer {
     /// The URLs representing the STUN or TURN servers.
     pub urls: Vec<String>,
@@ -18,6 +18,12 @@ pub struct RTCIceServer {
     pub username: String,
     /// The credential (password or token) to use when authenticating with a TURN server.
     pub credential: String,
+}
+
+impl std::fmt::Debug for RTCIceServer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RTCIceServer(redacted)")
+    }
 }
 
 impl RTCIceServer {

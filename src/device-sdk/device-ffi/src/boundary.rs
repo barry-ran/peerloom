@@ -93,6 +93,7 @@ pub unsafe extern "C" fn dp_sdk_create(
         if !config.validate() {
             return Err(INVALID);
         }
+        config.validate_ice()?;
         // Native validation stage: promote this exact SHA only after every required
         // Windows/macOS/iOS/Android native gate passes. No separate test-only create path.
         if !cfg!(any(
@@ -429,6 +430,30 @@ mod capacity_tests {
     use std::time::{Duration, Instant};
 
     extern "C" fn callback(_: u64, _: *const DpEvent) {}
+
+    #[test]
+    fn custom_ice_create_rejects_invalid_and_unsupported_before_allocating() {
+        for (servers, expected) in [
+            ("null", INVALID),
+            (r#"[{"urls":[]}]"#, INVALID),
+            (r#"[{"urls":["stun:example.com"],"unknown":true}]"#, INVALID),
+            (
+                r#"[{"urls":["turn:example.com?transport=tcp"],"username":"u","credential":"test-only"}]"#,
+                UNSUPPORTED,
+            ),
+        ] {
+            let config = format!(
+                r#"{{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory","ice_servers":{servers}}}"#
+            );
+            let mut sdk = 123;
+            // SAFETY: input/output and static callback remain valid for this call.
+            let status = unsafe {
+                dp_sdk_create(config.as_ptr(), config.len(), Some(callback), 0, &mut sdk)
+            };
+            assert_eq!(status, expected);
+            assert_eq!(sdk, 0);
+        }
+    }
 
     #[test]
     fn more_than_sixteen_instances_can_quiesce_and_release() {

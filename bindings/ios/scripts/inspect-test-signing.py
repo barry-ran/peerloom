@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # MIT — Copyright (c) 2026 Peerloom contributors.
 """只读生成的 xctestrun 宿主/测试包签名元数据；不签名、不导入证书、不改权限。"""
+import hashlib
 import json
 from pathlib import Path
 import plistlib
@@ -36,6 +37,44 @@ def resolve_path(original, products, developer, host=None):
     if not (target.is_relative_to(products) or target.is_relative_to(developer)):
         raise ValueError("拒绝检查本次产物/指定 Xcode 目录以外的文件")
     return target
+
+
+def artifact_metadata(products, developer):
+    """Record only generated paths, executable hashes and architectures, never test environment."""
+    products, developer = products.resolve(strict=True), developer.resolve(strict=True)
+    documents = sorted(products.glob("*.xctestrun"))
+    if not 1 <= len(documents) <= 16:
+        raise ValueError("invalid xctestrun count")
+    for document in documents:
+        entries = list(targets(plistlib.loads(document.read_bytes())))
+        if not 1 <= len(entries) <= 16:
+            raise ValueError("invalid test target count")
+        for fields in entries:
+            host = resolve_path(fields["TestHostPath"], products, developer) if "TestHostPath" in fields else None
+            host_bundle = host.parent if host is not None and host.name == "PeerloomSimulatorHost" else host
+            for kind, original in fields.items():
+                bundle = resolve_path(original, products, developer, host_bundle)
+                executable = bundle
+                if bundle.is_dir():
+                    name = plistlib.loads((bundle / "Info.plist").read_bytes()).get("CFBundleExecutable")
+                    if not isinstance(name, str) or Path(name).name != name or name in ("", ".", ".."):
+                        raise ValueError("invalid bundle executable")
+                    executable = (bundle / name).resolve(strict=True)
+                    if executable.parent != bundle:
+                        raise ValueError("executable escapes bundle")
+                with executable.open("rb") as source:
+                    hasher = hashlib.sha256()
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+                    digest = hasher.hexdigest()
+                result = subprocess.run(["lipo", "-archs", str(executable)],
+                                        capture_output=True, text=True, timeout=5, check=False)
+                architectures = result.stdout.split()
+                if result.returncode != 0 or not architectures or any(value not in ("arm64", "x86_64") for value in architectures):
+                    raise ValueError("cannot inspect Mach-O architectures")
+                print(json.dumps({"field": kind,
+                                  "generated_path": original.replace(str(products), "<products>").replace(str(developer), "<developer>"),
+                                  "sha256": digest, "architectures": architectures}), flush=True)
 
 
 def inspect(products, developer, require_host=False, test_bundle="PeerloomSwiftTests.xctest"):
@@ -102,6 +141,9 @@ def inspect(products, developer, require_host=False, test_bundle="PeerloomSwiftT
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[3] == "--artifact-metadata":
+        artifact_metadata(Path(sys.argv[1]), Path(sys.argv[2]))
+        raise SystemExit(0)
     if len(sys.argv) not in (3, 4) or (len(sys.argv) == 4 and sys.argv[3] != "--simulator-host"):
         raise SystemExit("需要本次 Products 目录与固定 DEVELOPER_DIR，可追加 --simulator-host")
     inspect(Path(sys.argv[1]), Path(sys.argv[2]), require_host=len(sys.argv) == 4)

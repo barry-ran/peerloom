@@ -11,12 +11,15 @@
   },
   "patch": {
     "file": "应用补丁.patch",
-    "sha256": "28a541a63d8aff5601c012b655c33bbcb85d51cfc62ea75ba8707be52a5b9579",
+    "sha256": "8d13f2322d77e693246e2649d837734bec63d6f2f8444acbd9dab467fcdf8d75",
     "modified_files": [
       "Cargo.toml",
-      "src/peer_connection/driver.rs"
+      "src/peer_connection/driver.rs",
+      "src/peer_connection/mod.rs",
+      "src/peer_connection/transport/tcp_transport.rs",
+      "src/runtime/primitives.rs"
     ],
-    "kind": "Peerloom local TURN output flush correctness patch and deterministic regression; not claimed upstream merged"
+    "kind": "Peerloom本地TURN排空、可选缓冲通知与关闭时TCP/inbox所有权补丁；不宣称上游已合并"
   },
   "files": [
     {
@@ -81,12 +84,12 @@
     },
     {
       "path": "src/peer_connection/driver.rs",
-      "sha256": "19f187152aa1c34db707cce05f17b0a80745f43dcc809eabcfc5834c28f8e208",
+      "sha256": "84fdf87db74ed83a595b1f9362a6b0481ad6a2de0c3b8841289b610fe2cd7273",
       "upstream_sha256": "0edb347b10805852911709b15ce21af2682f9f0580765834ca2b3b1adb7b8292"
     },
     {
       "path": "src/peer_connection/mod.rs",
-      "sha256": "360c56d83f7f52b84f04a762105327af1733d4b2177b1d824d7708f73113ee61",
+      "sha256": "6b17277fda3754578feedef44c427962f0a12d168c549e4095144a2d5bf16faf",
       "upstream_sha256": "360c56d83f7f52b84f04a762105327af1733d4b2177b1d824d7708f73113ee61"
     },
     {
@@ -101,7 +104,7 @@
     },
     {
       "path": "src/peer_connection/transport/tcp_transport.rs",
-      "sha256": "2035c38d79ba2bb52d3938ed2aa30b7ecc64bc39055ee61ddf2d88cc668abf03",
+      "sha256": "bd8cf98233efb2d967d8495fa5b9b063fa200575014169521e2aa61d113be4b2",
       "upstream_sha256": "2035c38d79ba2bb52d3938ed2aa30b7ecc64bc39055ee61ddf2d88cc668abf03"
     },
     {
@@ -136,7 +139,7 @@
     },
     {
       "path": "src/runtime/primitives.rs",
-      "sha256": "50a466b63aeeba887e73c0d9b5da3383a250d6a1078095ba88b8e3955f1e1804",
+      "sha256": "e9c7ff857cecb24759fc8866019eb8fcf76041313960a6f1796c22c81db04dbb",
       "upstream_sha256": "50a466b63aeeba887e73c0d9b5da3383a250d6a1078095ba88b8e3955f1e1804"
     },
     {

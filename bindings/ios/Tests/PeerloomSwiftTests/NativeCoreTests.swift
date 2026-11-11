@@ -106,6 +106,21 @@ final class MockNative: NativeAPI, @unchecked Sendable {
     }
 }
 final class NativeCoreTests: XCTestCase {
+    func testCustomIceEncodingAndRedaction() throws {
+        var config = PeerloomConfiguration(origin: "https://localhost", applicationID: UUID().uuidString)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
+        XCTAssertNil(json["ice_servers"])
+        config.iceServers = []
+        json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
+        XCTAssertEqual((json["ice_servers"] as? [Any])?.count, 0)
+        let server = PeerloomIceServer(urls: ["turn:example.com:3478"], username: "test-user", credential: "test-only")
+        config.iceServers = [server]
+        json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
+        XCTAssertEqual((json["ice_servers"] as? [[String: Any]])?.first?["credential"] as? String, "test-only")
+        XCTAssertFalse(String(describing: server).contains("test-only"))
+        XCTAssertFalse(String(reflecting: server).contains("test-only"))
+        XCTAssertFalse(String(reflecting: config).contains("test-only"))
+    }
     func testOptionalCapacityDefaultsAndLargeValuesEncodeWithoutClamping() throws {
         var config = PeerloomConfiguration(origin: "https://localhost", applicationID: UUID().uuidString)
         let budget = try HostBudget()

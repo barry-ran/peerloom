@@ -226,6 +226,9 @@ PY
     run ios-build-for-testing 600 xcodebuild -project "$IOS_PROJECT" -scheme PeerloomSimulatorHost -destination "platform=iOS Simulator,id=$DEVICE" \
       -derivedDataPath "$OUT/DerivedData-simulator" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
       "PEERLOOM_TLS_ORIGIN=$PEERLOOM_TLS_ORIGIN" build-for-testing
+    # Read-only evidence; failure cannot replace the real XCTest result.
+    run ios-test-artifacts 20 python3 "$HERE/scripts/inspect-test-signing.py" \
+      "$OUT/DerivedData-simulator/Build/Products" "$DEVELOPER_DIR" --artifact-metadata || true
     # Run real tests first; metadata diagnostics must not hide a runtime result.
     test_status=0
     signing_status=0
@@ -233,6 +236,10 @@ PY
       -derivedDataPath "$OUT/DerivedData-simulator" -resultBundlePath "$OUT/iOS模拟器测试.xcresult" \
       CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
       "PEERLOOM_TLS_ORIGIN=$PEERLOOM_TLS_ORIGIN" test-without-building || test_status=$?
+    if [[ $test_status -ne 0 ]]; then
+      run ios-launch-diagnostics 20 xcrun simctl spawn "$DEVICE" log show --last 5m --style json \
+        --predicate 'process == "PeerloomSimulatorHost" OR process == "testmanagerd" OR process == "debugserver" OR process == "runningboardd" OR process == "launchd_sim"' || true
+    fi
     run ios-test-signing 45 python3 "$HERE/scripts/inspect-test-signing.py" \
       "$OUT/DerivedData-simulator/Build/Products" "$DEVELOPER_DIR" --simulator-host || signing_status=$?
     printf '[Apple iOS results] test_exit=%s signing_exit=%s\n' "$test_status" "$signing_status"

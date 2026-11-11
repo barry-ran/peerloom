@@ -90,6 +90,12 @@ uint64_t dp_capabilities(void);
  * {"abi_version":1,"origin":"https://...","application_id":"UUID",
  *  "storage":"external"|"memory","development_loopback":false,"auto_reconnect":true}
  * HTTPS/WSS required except explicit dev IP-literal loopback. Memory is not durable.
+ * Optional ice_servers: [{"urls":["stun:host:3478"],"username":"...","credential":"..."}].
+ * Omitted selects managed servers; an explicit array replaces managed servers without
+ * fallback (empty means host-only). JSON null and unknown item fields are invalid.
+ * Only UDP stun:/turn: are supported; secure/TCP URLs return DP_UNSUPPORTED.
+ * TURN requires username and credential. Credentials must never be logged.
+ * New configuration requires a library with custom ICE support; old JSON remains valid.
  * No fixed SDK-instance ceiling. Optional max_connections,
  * max_channels_per_connection (including the default reliable message channel), and
  * max_channel_creations_per_connection default to 0: no application count cap.

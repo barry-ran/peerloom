@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'third_party/rust/rtc-0.21.1'
-MANIFEST_SHA = '9072d1f2da22f6ea63a8fabccad61c0b18a3494d58b0d20d85533c4475d65b24'
+MANIFEST_SHA = 'b9c191ff8e15afe8608cb1b9b868ecee0bf90312982e7b5dd3a4b628f6fdd5a4'
 ARCHIVE_SHA = '4e2ca201de5ccc83aa3c08d49a2f08d7ed0aeeb2052fb1ccc517a8b77a6927ce'
 
 
@@ -24,7 +24,7 @@ def verify(base):
     manifest = json.loads(encoded)
     assert manifest['archive']['sha256'] == ARCHIVE_SHA
     assert manifest['package'] == {'name': 'rtc', 'version': '0.21.1', 'declared_license': 'MIT/Apache-2.0'}
-    assert manifest['patch']['modified_files'] == ['Cargo.toml', 'src/data_channel/internal.rs']
+    assert manifest['patch']['modified_files'] == ['Cargo.toml', 'src/data_channel/internal.rs', 'src/peer_connection/transport/ice/server.rs']
     patch = base / '应用补丁.patch'
     assert sha(patch.read_bytes()) == manifest['patch']['sha256']
     crate = base / 'crate'

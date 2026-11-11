@@ -56,6 +56,11 @@ elif 'instrument' in args:
                 result = subprocess.run(['bash', str(scripts / 'run-instrumentation.sh')], env=env, capture_output=True, timeout=20)
                 self.assertNotEqual(result.returncode, 0)
                 log = commands.read_text()
+                # This script deliberately selects classes, so compilation alone
+                # does not make a new @Test class part of the device run.
+                self.assertEqual(log.count('-e class io.peerloom.sdk.ConfigurationTest '), 1)
+                self.assertLess(log.index('-e class io.peerloom.sdk.ConfigurationTest '),
+                                log.index('-e class io.peerloom.sdk.StoreTest '))
                 if failure == 'store':
                     self.assertEqual(log.count('-e class io.peerloom.sdk.StoreProcessTest '), 1)
                     self.assertNotIn('dpm set-device-owner', log)

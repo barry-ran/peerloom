@@ -42,6 +42,7 @@ python3 bindings/android/scripts/test-maven-evidence.py
   cargo clippy --workspace --all-targets --locked -- -D warnings
   cargo test --workspace --locked
   cargo test -p webrtc --lib --locked peer_connection::driver::turn_flush_regression::core_relay_packet_must_reach_socket_in_same_flush_without_another_wake -- --exact
+  cargo test -p webrtc --lib --locked peer_connection::driver::buffered_amount_advisory_regression::
 )
 
 # Linux C ABI真实链接生命周期及C++头文件兼容性。
