@@ -72,7 +72,7 @@ completion 可能早于 `submit` 返回；宿主应按 request ID 关联，不�
 
 `CONNECTION_CLOSED`（事件 7）保留原 `session_id`，增加可选整数 `local_close_status`。它与事件本身的 reason/status、已受理请求的 completion 独立：事件表示连接不可再使用，completion 结算请求，新增字段报告本地 worker 所观察的清理结果。ABI 仍为 1，C 结构和公开 Rust 事件类型不变，旧消费者应忽略未知 JSON 字段。
 
-`local_close_status=OK` 只表示拥有的 worker 清理路径返回成功，不保证全部操作系统或后端物理资源已退休。core 每代连接保留清理证据，只有 owner 实际 join 完成后才能发布成功，worker 返回前只能提前记录失败；已失败的 child/transport 清理不会被后续成功覆盖；worker panic、超时强制取消、未完成构建任务被取消或缺少对应 task 时返回非成功/未知。父连接失效仅禁止后续使用，不再冒充 child 清理完成；正常关闭等待已拥有的 child 清理和 join。流 reader 与 writer 的清理结果都会汇总。重建 generation 不会覆盖旧句柄持有的证据。
+`local_close_status=OK` 只表示拥有的 worker 清理路径返回成功，不保证全部操作系统或后端物理资源已退休。core 每代连接保留清理证据，只有 owner 实际 join 完成后才能发布成功，worker 返回前只能提前记录失败；已失败的 child/transport 清理不会被后续成功覆盖；worker panic、超时强制取消、未完成构建任务被取消或缺少对应 task 时返回非成功/未知。父连接失效仅禁止后续使用，不再冒充 child 清理完成；正常关闭等待已拥有的 child 清理和 join。流 reader 与 writer 的清理结果都会汇总。重建 generation 不会覆盖旧句柄持有的证据。 对端先关闭导致底层句柄已移除时，transport 只有明确观察到该通道的 `OnClose` 才将重复关闭视为完成；必要时在原关闭总预算内读取排队终态。`OnError`、事件流结束或单纯 `Closed` 错误不能代替此证据，后来的 `OnClose` 不抹去已观察的错误。
 
 ```mermaid
 flowchart LR

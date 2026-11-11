@@ -581,6 +581,7 @@ impl PeerTransport {
             timeout: self.config.operation_timeout,
             opened: false,
             pending: None,
+            close_evidence: ChannelCloseEvidence::default(),
         }
     }
 
@@ -713,6 +714,70 @@ impl PeerTransport {
     }
 }
 
+// Only an explicit backend terminal event proves an already-removed channel
+// closed. EOF, OnError and a missing handle alone are not that evidence.
+#[derive(Default)]
+struct ChannelCloseEvidence(AtomicU8);
+impl ChannelCloseEvidence {
+    const CLOSED: u8 = 1;
+    const FAILED: u8 = 2;
+
+    fn observe(&self, event: &DataChannelEvent) {
+        match event {
+            DataChannelEvent::OnError => self.0.store(Self::FAILED, Ordering::Release),
+            DataChannelEvent::OnClose => {
+                // An earlier OnError cannot be erased by a later terminal event.
+                let _ = self.0.compare_exchange(0, Self::CLOSED, Ordering::AcqRel, Ordering::Acquire);
+            }
+            _ => {}
+        }
+    }
+
+    async fn resolve<F, P>(
+        &self,
+        result: Result<(), TransportError>,
+        mut poll: F,
+    ) -> Result<(), TransportError>
+    where
+        F: FnMut() -> P,
+        P: std::future::Future<Output = Option<DataChannelEvent>>,
+    {
+        // Do not upgrade timeout or any other backend failure, even if a close
+        // event was observed. Core separately retains earlier cleanup failures.
+        if let Err(error) = result
+            && error != TransportError::Closed
+        {
+            return Err(error);
+        }
+        match self.0.load(Ordering::Acquire) {
+            Self::FAILED => return Err(TransportError::Closed),
+            Self::CLOSED => return Ok(()),
+            _ if result.is_ok() => return Ok(()),
+            _ => {}
+        }
+        // The caller has begun abortive close, so unread payloads may be discarded.
+        // OnClose may already be queued behind them when the core handle vanished.
+        loop {
+            match poll().await {
+                Some(event @ DataChannelEvent::OnClose) => {
+                    self.observe(&event);
+                    return if self.0.load(Ordering::Acquire) == Self::CLOSED {
+                        Ok(())
+                    } else {
+                        Err(TransportError::Closed)
+                    };
+                }
+                Some(event @ DataChannelEvent::OnError) => {
+                    self.observe(&event);
+                    return Err(TransportError::Closed);
+                }
+                None => return Err(TransportError::Closed),
+                Some(_) => {}
+            }
+        }
+    }
+}
+
 /// 每条接收消息保留边界；该类型不是流，也不承诺业务确认或 exactly-once。
 pub struct MessageChannel {
     channel: Arc<dyn DataChannel>,
@@ -720,6 +785,7 @@ pub struct MessageChannel {
     timeout: Duration,
     opened: bool,
     pending: Option<Vec<u8>>,
+    close_evidence: ChannelCloseEvidence,
 }
 
 /// 不含凭证的 DataChannel 协商元数据；用于拒绝错误通道语义。
@@ -738,6 +804,14 @@ impl ChannelMetadata {
 }
 
 impl MessageChannel {
+    async fn poll_event(&self) -> Option<DataChannelEvent> {
+        let event = self.channel.poll().await;
+        if let Some(event) = &event {
+            self.close_evidence.observe(event);
+        }
+        event
+    }
+
     #[cfg(feature = "test-diagnostics")]
     pub async fn diagnostic_state(&self) -> Result<(usize, String), TransportError> {
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -767,7 +841,7 @@ impl MessageChannel {
             return Ok(());
         }
         tokio::time::timeout(self.timeout, async {
-            while let Some(event) = self.channel.poll().await {
+            while let Some(event) = self.poll_event().await {
                 match event {
                     DataChannelEvent::OnOpen => {
                         self.opened = true;
@@ -818,7 +892,7 @@ impl MessageChannel {
             return Ok(message);
         }
         tokio::time::timeout(self.timeout, async {
-            while let Some(event) = self.channel.poll().await {
+            while let Some(event) = self.poll_event().await {
                 match event {
                     DataChannelEvent::OnOpen => {
                         self.opened = true;
@@ -843,16 +917,83 @@ impl MessageChannel {
     }
 
     pub async fn close(&self) -> Result<(), TransportError> {
-        tokio::time::timeout(self.timeout, self.channel.close())
-            .await
-            .map_err(|_| TransportError::Timeout)?
-            .map_err(classify_backend)
+        // One budget covers both close and any pending terminal evidence. Never
+        // restart the timeout for each discarded event.
+        tokio::time::timeout(self.timeout, async {
+            let result = self.channel.close().await.map_err(classify_backend);
+            self.close_evidence.resolve(result, || self.poll_event()).await
+        })
+        .await
+        .map_err(|_| TransportError::Timeout)?
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn explicit_close_event_proves_removed_channel_but_not_other_failures() {
+        let evidence = ChannelCloseEvidence::default();
+        assert_eq!(evidence.resolve(Ok(()), || async { panic!("successful backend close") }).await, Ok(()));
+        evidence.observe(&DataChannelEvent::OnClose);
+        for result in [Ok(()), Err(TransportError::Closed)] {
+            assert_eq!(evidence.resolve(result, || async { panic!("already observed") }).await, Ok(()));
+        }
+        for error in [TransportError::Timeout, TransportError::WebRtc] {
+            assert_eq!(evidence.resolve(Err(error), || async { panic!("must preserve failure") }).await, Err(error));
+        }
+    }
+
+    #[tokio::test]
+    async fn removed_channel_can_confirm_queued_close_within_existing_budget() {
+        let evidence = ChannelCloseEvidence::default();
+        let mut events = [DataChannelEvent::OnOpen, DataChannelEvent::OnClose].into_iter();
+        let result = evidence.resolve(Err(TransportError::Closed), || {
+            let next = events.next();
+            async move { next }
+        }).await;
+        assert_eq!(result, Ok(()));
+        assert_eq!(evidence.0.load(Ordering::Acquire), ChannelCloseEvidence::CLOSED);
+        // A second close does not consume another event or require a live core handle.
+        assert_eq!(evidence.resolve(Err(TransportError::Closed), || async { None }).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn on_error_before_on_close_remains_failed_across_repeated_close() {
+        let evidence = ChannelCloseEvidence::default();
+        let mut events = [DataChannelEvent::OnError, DataChannelEvent::OnClose].into_iter();
+        assert_eq!(evidence.resolve(Err(TransportError::Closed), || {
+            let next = events.next();
+            async move { next }
+        }).await, Err(TransportError::Closed));
+        assert!(matches!(events.next(), Some(DataChannelEvent::OnClose)));
+        // Also cover OnError consumed by receive/wait_open before close begins.
+        evidence.observe(&DataChannelEvent::OnClose);
+        for result in [Ok(()), Err(TransportError::Closed)] {
+            assert_eq!(evidence.resolve(result, || async { panic!("must not upgrade failure") }).await, Err(TransportError::Closed));
+        }
+    }
+
+    #[tokio::test]
+    async fn error_eof_and_timeout_never_prove_removed_channel_closed() {
+        for event in [Some(DataChannelEvent::OnError), None] {
+            let evidence = ChannelCloseEvidence::default();
+            let mut event = event;
+            assert_eq!(evidence.resolve(Err(TransportError::Closed), || {
+                let next = event.take();
+                async move { next }
+            }).await, Err(TransportError::Closed));
+            assert_ne!(evidence.0.load(Ordering::Acquire), ChannelCloseEvidence::CLOSED);
+        }
+        let evidence = ChannelCloseEvidence::default();
+        let waiting = evidence.resolve(
+            Err(TransportError::Closed),
+            std::future::pending::<Option<DataChannelEvent>>,
+        );
+        assert!(tokio::time::timeout(Duration::ZERO, waiting).await.is_err());
+        assert_ne!(evidence.0.load(Ordering::Acquire), ChannelCloseEvidence::CLOSED);
+    }
+
     #[test]
     fn public_ice_server_debug_redacts_credentials_and_unvalidated_urls() {
         let server = RTCIceServer {
