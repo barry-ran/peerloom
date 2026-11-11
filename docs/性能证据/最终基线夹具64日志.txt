@@ -1,0 +1,9 @@
+    Finished `release` profile [optimized] target(s) in 0.11s
+     Running unittests src/lib.rs (/tmp/peerloom-performance-target/release/deps/device_core-852e03f30bb359e9)
+
+running 1 test
+test sdk::channels::stream::tests::worker_performance::sdk_worker_backpressure_performance ... {"kind":"sdk_worker_backpressure","connections":1,"bytes":64,"resume_rounds":2,"idle_wall_s":5.001040,"idle_user_s":0.030000,"idle_sys_s":0.030000,"idle_cpu_ns_per_worker_s":11997504.593429,"poll_counting":false,"worker_polls":0,"polls_per_worker_s":0.000000,"resume_p50_us":2112.559,"resume_p95_us":2112.559,"resume_p99_us":2112.559,"raw_buffer_full_retries":0,"transfer_payload_bytes":640,"transfer_wall_s":0.014019,"transfer_user_s":0.000000,"transfer_sys_s":0.000000,"transfer_cpu_ns_per_byte":0.000000,"paced_mib_per_s":0.043538}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 5.73s
+

@@ -1,0 +1,21 @@
+   Compiling device-transport-webrtc v0.1.5 (/workspace/shared/peerloom-performance/src/device-sdk/device-transport-webrtc)
+    Finished `release` profile [optimized] target(s) in 4.56s
+     Running unittests src/lib.rs (/tmp/peerloom-performance-target/release/deps/device_transport_webrtc-80124edb9682bfa0)
+
+running 13 tests
+test tests::actual_dcep_metadata_preserves_all_six_wire_types ... ignored, requires local UDP sockets
+test gathering::tests::empty_and_relay_only_snapshots_are_not_direct_fallbacks ... ok
+test stream::tests::frames_validate_sequence_size_type_and_fin ... ok
+test tests::channel_reservations_are_hard_capped ... ok
+test tests::backend_categories_do_not_expose_secrets ... ok
+test stream::tests::owned_frames_preserve_v1_wire_bytes ... ok
+test tests::direct_rejects_remote_relay_candidates ... ok
+test tests::noncanonical_relay_candidate_cannot_bypass_direct_policy ... ok
+test tests::oversized_sdp_rejected_before_backend_parse ... ok
+test tests::relay_policy_needs_explicit_server_and_direct_rejects_turn ... ok
+test tests::typed_incoming_requires_exact_protocol_and_reliability ... ok
+test tests::stream_not_misrepresented_as_message_channel ... ok
+test tests::zero_limits_cannot_enable_upstream_unbounded_send ... ok
+
+test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

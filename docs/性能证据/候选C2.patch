@@ -1,0 +1,56 @@
+diff --git a/src/device-sdk/device-core/src/sdk/channels/stream.rs b/src/device-sdk/device-core/src/sdk/channels/stream.rs
+index 45ddf85..8c64c3a 100644
+--- a/src/device-sdk/device-core/src/sdk/channels/stream.rs
++++ b/src/device-sdk/device-core/src/sdk/channels/stream.rs
+@@ -239,15 +239,19 @@ impl StreamWorker {
+         let operation = async {
+             let mut eof = false;
+             let mut buffer = vec![0; CHUNK];
++            let mut read_permit = None;
+             loop {
+                 self.scope.gate.check()?;
++                // A retained permit must not hide receiver closure after a raw
++                // read timeout or a completed write.
++                if self.received.is_closed() {
++                    return Err(SdkError::Closed);
++                }
+                 // Reserve delivery capacity BEFORE reading. No consumed stream bytes
+                 // are discarded on backpressure; writes remain selectable while full.
+-                let read_permit = if eof {
+-                    None
+-                } else {
+-                    self.received.clone().try_reserve_owned().ok()
+-                };
++                if !eof && read_permit.is_none() {
++                    read_permit = self.received.try_reserve().ok();
++                }
+                 // Fair duplex arbitration: an always-ready write queue must not
+                 // starve incoming bytes/FIN. Each selected branch rechecks the gate.
+                 tokio::select! {
+@@ -294,10 +298,16 @@ impl StreamWorker {
+                             Err(value) => return Err(error(value)),
+                         };
+                         self.scope.gate.check()?;
+-                        read_permit.expect("reserved stream capacity").send(buffer[..n].to_vec());
++                        read_permit.take().expect("reserved stream capacity").send(buffer[..n].to_vec());
+                         eof = n == 0;
+                     },
+-                    // Bounded backpressure retry, never busy-spin on a full receiver.
++                    // Keep the acquired capacity until delivery instead of releasing
++                    // and reacquiring it. This worker is the only producer.
++                    permit = self.received.reserve(), if !eof && read_permit.is_none() => {
++                        read_permit = Some(permit.map_err(|_| SdkError::Closed)?);
++                    },
++                    // Preserve the original 5ms gate-check backstop, including
++                    // unnotified continuous-clock/installation invalidation.
+                     _ = tokio::time::sleep(Duration::from_millis(5)), if !eof && read_permit.is_none() => {},
+                 }
+             }
+@@ -328,6 +338,7 @@ impl Drop for StreamWorker {
+ 
+ #[cfg(test)]
+ mod tests {
++    include!("stream_performance_tests.rs");
+     use super::*;
+     use futures_util::{pin_mut, poll};
+     fn fixture() -> (SdkByteStream, StreamWorker, OutboundBudget, Arc<Gate>) {
