@@ -800,10 +800,7 @@ mod tests {
     async fn send_drain_timeout_aborts_and_joins_owned_tasks() {
         let mut sends = JoinSet::new();
         sends.spawn(std::future::pending::<()>());
-        assert_eq!(
-            finish_sends(&mut sends, OK, Duration::ZERO).await,
-            UNKNOWN
-        );
+        assert_eq!(finish_sends(&mut sends, OK, Duration::ZERO).await, UNKNOWN);
         assert!(sends.is_empty());
     }
     #[tokio::test]

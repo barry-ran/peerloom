@@ -17,6 +17,7 @@ import time
 import unittest
 import xml.etree.ElementTree as ET
 from unittest import mock
+import apple_launch_diagnostics as DIAGNOSTICS
 
 SCRIPT = Path(__file__).with_name("watchdog.py")
 WATCHDOG_SPEC = importlib.util.spec_from_file_location("watchdog", SCRIPT)
@@ -642,6 +643,228 @@ PYMOCK
             failure.write_text(success)
             VERIFY.aggregate(root)
             self.assertEqual(json.loads((root / "phase-macos-swift.json").read_text())["test_count"], 16)
+
+
+class LaunchDiagnosticTests(unittest.TestCase):
+    def tools(self, sample="print('Call graph:\\n    5 Thread_1 mach_msg_trap')", host="print('[]')"):
+        original = subprocess.Popen
+        children = []
+        def launch(command, **kwargs):
+            if command[0] in ("/usr/bin/sample", "/usr/bin/log"):
+                selected = sample if command[0] == "/usr/bin/sample" else host
+                process = original([sys.executable, "-c", selected], **kwargs)
+                children.append(process)
+                return process
+            return original(command, **kwargs)
+        return launch, children
+
+    def run_observed(self, root, code, sample=None, host=None, timeout=0.5):
+        command = root / "xcodebuild"
+        command.write_text("#!" + sys.executable + "\n" + code + "\n")
+        command.chmod(0o700)
+        launch, children = self.tools(**{key: value for key, value in (("sample", sample), ("host", host)) if value is not None})
+        with mock.patch.object(DIAGNOSTICS.sys, "platform", "darwin"), \
+                mock.patch.object(DIAGNOSTICS, "AFTER_SECONDS", 0.03), \
+                mock.patch.object(DIAGNOSTICS, "COMMAND_TIMEOUT", 0.3), \
+                mock.patch.object(DIAGNOSTICS.subprocess, "Popen", side_effect=launch), \
+                contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), encoding="utf-8")):
+            result = WATCHDOG.run([str(command), "test-without-building"], timeout, 0.05,
+                                  root / "phase-test.log", root / "status.json", apple_launch_diagnostics=True)
+        return result, children
+
+    def test_diagnostics_failures_never_replace_test_result(self):
+        for child_code in (0, 7):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                result, children = self.run_observed(root, f"import time; time.sleep(.3); raise SystemExit({child_code})",
+                                                      sample="raise SystemExit(9)", host="print('invalid JSON')")
+                self.assertEqual(result, child_code)
+                self.assertTrue(all(child.poll() is not None for child in children))
+                self.assertEqual(json.loads((root / "phase-test-host-log.log").read_text())["classification"], "invalid-output")
+
+    def test_collectors_are_bounded_and_original_deadline_is_not_extended(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hang = "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(100)"
+            start = time.monotonic()
+            result, children = self.run_observed(root, "import time;time.sleep(100)", sample=hang, host=hang, timeout=0.2)
+            self.assertEqual(result, 124)
+            self.assertLess(time.monotonic() - start, 1.5)
+            self.assertTrue(all(child.poll() is not None for child in children))
+            self.assertEqual(json.loads((root / "status.json").read_text())["timeout_seconds"], 0.2)
+
+    def test_one_shot_only_samples_owned_child_and_holds_its_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = mock.Mock(pid=31415)
+            target.poll.return_value = None
+            launch, children = self.tools(sample="import time;time.sleep(.2)")
+            with mock.patch.object(DIAGNOSTICS.sys, "platform", "darwin"), \
+                    mock.patch.object(DIAGNOSTICS.subprocess, "Popen", side_effect=launch) as spawn:
+                diagnostic = DIAGNOSTICS.LaunchDiagnostics(target, ["xcodebuild", "test-without-building"], root / "phase.log", 100)
+                diagnostic.tick(159)
+                spawn.assert_not_called()
+                diagnostic.tick(160)
+                self.assertTrue(diagnostic.holds_target_pid)
+                diagnostic.tick(160.01)
+                self.assertEqual(target.poll.call_count, 1, "must not reap target while sampling")
+                self.assertEqual(spawn.call_count, 2)
+                self.assertEqual(spawn.call_args_list[0].args[0], ["/usr/bin/sample", "31415", "5", "10", "-file", "/dev/stdout"])
+                log_args = spawn.call_args_list[1].args[0]
+                self.assertIn("processID == 31415", log_args[-1])
+                self.assertIn("com.apple.CoreSimulator.CoreSimulatorService", log_args[-1])
+                diagnostic.close()
+                self.assertFalse(diagnostic.holds_target_pid)
+            self.assertTrue(all(child.poll() is not None for child in children))
+
+    def test_no_collection_for_dead_target_or_non_xcode_or_non_macos(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for platform, command, code in (("linux", ["xcodebuild", "test-without-building"], None),
+                                            ("darwin", ["unrelated", "test-without-building"], None),
+                                            ("darwin", ["xcodebuild", "build-for-testing"], None),
+                                            ("darwin", ["xcodebuild", "test-without-building"], 0)):
+                with self.subTest(platform=platform, command=command, code=code), \
+                        mock.patch.object(DIAGNOSTICS.sys, "platform", platform), \
+                        mock.patch.object(DIAGNOSTICS.subprocess, "Popen") as spawn:
+                    target = mock.Mock(pid=31415)
+                    target.poll.return_value = code
+                    diagnostic = DIAGNOSTICS.LaunchDiagnostics(target, command, root / "phase.log", 0)
+                    diagnostic.tick(60)
+                    diagnostic.close()
+                    spawn.assert_not_called()
+
+    def test_sample_drops_headers_and_log_drops_environment_and_unrelated_processes(self):
+        sample = b"Command line: PRIVATE_ARG\nPath: /Users/operator/work\nCall graph:\n    5 Thread_1 mach_msg_trap\n    secret=PRIVATE_KEY\nBinary Images:\nPRIVATE_IMAGE"
+        output = DIAGNOSTICS.sample_evidence(sample)
+        self.assertIn("mach_msg_trap", output)
+        self.assertNotIn("PRIVATE", output)
+        records = [{"processID": 123, "processImagePath": "/xcodebuild", "eventMessage": "Launch /Users/operator/work https://private.example/xyz"},
+                   {"processID": 123, "processImagePath": "/xcodebuild", "eventMessage": "environment={PRIVATE_ENV}"},
+                   {"processID": 999, "processImagePath": "/other", "eventMessage": "PRIVATE_OTHER"},
+                   {"processID": 999, "processImagePath": "/com.apple.CoreSimulator.CoreSimulatorService", "eventMessage": "Launch failed"}]
+        output = json.dumps(DIAGNOSTICS.log_evidence(json.dumps(records).encode(), 123))
+        self.assertNotIn("PRIVATE", output)
+        self.assertNotIn("operator", output)
+        self.assertNotIn("private.example", output)
+        self.assertIn("Launch failed", output)
+
+    def test_bounded_input_and_encoded_output_keep_no_raw_data(self):
+        for host in ("print('PRIVATE' * 200000)",
+                     "import json;print(json.dumps([{'processID':1,'processImagePath':'/debugserver','eventMessage':'x'*10}]*10000))"):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                result, children = self.run_observed(root, "import time;time.sleep(.4)", host=host)
+                self.assertEqual(result, 0)
+                log = root / "phase-test-host-log.log"
+                self.assertLessEqual(log.stat().st_size, DIAGNOSTICS.MAX_BYTES)
+                text = log.read_text()
+                self.assertNotIn("PRIVATE", text)
+                self.assertIn(json.loads(text)["classification"], ("output-limit", "timeout"))
+                self.assertTrue(all(child.poll() is not None for child in children))
+
+    def test_surrogate_log_output_does_not_escape_or_change_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = r'''print('[{"processID":1,"processImagePath":"/debugserver","eventMessage":"\\ud800"}]')'''
+            result, _ = self.run_observed(root, "import time;time.sleep(.3);raise SystemExit(7)", host=host)
+            self.assertEqual(result, 7)
+            self.assertTrue((root / "phase-test-host-log.log").exists())
+
+    def test_existing_evidence_is_never_overwritten_and_launcher_error_is_advisory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "phase-test-sample.log"
+            path.write_text("original")
+            result, _ = self.run_observed(root, "import time;time.sleep(.3);raise SystemExit(7)")
+            self.assertEqual(result, 7)
+            self.assertEqual(path.read_text(), "original")
+            self.assertIn("sample:cleanup-or-evidence-error", json.loads((root / "status.json").read_text())["launch_diagnostics"]["errors"])
+            target = mock.Mock(pid=31415)
+            target.poll.return_value = None
+            with mock.patch.object(DIAGNOSTICS.sys, "platform", "darwin"), \
+                    mock.patch.object(DIAGNOSTICS.subprocess, "Popen", side_effect=FileNotFoundError):
+                diagnostic = DIAGNOSTICS.LaunchDiagnostics(target, ["xcodebuild", "test-without-building"], root / "phase.log", 0)
+                diagnostic.tick(60)
+                self.assertEqual(len(diagnostic.errors), 2)
+                self.assertFalse(diagnostic.holds_target_pid)
+
+    def test_native_hook_keeps_original_tests_deadline_and_artifact_collection(self):
+        source = SCRIPT.with_name("test-native.sh").read_text()
+        self.assertEqual(source.count("set -- --apple-launch-diagnostics"), 1)
+        self.assertIn('if [[ "$name" == ios-simulator ]]', source)
+        self.assertIn("run ios-simulator 180 xcodebuild", source)
+        self.assertNotIn("-skip-testing", source)
+        workflow = (SCRIPT.parents[3] / ".github/workflows/native.yml").read_text()
+        self.assertIn("peerloom-ios-diagnostic/phase-*.log", workflow)
+        self.assertIn("peerloom-apple-validation/phase-*.log", workflow)
+
+    def test_nonblocking_setup_failure_never_enters_pipe_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = mock.Mock(pid=31415)
+            target.poll.return_value = None
+            launch, children = self.tools(sample="import time;time.sleep(100)", host="import time;time.sleep(100)")
+            with mock.patch.object(DIAGNOSTICS.sys, "platform", "darwin"), \
+                    mock.patch.object(DIAGNOSTICS.subprocess, "Popen", side_effect=launch), \
+                    mock.patch.object(DIAGNOSTICS.os, "set_blocking", side_effect=OSError):
+                diagnostic = DIAGNOSTICS.LaunchDiagnostics(target, ["xcodebuild", "test-without-building"], Path(directory) / "phase.log", 0)
+                diagnostic.tick(60)
+                self.assertFalse(diagnostic.collectors)
+                self.assertEqual(len(diagnostic.errors), 2)
+            self.assertTrue(all(child.poll() is not None for child in children))
+
+    def test_unexpected_observer_exception_cannot_hide_original_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(DIAGNOSTICS.LaunchDiagnostics, "tick", side_effect=RuntimeError("PRIVATE_FAILURE")):
+                result, _ = self.run_observed(root, "raise SystemExit(7)")
+            self.assertEqual(result, 7)
+            status = (root / "status.json").read_text()
+            self.assertIn("tick:internal-error", status)
+            self.assertNotIn("PRIVATE_FAILURE", status)
+
+    def test_killed_but_unreaped_tool_is_visible_and_rechecked_without_resignalling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = mock.Mock(pid=27182, returncode=None)
+            child.poll.return_value = None
+            child.wait.side_effect = subprocess.TimeoutExpired("sample", 0.2)
+            target = mock.Mock(pid=31415)
+            diagnostic = DIAGNOSTICS.LaunchDiagnostics(target, ["xcodebuild", "test-without-building"], root / "phase.log", 0)
+            item = {"name": "sample", "child": child, "data": bytearray()}
+            diagnostic.collectors.append(item)
+            diagnostic.close()
+            child.kill.assert_called_once()
+            self.assertEqual(diagnostic.summary()["unreaped_pids"], [27182])
+            self.assertEqual(json.loads((root / "phase-sample.log").read_text())["classification"], "reap-timeout")
+            child.poll.return_value = -9
+            diagnostic.close()
+            self.assertEqual(diagnostic.summary()["unreaped_pids"], [])
+            child.kill.assert_called_once()
+
+    def test_kill_error_retains_sampler_and_target_pid_until_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = mock.Mock(pid=27182, returncode=None)
+            child.poll.return_value = None
+            child.kill.side_effect = PermissionError("PRIVATE_ERROR")
+            target = mock.Mock(pid=31415)
+            diagnostic = DIAGNOSTICS.LaunchDiagnostics(target, ["xcodebuild", "test-without-building"], root / "phase.log", 0)
+            diagnostic.enabled = True
+            diagnostic.attempted = True
+            diagnostic.collectors.append({"name": "sample", "child": child, "data": bytearray()})
+            diagnostic.close()
+            self.assertTrue(diagnostic.holds_target_pid)
+            self.assertEqual(diagnostic.summary()["unstopped_pids"], [27182])
+            self.assertIn("sample:stop-failed", diagnostic.errors)
+            self.assertNotIn("PRIVATE_ERROR", str(diagnostic.summary()))
+            diagnostic.tick(60)
+            target.poll.assert_not_called()
+            child.poll.return_value = -9
+            child.returncode = -9
+            diagnostic.tick(61)
+            self.assertFalse(diagnostic.holds_target_pid)
+            self.assertEqual(json.loads((root / "phase-sample.log").read_text())["classification"], "stop-failed-exited")
 
 
 if __name__ == "__main__":
