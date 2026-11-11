@@ -308,9 +308,9 @@ impl StreamWorker {
         while let Some(request) = self.writes.recv().await {
             let _ = request.result.send(Err(SdkError::Closed));
         }
-        let _ = raw.close().await;
+        let cleanup = raw.close().await.map_err(error);
         drop(_permit);
-        self.scope.gate.finished();
+        self.scope.gate.finished(cleanup);
         result
     }
 }
@@ -322,7 +322,9 @@ impl Drop for StreamWorker {
         while let Ok(request) = self.writes.try_recv() {
             let _ = request.result.send(Err(SdkError::Closed));
         }
-        self.scope.gate.finished();
+        if !self.scope.gate.finished.load(Ordering::Acquire) {
+            self.scope.gate.finished(Err(SdkError::RequestOutcomeUnknown));
+        }
     }
 }
 
@@ -343,6 +345,17 @@ mod tests {
         let budget = OutboundBudget::new(16384, 2).unwrap();
         let (stream, worker) = wrap(scope, budget.clone());
         (stream, worker, budget, parent)
+    }
+    #[tokio::test]
+    async fn dropped_stream_worker_preserves_unknown_for_both_halves() {
+        let (stream, worker, _, parent) = fixture();
+        let (reader, writer) = stream.split();
+        parent.close();
+        drop(worker);
+        assert_eq!(reader.close().await, Err(SdkError::RequestOutcomeUnknown));
+        assert_eq!(writer.close().await, Err(SdkError::RequestOutcomeUnknown));
+        parent.cleanup.record(Ok(()));
+        assert_eq!(parent.cleanup.result(), Err(SdkError::RequestOutcomeUnknown));
     }
     #[tokio::test]
     async fn earlier_ffi_deadline_expires_queued_stream_without_resuming_middle_bytes() {

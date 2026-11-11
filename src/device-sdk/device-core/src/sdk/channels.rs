@@ -19,6 +19,7 @@ struct ChannelGate {
     closed: AtomicBool,
     changed: Notify,
     finished: AtomicBool,
+    cleanup: CleanupOutcome,
     drained: Notify,
 }
 impl ChannelGate {
@@ -28,6 +29,7 @@ impl ChannelGate {
             closed: AtomicBool::new(false),
             changed: Notify::new(),
             finished: AtomicBool::new(false),
+            cleanup: CleanupOutcome::default(),
             drained: Notify::new(),
         })
     }
@@ -41,7 +43,11 @@ impl ChannelGate {
         self.closed.store(true, Ordering::Release);
         self.changed.notify_waiters();
     }
-    fn finished(&self) {
+    fn finished(&self, result: Result<(), SdkError>) {
+        if result.is_err() {
+            self.parent.cleanup.record(result.clone());
+        }
+        self.cleanup.record(result);
         self.finished.store(true, Ordering::Release);
         self.drained.notify_waiters();
     }
@@ -52,14 +58,14 @@ impl ChannelGate {
                 let drained = self.drained.notified();
                 tokio::pin!(drained);
                 drained.as_mut().enable();
-                if self.finished.load(Ordering::Acquire) || self.parent.check().is_err() {
-                    return;
+                if self.finished.load(Ordering::Acquire) {
+                    return self.cleanup.result();
                 }
                 drained.await;
             }
         })
         .await
-        .map_err(|_| SdkError::Transport(TransportError::Timeout))
+        .map_err(|_| SdkError::Transport(TransportError::Timeout))?
     }
     async fn invalidated(&self) {
         loop {
@@ -185,13 +191,13 @@ impl RawChannel {
             }
         }
     }
-    async fn close(&mut self) {
+    async fn close(&mut self) -> Result<(), SdkError> {
         match self {
             Self::Message(raw, _) => {
-                let _ = raw.close().await;
+                raw.close().await.map_err(SdkError::Transport)
             }
             Self::Stream(raw) => {
-                let _ = raw.close().await;
+                raw.close().await.map_err(stream_error)
             }
         }
     }
@@ -328,6 +334,18 @@ impl SdkIncomingChannels {
     }
 }
 
+struct ChannelRunCleanup {
+    parent: Arc<Gate>,
+    joined: bool,
+}
+impl Drop for ChannelRunCleanup {
+    fn drop(&mut self) {
+        if !self.joined {
+            self.parent.cleanup.record(Err(SdkError::RequestOutcomeUnknown));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
     peer: Arc<PeerTransport>,
@@ -342,6 +360,7 @@ pub(super) async fn run(
     peer_device_id: String,
     request_id: Option<String>,
 ) -> Result<(), SdkError> {
+    let mut cleanup = ChannelRunCleanup { parent: parent.clone(), joined: false };
     let active = Arc::new(ActiveChannels {
         used: AtomicUsize::new(0),
         limit: active_limit,
@@ -394,85 +413,106 @@ pub(super) async fn run(
         ))
         .await
         .map_err(|_| SdkError::Closed)?;
-    loop {
-        scope.gate.check()?;
-        tokio::select! {
-            _ = scope.gate.invalidated() => return Err(SdkError::Closed),
-            _ = peer.wait_interrupted() => return Err(SdkError::Transport(TransportError::Ice)),
-            result = workers.join_next(), if !workers.is_empty() => {
-                match result {
-                    Some(Ok((true, result))) => return result,
-                    Some(Err(_)) => return Err(SdkError::Closed),
-                    _ => {},
-                }
-            },
-            result = preparing.join_next(), if !preparing.is_empty() => {
-                match result {
-                    Some(Ok(Ok(prepared))) => {
-                        let (handle, response) = bind(prepared, &scope, &budget, &mut workers, false)?;
-                        if let Some(response) = response { let _ = response.send(Ok(handle)); }
-                        else if let Err(error) = incoming.try_send(handle) { drop(error.into_inner()); }
-                    },
-                    Some(Ok(Err(_))) => {}, // The request's own response is settled by its task.
-                    Some(Err(_)) => return Err(SdkError::Closed),
-                    None => {},
-                }
-            },
-            request = opens.recv() => {
-                let Some(request) = request else { return Ok(()); };
-                if request.result.is_closed() { continue; }
-                let permit = match active.reserve() {
-                    Ok(permit) => permit,
-                    Err(error) => { let _ = request.result.send(Err(error)); continue; },
-                };
-                let peer = peer.clone();
-                let gate = scope.gate.clone();
-                preparing.spawn(async move {
-                    let operation = async {
-                        let mut raw = match request.mode {
-                            ChannelMode::ReliableStream => RawChannel::Stream(peer.create_stream(&request.label).await.map_err(stream_error)?),
-                            mode => RawChannel::Message(peer.create_channel(&request.label, mode).await.map_err(SdkError::Transport)?, mode),
+    let result = async {
+        loop {
+            scope.gate.check()?;
+            tokio::select! {
+                _ = scope.gate.invalidated() => return Err(SdkError::Closed),
+                _ = peer.wait_interrupted() => return Err(SdkError::Transport(TransportError::Ice)),
+                result = workers.join_next(), if !workers.is_empty() => {
+                    match result {
+                        Some(Ok((true, result))) => return result,
+                        Some(Err(_)) => { parent.cleanup.record(Err(SdkError::RequestOutcomeUnknown)); return Err(SdkError::Closed); },
+                        _ => {},
+                    }
+                },
+                result = preparing.join_next(), if !preparing.is_empty() => {
+                    match result {
+                        Some(Ok(Ok(prepared))) => {
+                            let (handle, response) = bind(prepared, &scope, &budget, &mut workers, false)?;
+                            if let Some(response) = response { let _ = response.send(Ok(handle)); }
+                            else if let Err(error) = incoming.try_send(handle) { drop(error.into_inner()); }
+                        },
+                        Some(Ok(Err(_))) => {}, // The request's own response is settled by its task.
+                        Some(Err(_)) => { parent.cleanup.record(Err(SdkError::RequestOutcomeUnknown)); return Err(SdkError::Closed); },
+                        None => {},
+                    }
+                },
+                request = opens.recv() => {
+                    let Some(request) = request else { return Ok(()); };
+                    if request.result.is_closed() { continue; }
+                    let permit = match active.reserve() {
+                        Ok(permit) => permit,
+                        Err(error) => { let _ = request.result.send(Err(error)); continue; },
+                    };
+                    let peer = peer.clone();
+                    let gate = scope.gate.clone();
+                    preparing.spawn(async move {
+                        let operation = async {
+                            let mut raw = match request.mode {
+                                ChannelMode::ReliableStream => RawChannel::Stream(peer.create_stream(&request.label).await.map_err(stream_error)?),
+                                mode => RawChannel::Message(peer.create_channel(&request.label, mode).await.map_err(SdkError::Transport)?, mode),
+                            };
+                            match raw.ready().await {
+                                Ok(label) => Ok((raw, label)),
+                                Err(error) => { let cleanup = raw.close().await; if cleanup.is_err() { gate.parent.cleanup.record(cleanup); } Err(error) },
+                            }
                         };
-                        match raw.ready().await {
-                            Ok(label) => Ok((raw, label)),
-                            Err(error) => { raw.close().await; Err(error) },
+                        let result = tokio::select! { biased;
+                            _ = gate.invalidated() => { gate.parent.cleanup.record(Err(SdkError::RequestOutcomeUnknown)); Err(SdkError::Closed) },
+                            result = operation => result,
+                        };
+                        match result {
+                            Ok((raw,label)) => Ok(Prepared { raw, label, queue: request.queue, permit, response: Some(request.result) }),
+                            Err(error) => { let _ = request.result.send(Err(error.clone())); Err(error) },
                         }
+                    });
+                },
+                result = peer.accept_incoming() => {
+                    let raw = match result {
+                        Ok(IncomingChannel::ReliableMessage(raw)) => RawChannel::Message(raw, ChannelMode::ReliableMessage),
+                        Ok(IncomingChannel::LowLatencyMessage(raw)) => RawChannel::Message(raw, ChannelMode::LowLatencyMessage),
+                        Ok(IncomingChannel::ReliableStream(raw)) => RawChannel::Stream(raw),
+                        Err(TransportError::Timeout | TransportError::UnsupportedChannel) => continue,
+                        Err(error) => return Err(SdkError::Transport(error)),
                     };
-                    let result = tokio::select! { biased;
-                        _ = gate.invalidated() => Err(SdkError::Closed),
-                        result = operation => result,
-                    };
-                    match result {
-                        Ok((raw,label)) => Ok(Prepared { raw, label, queue: request.queue, permit, response: Some(request.result) }),
-                        Err(error) => { let _ = request.result.send(Err(error.clone())); Err(error) },
-                    }
-                });
-            },
-            result = peer.accept_incoming() => {
-                let raw = match result {
-                    Ok(IncomingChannel::ReliableMessage(raw)) => RawChannel::Message(raw, ChannelMode::ReliableMessage),
-                    Ok(IncomingChannel::LowLatencyMessage(raw)) => RawChannel::Message(raw, ChannelMode::LowLatencyMessage),
-                    Ok(IncomingChannel::ReliableStream(raw)) => RawChannel::Stream(raw),
-                    Err(TransportError::Timeout | TransportError::UnsupportedChannel) => continue,
-                    Err(error) => return Err(SdkError::Transport(error)),
-                };
-                let permit = active.reserve();
-                let gate = scope.gate.clone();
-                preparing.spawn(async move {
-                    let mut raw = raw;
-                    let permit = match permit { Ok(permit) => permit, Err(error) => { raw.close().await; return Err(error); } };
-                    let result = tokio::select! { biased;
-                        _ = gate.invalidated() => Err(SdkError::Closed),
-                        result = raw.ready() => result,
-                    };
-                    match result {
-                        Ok(label) => Ok(Prepared { raw, label, queue: QueueConfig::default(), permit, response: None }),
-                        Err(error) => { raw.close().await; Err(error) },
-                    }
-                });
-            },
+                    let permit = active.reserve();
+                    let gate = scope.gate.clone();
+                    preparing.spawn(async move {
+                        let mut raw = raw;
+                        let permit = match permit { Ok(permit) => permit, Err(error) => { let cleanup = raw.close().await; if cleanup.is_err() { gate.parent.cleanup.record(cleanup); } return Err(error); } };
+                        let result = tokio::select! { biased;
+                            _ = gate.invalidated() => Err(SdkError::Closed),
+                            result = raw.ready() => result,
+                        };
+                        match result {
+                            Ok(label) => Ok(Prepared { raw, label, queue: QueueConfig::default(), permit, response: None }),
+                            Err(error) => { let cleanup = raw.close().await; if cleanup.is_err() { gate.parent.cleanup.record(cleanup); } Err(error) },
+                        }
+                    });
+                },
+            }
         }
     }
+    .await;
+    parent.close();
+    opens.close();
+    // Pending preparations can own a partially initialized raw channel. Aborting
+    // these cannot prove successful cleanup, even if peer.close later succeeds.
+    if !preparing.is_empty() {
+        parent.cleanup.record(Err(SdkError::RequestOutcomeUnknown));
+        preparing.abort_all();
+        while preparing.join_next().await.is_some() {}
+    }
+    // Child gates observe parent invalidation but remain responsible for raw
+    // channel close. Their recorded failures survive successful parent teardown.
+    while let Some(joined) = workers.join_next().await {
+        if joined.is_err() {
+            parent.cleanup.record(Err(SdkError::RequestOutcomeUnknown));
+        }
+    }
+    cleanup.joined = true;
+    result
 }
 
 #[cfg(test)]
@@ -599,5 +639,38 @@ mod gate_tests {
         parent.installation_closed.store(true, Ordering::Release);
         parent.update(Some(Instant::now() + Duration::from_secs(60)));
         assert_eq!(b.check(), Err(SdkError::Closed));
+    }
+
+    #[tokio::test]
+    async fn invalid_parent_does_not_prove_child_cleanup_and_repeated_close_preserves_result() {
+        let parent = Arc::new(Gate::default());
+        let child = ChannelGate::new(parent.clone());
+        parent.close();
+        let waiting = child.close_and_wait();
+        tokio::pin!(waiting);
+        assert!(futures_util::poll!(&mut waiting).is_pending());
+        child.finished(Ok(()));
+        assert_eq!(waiting.await, Ok(()));
+        assert_eq!(child.close_and_wait().await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn child_cleanup_failure_is_retained_by_child_and_parent() {
+        let parent = Arc::new(Gate::default());
+        let child = ChannelGate::new(parent.clone());
+        let error = SdkError::Transport(TransportError::Timeout);
+        child.finished(Err(error.clone()));
+        assert_eq!(child.close_and_wait().await, Err(error.clone()));
+        assert_eq!(child.close_and_wait().await, Err(error.clone()));
+        parent.cleanup.record(Ok(()));
+        assert_eq!(parent.cleanup.result(), Err(error));
+    }
+
+    #[tokio::test]
+    async fn dropping_unjoined_channel_run_never_proves_cleanup() {
+        let parent = Arc::new(Gate::default());
+        drop(ChannelRunCleanup { parent: parent.clone(), joined: false });
+        parent.cleanup.record(Ok(()));
+        assert_eq!(parent.cleanup.result(), Err(SdkError::RequestOutcomeUnknown));
     }
 }

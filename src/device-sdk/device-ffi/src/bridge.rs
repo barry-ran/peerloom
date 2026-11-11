@@ -165,7 +165,8 @@ async fn sdk_event(sdk: &mut Option<DeviceSdk>) -> Option<SdkEvent> {
 }
 
 // Optional ABI1 payload evidence, not a replacement for event reason/status or
-// an accepted operation's terminal. Zero is emitted only after actual cleanup succeeds.
+// an accepted operation's terminal. Zero means the owned worker cleanup paths
+// reported success; it is not a guarantee that every OS/backend resource retired.
 fn closed_payload(session: &str, local_close_status: u32) -> Vec<u8> {
     json!({"session_id":session,"local_close_status":local_close_status}).to_string().into_bytes()
 }

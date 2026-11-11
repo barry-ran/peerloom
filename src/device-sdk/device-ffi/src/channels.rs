@@ -354,6 +354,10 @@ async fn message_worker(
     status
 }
 
+fn combine_cleanup_status(current: u32, next: u32) -> u32 {
+    if current == OK { next } else { current }
+}
+
 struct ReadScope {
     instance: Arc<Instance>,
     entered: bool,
@@ -449,6 +453,7 @@ async fn stream_worker(
         let pending = drain(&writer_instance, &mut write_rx);
         let status = writer.close().await.err().map(error).unwrap_or(OK);
         settle_cleanup(&writer_instance, pending, status);
+        status
     });
     let mut reading = None;
     let mut close = None;
@@ -502,7 +507,9 @@ async fn stream_worker(
     drop(write_tx);
     let mut status = reader.close().await.err().map(error).unwrap_or(OK);
     match tokio::time::timeout(Duration::from_secs(15), &mut writer_task).await {
-        Ok(Ok(())) => {}
+        Ok(Ok(writer_status)) => {
+            status = combine_cleanup_status(status, writer_status);
+        }
         Ok(Err(_)) => {
             instance.failed.store(true, Ordering::Release);
             instance.stop();
@@ -729,6 +736,17 @@ fn read_overflow<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Overflow
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stream_cleanup_combines_reader_and_writer_without_upgrading_failure() {
+        for status in [OK, CLOSED, UNKNOWN, INTERNAL] {
+            assert_eq!(combine_cleanup_status(OK, status), status);
+            if status != OK {
+                for later in [OK, CLOSED, UNKNOWN, INTERNAL] {
+                    assert_eq!(combine_cleanup_status(status, later), status);
+                }
+            }
+        }
+    }
     fn task_with_join(join: JoinHandle<u32>) -> Task {
         let budget = crate::budget::Budget::new(crate::budget::MIN_BYTES).unwrap();
         let (commands, _receiver) = queue::channel(budget);

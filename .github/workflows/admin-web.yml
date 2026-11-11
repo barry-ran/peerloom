@@ -2,7 +2,7 @@ name: 管理控制台真实浏览器验收
 on:
   push:
     # Functional changes are validated before the normal fast-forward to master.
-    branches-ignore: [master, 'codex/verify-native-close-20261102']
+    branches-ignore: [master]
     paths-ignore:
       - 'README.md'
       - 'docs/*.md'
