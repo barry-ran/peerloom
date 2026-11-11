@@ -128,6 +128,25 @@ enum SocketCloseError {
     Timeout,
 }
 
+impl std::fmt::Display for SocketCloseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::PreviouslyTerminated => "WebSocket was already terminated",
+            Self::WebSocket(_) => "WebSocket close failed",
+            Self::Timeout => "WebSocket close timed out",
+        })
+    }
+}
+
+impl std::error::Error for SocketCloseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::WebSocket(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 async fn close_socket_bounded<S>(socket: &mut WebSocketStream<S>) -> Result<(), SocketCloseError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -141,7 +160,9 @@ where
         // The Sink close operation also supports an already received Close.
         // Inherent close(None) instead writes a new Close message, which can
         // fail with SendAfterClosing in that peer-first case.
-        SinkExt::close(socket).await.map_err(SocketCloseError::WebSocket)?;
+        SinkExt::close(socket)
+            .await
+            .map_err(SocketCloseError::WebSocket)?;
         while let Some(message) = socket.next().await {
             message.map_err(SocketCloseError::WebSocket)?;
         }

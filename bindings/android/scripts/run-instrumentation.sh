@@ -37,6 +37,7 @@ run() {
 adb_owned shell setprop debug.checkjni 1
 test "$(adb_owned shell getprop debug.checkjni | tr -d '\r')" = 1
 run LifecycleTest
+run ConfigurationTest
 run StoreTest
 # A fixed all-pass stability check, not retries: the first failure stops the job.
 for attempt in 1 2 3 4 5; do

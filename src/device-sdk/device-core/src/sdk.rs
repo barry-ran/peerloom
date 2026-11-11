@@ -55,6 +55,17 @@ pub struct SdkConfig {
     pub outbound_max_messages: usize,
 }
 impl SdkConfig {
+    /// 显式替换托管 ICE；空列表只使用 host 候选，不回退托管服务。
+    pub fn set_ice_servers(
+        &mut self,
+        servers: Vec<device_transport_webrtc::RTCIceServer>,
+    ) -> Result<(), TransportError> {
+        device_transport_webrtc::validate_ice_servers(&servers)?;
+        self.transport.ice_servers = servers;
+        self.managed_relays = false;
+        Ok(())
+    }
+
     pub fn new(origin: String, application_id: String) -> Self {
         Self {
             origin,

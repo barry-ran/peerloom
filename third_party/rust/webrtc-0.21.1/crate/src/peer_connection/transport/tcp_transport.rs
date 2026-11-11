@@ -28,11 +28,11 @@ pub(crate) type TcpAcceptResult = (
     io::Result<(Arc<dyn AsyncTcpStream>, SocketAddr)>,
 );
 
-pub(crate) type TcpConnectResult = io::Result<(FourTuple,Arc<dyn AsyncTcpStream>)>;
+pub(crate) type TcpConnectResult = io::Result<(FourTuple, Arc<dyn AsyncTcpStream>)>;
 
 pub(crate) struct RTCTcpTransport {
     // Structured children: never spawn/detach a connect task outside the driver.
-    pub(crate) connect_futures: FuturesUnordered<BoxFuture<'static,TcpConnectResult>>,
+    pub(crate) connect_futures: FuturesUnordered<BoxFuture<'static, TcpConnectResult>>,
     listeners: HashMap<SocketAddr, Arc<dyn AsyncTcpListener>>,
     streams: HashMap<FourTuple, Arc<dyn AsyncTcpStream>>,
     decoders: HashMap<FourTuple, TcpFrameDecoder>,
@@ -58,7 +58,7 @@ impl RTCTcpTransport {
         }
 
         Self {
-            connect_futures:FuturesUnordered::new(),
+            connect_futures: FuturesUnordered::new(),
             listeners: tcp_listeners,
             streams: HashMap::new(),
             decoders: HashMap::new(),
@@ -275,19 +275,30 @@ impl RTCTcpTransport {
         candidates
     }
 
-    pub(crate) fn connect(&mut self,candidate:&Candidate,runtime:Arc<dyn Runtime>) {
+    pub(crate) fn connect(&mut self, candidate: &Candidate, runtime: Arc<dyn Runtime>) {
         if candidate.network_type().is_tcp()
-            && candidate.tcp_type()==rtc::ice::tcp_type::TcpType::Passive
-            && let Ok(ip)=candidate.address().parse::<IpAddr>()
+            && candidate.tcp_type() == rtc::ice::tcp_type::TcpType::Passive
+            && let Ok(ip) = candidate.address().parse::<IpAddr>()
         {
-            let remote_addr=SocketAddr::new(ip,candidate.port());
-            self.connect_futures.push(async move {
-                trace!("Initiating TCP connect to {:?}",remote_addr);
-                let stream=runtime.connect_tcp(remote_addr).await?;
-                let local_addr=stream.local_addr().unwrap_or_else(|_|"0.0.0.0:0".parse().unwrap());
-                let peer_addr=stream.peer_addr().unwrap_or(remote_addr);
-                Ok((FourTuple{local_addr,peer_addr},stream))
-            }.boxed());
+            let remote_addr = SocketAddr::new(ip, candidate.port());
+            self.connect_futures.push(
+                async move {
+                    trace!("Initiating TCP connect to {:?}", remote_addr);
+                    let stream = runtime.connect_tcp(remote_addr).await?;
+                    let local_addr = stream
+                        .local_addr()
+                        .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+                    let peer_addr = stream.peer_addr().unwrap_or(remote_addr);
+                    Ok((
+                        FourTuple {
+                            local_addr,
+                            peer_addr,
+                        },
+                        stream,
+                    ))
+                }
+                .boxed(),
+            );
         }
     }
 }

@@ -1,5 +1,13 @@
 # SDK 基础模块
 
+## 自定义 ICE 服务
+
+创建实例时可指定 `ice_servers`，每项为非空 `urls` 数组及可选 `username`、`credential`。省略整个字段维持托管服务；显式数组完全替换托管来源，不合并、不失败回退；空数组仅收集 host 候选。JSON `null` 和未知字段拒绝。配置不能热更新，不影响身份、会话或租约授权。
+
+Rust 使用 `SdkConfig::set_ice_servers`；C ABI 使用同名 JSON 字段；Android 使用 `PeerloomConfiguration.iceServers` 和 `PeerloomIceServer`；iOS/macOS 使用同名 Swift 属性和类型。Kotlin `null` / Swift `nil` 省略字段。Windows/Linux C/C++ 均走 C ABI。ABI 仍为 1，旧配置兼容新库，但包含新字段的配置不能传给未支持此功能的旧库。
+
+当前原生传输只支持 UDP `stun:` / `turn:`。TURN 必须提供用户名和客户端凭据；不要把 TURN 服务端共享密钥交给客户端。`stuns:`、`turns:` 和 TCP 传输返回 `UNSUPPORTED`，语法错误、URL 嵌入凭据及无效配置返回 `INVALID_ARGUMENT`。自定义与托管下发均使用同一原生校验。最多 16 个服务、每项 16 个 URL，每个 URL 2048 字节，用户名和凭据各最多 4096 字节；C ABI 配置仍受 16 KiB 总长度约束。配置对象诊断不打印凭据；编码后的配置 JSON 用于传递给原生库，调用方不得记录它。
+
 本文说明 `src/device-sdk` 中的 `device-protocol` 和 `device-core`。真实传输适配见[原生传输模块](原生传输模块.md)；本文只描述协议与队列积木，不替代上层 SDK 和各平台验收。Rust 1.99.1，workspace 锁文件入库；协议与队列子模块本身不依赖网络运行时；device-core 新增身份与信令依赖见[SDK身份与信令模块](SDK身份与信令模块.md)。
 
 ```mermaid

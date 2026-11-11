@@ -291,3 +291,15 @@
              negotiated: None,
          });
          // Known from the wire: no deferral needed, and it must be registered so locally
+--- a/src/peer_connection/transport/ice/server.rs
++++ b/src/peer_connection/transport/ice/server.rs
+@@ -13 +13 @@
+-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Hash)]
++#[derive(Default, Clone, PartialEq, Serialize, Deserialize, Hash)]
+@@ -20,0 +21,6 @@
++}
++
++impl std::fmt::Debug for RTCIceServer {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("RTCIceServer(redacted)")
++    }

@@ -11,10 +11,11 @@
   },
   "patch": {
     "file": "应用补丁.patch",
-    "sha256": "4df8c92f6beab1fc934842fcaf9602adb4512ffa169ee7a3cd2aa65e98984b16",
+    "sha256": "b4d10041592c4467535ea01abfa47e9b926c125c4d22c491310fe235ef8fae79",
     "modified_files": [
       "Cargo.toml",
-      "src/data_channel/internal.rs"
+      "src/data_channel/internal.rs",
+      "src/peer_connection/transport/ice/server.rs"
     ],
     "kind": "Peerloom local correctness patch; not claimed as upstream merged"
   },
@@ -446,7 +447,7 @@
     },
     {
       "path": "src/peer_connection/transport/ice/server.rs",
-      "sha256": "94e2f73a5cf4b3438a8c0a340c8d88208e5b225b94c76a04804ad9a47ac02fbe",
+      "sha256": "15eda0fd157c1afa814f4aeb29f5933b1152b9bd11b6add25cf2110cd039ed6b",
       "upstream_sha256": "94e2f73a5cf4b3438a8c0a340c8d88208e5b225b94c76a04804ad9a47ac02fbe"
     },
     {

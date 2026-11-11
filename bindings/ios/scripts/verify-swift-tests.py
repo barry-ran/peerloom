@@ -13,6 +13,7 @@ EXPECTED = {
         "testReadRechecksAfterCallerActorResumes",
         "testTypedChildMetadataAndPartialWriteResult",
         "testOptionalCapacityDefaultsAndLargeValuesEncodeWithoutClamping",
+        "testCustomIceEncodingAndRedaction",
         "testEarlyCompletionsAndQuiescentRelease",
         "testExpiredBufferedReadyAndMessageAreNotDelivered",
         "testHostEventOverflowStopsInsteadOfDroppingAndContinuing",
@@ -34,7 +35,7 @@ def discovery(path):
     expected = {"PeerloomSwiftTests." + suite + "/" + method
                 for suite, methods in EXPECTED.items() for method in methods}
     if len(names) != len(expected) or set(names) != expected:
-        raise ValueError("XCTest discovery 必须精确覆盖当前两个 suite 的全部 15 项")
+        raise ValueError("XCTest discovery 必须精确覆盖当前两个 suite 的全部 16 项")
 
 
 def suite_completed(suite, path):

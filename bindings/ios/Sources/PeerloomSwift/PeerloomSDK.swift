@@ -1,6 +1,21 @@
 // MIT — Copyright (c) 2026 Peerloom contributors.
 import Foundation
 
+public struct PeerloomIceServer: Encodable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    public let urls: [String]
+    public let username: String?
+    public let credential: String?
+
+    public init(urls: [String], username: String? = nil, credential: String? = nil) {
+        self.urls = urls
+        self.username = username
+        self.credential = credential
+    }
+
+    public var description: String { "PeerloomIceServer(redacted)" }
+    public var debugDescription: String { description }
+}
+
 public struct PeerloomConfiguration: Encodable, Sendable {
     public let origin: String
     public let applicationID: String
@@ -12,6 +27,8 @@ public struct PeerloomConfiguration: Encodable, Sendable {
     public var maxChannelCreationsPerConnection = 0
     /// Separate native and host-owned byte budgets, not a bound on total process RSS.
     public var ffiResourceBudgetBytes = 134217728
+    /// nil 保持托管配置；空列表只使用 host 候选。
+    public var iceServers: [PeerloomIceServer]? = nil
     private let abiVersion = 1
     private let storage = "external"
     enum CodingKeys: String, CodingKey {
@@ -20,6 +37,7 @@ public struct PeerloomConfiguration: Encodable, Sendable {
         case maxConnections = "max_connections", maxChannelsPerConnection = "max_channels_per_connection"
         case maxChannelCreationsPerConnection = "max_channel_creations_per_connection"
         case ffiResourceBudgetBytes = "ffi_resource_budget_bytes"
+        case iceServers = "ice_servers"
     }
     public init(origin: String, applicationID: String) { self.origin = origin; self.applicationID = applicationID }
 }
