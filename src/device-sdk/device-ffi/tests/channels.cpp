@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <charconv>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
@@ -22,6 +23,10 @@ struct Completion {
     uint64_t channel;
     std::vector<uint8_t> bytes;
 };
+struct ConnectionTerminal {
+    uint32_t reason, cleanup;
+    std::string session;
+};
 struct Host {
     uint64_t sdk = 0;
     std::string config, snapshot, incoming;
@@ -29,6 +34,8 @@ struct Host {
     std::map<std::string, uint64_t> connections, channels;
     std::map<uint64_t, Completion> completions;
     std::set<uint64_t> closed_channels;
+    std::map<uint64_t, std::string> sessions;
+    std::map<uint64_t, ConnectionTerminal> closed_connections;
     std::set<uint64_t> seen;
     std::map<uint64_t, std::vector<std::vector<uint8_t>>> messages;
 };
@@ -44,6 +51,19 @@ static std::string field(const std::string &json, const char *key) {
     const auto end = json.find('"', value);
     assert(end != std::string::npos);
     return json.substr(value, end - value);
+}
+static uint32_t number(const std::string &json, const char *key) {
+    const std::string prefix = std::string("\"") + key + "\":";
+    const auto start = json.find(prefix);
+    assert(start != std::string::npos);
+    const char *first = json.data() + start + prefix.size();
+    const char *last = json.data() + json.size();
+    assert(first != last && *first >= '0' && *first <= '9');
+    uint32_t result = 0;
+    const auto parsed = std::from_chars(first, last, result);
+    assert(parsed.ec == std::errc{} && parsed.ptr != last);
+    assert(*parsed.ptr == ',' || *parsed.ptr == '}');
+    return result;
 }
 static void callback(uint64_t context, const dp_event *event) noexcept {
     try {
@@ -72,6 +92,7 @@ static void callback(uint64_t context, const dp_event *event) noexcept {
         case DP_EVENT_CONNECTION_READY:
             assert(event->connection);
             host.connections[field(json, "peer_device_id")] = event->connection;
+            host.sessions[event->connection] = field(json, "session_id");
             break;
         case DP_EVENT_MESSAGE:
             assert(bytes == binary);
@@ -89,7 +110,12 @@ static void callback(uint64_t context, const dp_event *event) noexcept {
         case DP_EVENT_CHANNEL_CLOSED:
             assert(event->channel && host.closed_channels.insert(event->channel).second);
             break;
-        case DP_EVENT_CONNECTION_CLOSED: break;
+        case DP_EVENT_CONNECTION_CLOSED:
+            if (event->connection) {
+                ConnectionTerminal terminal{event->status, number(json, "local_close_status"), field(json, "session_id")};
+                assert(host.closed_connections.emplace(event->connection, std::move(terminal)).second);
+            }
+            break;
         case DP_EVENT_SHUTDOWN: assert(event->status == DP_OK); ++host.shutdown; break;
         default: assert(false && "unexpected native channel event");
         }
@@ -283,6 +309,14 @@ int main() {
     completion(hosts[0], child(hosts[0], a, parent_stream, DP_CHANNEL_FINISH_WRITE));
     assert(completion(hosts[1], read(hosts[1], b, remote_parent, 64)).bytes.empty());
     completion(hosts[0], submit(hosts[0], DP_OP_CLOSE_CONNECTION, a));
+    wait([&] { return hosts[0].closed_connections.count(a) != 0; });
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto &terminal = hosts[0].closed_connections.at(a);
+        assert(terminal.session == hosts[0].sessions.at(a));
+        assert(terminal.reason == DP_CLOSED);
+        assert(terminal.cleanup == DP_OK);
+    }
     wait([&] { return hosts[0].closed_channels.count(parent_stream) && hosts[1].closed_channels.count(remote_parent); });
     assert(dp_channel_is_valid(hosts[0].sdk, a, stream) != DP_OK);
     assert(dp_connection_is_valid(hosts[0].sdk, other) == DP_OK);
@@ -298,5 +332,5 @@ int main() {
         while ((release_status = dp_sdk_release(host.sdk)) == DP_BUSY) { assert(std::chrono::steady_clock::now() < deadline); }
         assert(release_status == DP_OK);
     }
-    std::puts("C ABI three-device/two-connection typed messages + 256KiB stream/duplex/FIN + idle/pending-read close + parent fencing PASS");
+    std::puts("C ABI three-device/two-connection typed messages + 256KiB stream/duplex/FIN + idle/pending-read close + joined parent cleanup evidence/fencing PASS");
 }
