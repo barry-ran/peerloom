@@ -1,6 +1,5 @@
-use crate::peer_connection::driver::PeerConnectionDriverEvent;
 use crate::peer_connection::transport::{TcpReadResult, is_retryable_socket_recv_error};
-use crate::runtime::{AsyncTcpListener, AsyncTcpStream, Runtime, Sender};
+use crate::runtime::{AsyncTcpListener, AsyncTcpStream, Runtime};
 use bytes::BytesMut;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -29,7 +28,11 @@ pub(crate) type TcpAcceptResult = (
     io::Result<(Arc<dyn AsyncTcpStream>, SocketAddr)>,
 );
 
+pub(crate) type TcpConnectResult = io::Result<(FourTuple, Arc<dyn AsyncTcpStream>)>;
+
 pub(crate) struct RTCTcpTransport {
+    // Structured children: never spawn/detach a connect task outside the driver.
+    pub(crate) connect_futures: FuturesUnordered<BoxFuture<'static, TcpConnectResult>>,
     listeners: HashMap<SocketAddr, Arc<dyn AsyncTcpListener>>,
     streams: HashMap<FourTuple, Arc<dyn AsyncTcpStream>>,
     decoders: HashMap<FourTuple, TcpFrameDecoder>,
@@ -55,6 +58,7 @@ impl RTCTcpTransport {
         }
 
         Self {
+            connect_futures: FuturesUnordered::new(),
             listeners: tcp_listeners,
             streams: HashMap::new(),
             decoders: HashMap::new(),
@@ -271,43 +275,30 @@ impl RTCTcpTransport {
         candidates
     }
 
-    pub(crate) fn connect(
-        candidate: &Candidate,
-        runtime: Arc<dyn Runtime>,
-        tx: Sender<PeerConnectionDriverEvent>,
-    ) {
+    pub(crate) fn connect(&mut self, candidate: &Candidate, runtime: Arc<dyn Runtime>) {
         if candidate.network_type().is_tcp()
             && candidate.tcp_type() == rtc::ice::tcp_type::TcpType::Passive
             && let Ok(ip) = candidate.address().parse::<IpAddr>()
         {
             let remote_addr = SocketAddr::new(ip, candidate.port());
-            let runtime_clone = runtime.clone();
-            runtime.spawn(Box::pin(async move {
-                trace!("Initiating TCP connect to {:?}", remote_addr);
-                match runtime_clone.connect_tcp(remote_addr).await {
-                    Ok(stream) => {
-                        let local_addr = stream
-                            .local_addr()
-                            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
-                        let peer_addr = stream.peer_addr().unwrap_or(remote_addr);
-                        let four_tuple = FourTuple {
+            self.connect_futures.push(
+                async move {
+                    trace!("Initiating TCP connect to {:?}", remote_addr);
+                    let stream = runtime.connect_tcp(remote_addr).await?;
+                    let local_addr = stream
+                        .local_addr()
+                        .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+                    let peer_addr = stream.peer_addr().unwrap_or(remote_addr);
+                    Ok((
+                        FourTuple {
                             local_addr,
                             peer_addr,
-                        };
-                        // overflow: detached — this is a per-candidate task spawned by
-                        // `connect`, whose only remaining job is to hand the stream over. A
-                        // full channel parks this task alone; the driver is unaffected.
-                        let _ = tx
-                            .send(PeerConnectionDriverEvent::IncomingTcpStream(
-                                four_tuple, stream,
-                            ))
-                            .await;
-                    }
-                    Err(err) => {
-                        error!("Failed to connect TCP to {:?}: {}", remote_addr, err);
-                    }
+                        },
+                        stream,
+                    ))
                 }
-            }));
+                .boxed(),
+            );
         }
     }
 }
