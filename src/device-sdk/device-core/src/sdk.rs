@@ -137,8 +137,11 @@ impl CleanupOutcome {
         }
     }
     fn result(&self) -> Result<(), SdkError> {
-        self.0.lock().map_err(|_| SdkError::RequestOutcomeUnknown)?
-            .clone().unwrap_or(Err(SdkError::RequestOutcomeUnknown))
+        self.0
+            .lock()
+            .map_err(|_| SdkError::RequestOutcomeUnknown)?
+            .clone()
+            .unwrap_or(Err(SdkError::RequestOutcomeUnknown))
     }
 }
 
@@ -1768,13 +1771,22 @@ impl Actor {
             session.gate.close();
             session.guard.invalidate();
         }
-        let workers: Vec<_> = self.sessions.drain_sessions()
-            .filter_map(|mut session| session.worker.take().map(|worker| (session.gate.clone(), worker)))
+        let workers: Vec<_> = self
+            .sessions
+            .drain_sessions()
+            .filter_map(|mut session| {
+                session
+                    .worker
+                    .take()
+                    .map(|worker| (session.gate.clone(), worker))
+            })
             .collect();
         // Every retirement starts concurrently with the same bound, not N * five seconds.
         futures_util::future::join_all(workers.into_iter().map(|(gate, mut worker)| async move {
-            gate.cleanup.record(worker.retire(Duration::from_secs(5)).await);
-        })).await;
+            gate.cleanup
+                .record(worker.retire(Duration::from_secs(5)).await);
+        }))
+        .await;
     }
 }
 impl Drop for Actor {
@@ -2111,7 +2123,10 @@ mod tests {
     #[test]
     fn cleanup_evidence_is_unknown_until_recorded_and_failure_is_sticky() {
         let outcome = super::CleanupOutcome::default();
-        assert_eq!(outcome.result(), Err(super::SdkError::RequestOutcomeUnknown));
+        assert_eq!(
+            outcome.result(),
+            Err(super::SdkError::RequestOutcomeUnknown)
+        );
         outcome.record(Ok(()));
         assert_eq!(outcome.result(), Ok(()));
         let failure = super::SdkError::Transport(super::TransportError::Timeout);
@@ -2125,31 +2140,51 @@ mod tests {
         use super::*;
         fn worker(task: JoinHandle<Result<(), SdkError>>) -> Worker {
             let (control, _) = mpsc::channel(1);
-            Worker { control, stop: None, task }
+            Worker {
+                control,
+                stop: None,
+                task,
+            }
         }
         let mut success = worker(tokio::spawn(async { Ok(()) }));
         assert_eq!(success.retire(Duration::from_secs(1)).await, Ok(()));
-        let mut failure = worker(tokio::spawn(async { Err(SdkError::Transport(TransportError::Timeout)) }));
-        assert_eq!(failure.retire(Duration::from_secs(1)).await,
-            Err(SdkError::Transport(TransportError::Timeout)));
+        let mut failure = worker(tokio::spawn(async {
+            Err(SdkError::Transport(TransportError::Timeout))
+        }));
+        assert_eq!(
+            failure.retire(Duration::from_secs(1)).await,
+            Err(SdkError::Transport(TransportError::Timeout))
+        );
         let mut panic = worker(tokio::spawn(async { panic!("cleanup fixture") }));
-        assert_eq!(panic.retire(Duration::from_secs(1)).await, Err(SdkError::RequestOutcomeUnknown));
+        assert_eq!(
+            panic.retire(Duration::from_secs(1)).await,
+            Err(SdkError::RequestOutcomeUnknown)
+        );
         let mut pending = worker(tokio::spawn(std::future::pending()));
-        assert_eq!(pending.retire(Duration::ZERO).await, Err(SdkError::RequestOutcomeUnknown));
+        assert_eq!(
+            pending.retire(Duration::ZERO).await,
+            Err(SdkError::RequestOutcomeUnknown)
+        );
         assert!(pending.task.is_finished());
     }
 
     #[tokio::test]
     async fn connection_close_keeps_evidence_after_actor_or_generation_is_gone() {
         use super::*;
-        for expected in [Ok(()), Err(SdkError::RequestOutcomeUnknown),
-            Err(SdkError::Transport(TransportError::Timeout))] {
+        for expected in [
+            Ok(()),
+            Err(SdkError::RequestOutcomeUnknown),
+            Err(SdkError::Transport(TransportError::Timeout)),
+        ] {
             let (connection, gate, _) = channels::test_connection();
             gate.cleanup.record(expected.clone());
             assert_eq!(connection.close().await, expected);
         }
         let (connection, _, _) = channels::test_connection();
-        assert_eq!(connection.close().await, Err(SdkError::RequestOutcomeUnknown));
+        assert_eq!(
+            connection.close().await,
+            Err(SdkError::RequestOutcomeUnknown)
+        );
     }
     #[test]
     fn close_during_continuous_clock_read_is_observed_before_check_returns() {
@@ -2361,7 +2396,7 @@ mod tests {
         let id = uuid::Uuid::nil().to_string();
         let body = json!({"session_id":id,"negotiation_generation":1,"ice_servers":[]}).to_string();
         let gate = Arc::new(Gate {
-                cleanup: CleanupOutcome::default(),
+            cleanup: CleanupOutcome::default(),
             installation_closed: Arc::new(AtomicBool::new(false)),
             closed: AtomicBool::new(false),
             deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
@@ -2399,7 +2434,8 @@ mod tests {
             uuid::Uuid::nil().to_string(),
             None,
         )
-        .await.unwrap();
+        .await
+        .unwrap();
         server.await.unwrap();
         assert!(matches!(
             received.recv().await,

@@ -323,7 +323,9 @@ impl Drop for StreamWorker {
             let _ = request.result.send(Err(SdkError::Closed));
         }
         if !self.scope.gate.finished.load(Ordering::Acquire) {
-            self.scope.gate.finished(Err(SdkError::RequestOutcomeUnknown));
+            self.scope
+                .gate
+                .finished(Err(SdkError::RequestOutcomeUnknown));
         }
     }
 }
@@ -355,7 +357,10 @@ mod tests {
         assert_eq!(reader.close().await, Err(SdkError::RequestOutcomeUnknown));
         assert_eq!(writer.close().await, Err(SdkError::RequestOutcomeUnknown));
         parent.cleanup.record(Ok(()));
-        assert_eq!(parent.cleanup.result(), Err(SdkError::RequestOutcomeUnknown));
+        assert_eq!(
+            parent.cleanup.result(),
+            Err(SdkError::RequestOutcomeUnknown)
+        );
     }
     #[tokio::test]
     async fn earlier_ffi_deadline_expires_queued_stream_without_resuming_middle_bytes() {

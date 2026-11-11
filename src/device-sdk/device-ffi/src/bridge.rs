@@ -168,7 +168,9 @@ async fn sdk_event(sdk: &mut Option<DeviceSdk>) -> Option<SdkEvent> {
 // an accepted operation's terminal. Zero means the owned worker cleanup paths
 // reported success; it is not a guarantee that every OS/backend resource retired.
 fn closed_payload(session: &str, local_close_status: u32) -> Vec<u8> {
-    json!({"session_id":session,"local_close_status":local_close_status}).to_string().into_bytes()
+    json!({"session_id":session,"local_close_status":local_close_status})
+        .to_string()
+        .into_bytes()
 }
 async fn close_connections(connections: &mut HashMap<u64, (String, crate::channels::Task)>) {
     let mut closes = tokio::task::JoinSet::new();
@@ -560,7 +562,8 @@ mod tests {
     #[test]
     fn closed_payload_preserves_session_and_never_upgrades_unknown() {
         for status in [OK, CLOSED, UNKNOWN, INTERNAL] {
-            let value: serde_json::Value = serde_json::from_slice(&closed_payload("session", status)).unwrap();
+            let value: serde_json::Value =
+                serde_json::from_slice(&closed_payload("session", status)).unwrap();
             assert_eq!(value["session_id"], "session");
             assert_eq!(value["local_close_status"], status);
         }

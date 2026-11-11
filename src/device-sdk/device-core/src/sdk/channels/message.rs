@@ -251,7 +251,9 @@ impl Drop for MessageWorker {
             let _ = completion.send(Err(SdkError::Closed));
         }
         if !self.scope.gate.finished.load(Ordering::Acquire) {
-            self.scope.gate.finished(Err(SdkError::RequestOutcomeUnknown));
+            self.scope
+                .gate
+                .finished(Err(SdkError::RequestOutcomeUnknown));
         }
     }
 }

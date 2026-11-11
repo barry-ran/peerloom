@@ -193,12 +193,8 @@ impl RawChannel {
     }
     async fn close(&mut self) -> Result<(), SdkError> {
         match self {
-            Self::Message(raw, _) => {
-                raw.close().await.map_err(SdkError::Transport)
-            }
-            Self::Stream(raw) => {
-                raw.close().await.map_err(stream_error)
-            }
+            Self::Message(raw, _) => raw.close().await.map_err(SdkError::Transport),
+            Self::Stream(raw) => raw.close().await.map_err(stream_error),
         }
     }
 }
@@ -341,7 +337,9 @@ struct ChannelRunCleanup {
 impl Drop for ChannelRunCleanup {
     fn drop(&mut self) {
         if !self.joined {
-            self.parent.cleanup.record(Err(SdkError::RequestOutcomeUnknown));
+            self.parent
+                .cleanup
+                .record(Err(SdkError::RequestOutcomeUnknown));
         }
     }
 }
@@ -360,7 +358,10 @@ pub(super) async fn run(
     peer_device_id: String,
     request_id: Option<String>,
 ) -> Result<(), SdkError> {
-    let mut cleanup = ChannelRunCleanup { parent: parent.clone(), joined: false };
+    let mut cleanup = ChannelRunCleanup {
+        parent: parent.clone(),
+        joined: false,
+    };
     let active = Arc::new(ActiveChannels {
         used: AtomicUsize::new(0),
         limit: active_limit,
@@ -669,8 +670,14 @@ mod gate_tests {
     #[tokio::test]
     async fn dropping_unjoined_channel_run_never_proves_cleanup() {
         let parent = Arc::new(Gate::default());
-        drop(ChannelRunCleanup { parent: parent.clone(), joined: false });
+        drop(ChannelRunCleanup {
+            parent: parent.clone(),
+            joined: false,
+        });
         parent.cleanup.record(Ok(()));
-        assert_eq!(parent.cleanup.result(), Err(SdkError::RequestOutcomeUnknown));
+        assert_eq!(
+            parent.cleanup.result(),
+            Err(SdkError::RequestOutcomeUnknown)
+        );
     }
 }

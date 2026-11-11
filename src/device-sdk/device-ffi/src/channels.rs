@@ -599,11 +599,16 @@ pub fn spawn_connection(
         let mut retired_children_status = OK;
         loop {
             // Reclaim finished children without discarding their actual cleanup outcome.
-            let finished: Vec<_> = children.iter().filter(|(_, child)| child.join.is_finished())
-                .map(|(id, _)| *id).collect();
+            let finished: Vec<_> = children
+                .iter()
+                .filter(|(_, child)| child.join.is_finished())
+                .map(|(id, _)| *id)
+                .collect();
             for id in finished {
                 if let Some(child) = children.remove(&id) {
-                    if child.close().await != OK { retired_children_status = UNKNOWN; }
+                    if child.close().await != OK {
+                        retired_children_status = UNKNOWN;
+                    }
                 }
             }
             if *stopped.borrow() || !gate.is_valid() {
@@ -675,7 +680,9 @@ pub fn spawn_connection(
         let pending = drain(&instance, &mut commands);
         // Close core parent first, invalidating every child's in-flight/read gates.
         let mut status = connection.close().await.err().map(error).unwrap_or(OK);
-        if retired_children_status != OK { status = retired_children_status; }
+        if retired_children_status != OK {
+            status = retired_children_status;
+        }
         let mut closes = JoinSet::new();
         for (_, child) in children {
             closes.spawn(child.close());
@@ -751,12 +758,22 @@ mod tests {
         let budget = crate::budget::Budget::new(crate::budget::MIN_BYTES).unwrap();
         let (commands, _receiver) = queue::channel(budget);
         let (stop, _) = watch::channel(false);
-        Task { commands, closed: None, stop, join }
+        Task {
+            commands,
+            closed: None,
+            stop,
+            join,
+        }
     }
     #[tokio::test]
     async fn task_close_preserves_real_cleanup_result_not_just_join_success() {
         for status in [OK, CLOSED, UNKNOWN, INTERNAL] {
-            assert_eq!(task_with_join(tokio::spawn(async move { status })).close().await, status);
+            assert_eq!(
+                task_with_join(tokio::spawn(async move { status }))
+                    .close()
+                    .await,
+                status
+            );
         }
     }
     #[tokio::test]
@@ -764,9 +781,20 @@ mod tests {
         let aborted = tokio::spawn(std::future::pending::<u32>());
         aborted.abort();
         assert_eq!(task_with_join(aborted).close().await, INTERNAL);
-        assert_eq!(task_with_join(tokio::spawn(async { panic!("fixture"); })).close().await, INTERNAL);
-        assert_eq!(task_with_join(tokio::spawn(std::future::pending::<u32>()))
-            .close_with_budget(Duration::ZERO).await, UNKNOWN);
+        assert_eq!(
+            task_with_join(tokio::spawn(async {
+                panic!("fixture");
+            }))
+            .close()
+            .await,
+            INTERNAL
+        );
+        assert_eq!(
+            task_with_join(tokio::spawn(std::future::pending::<u32>()))
+                .close_with_budget(Duration::ZERO)
+                .await,
+            UNKNOWN
+        );
     }
     #[test]
     fn wire_modes_are_strict_and_stream_rejects_message_drop_options() {
