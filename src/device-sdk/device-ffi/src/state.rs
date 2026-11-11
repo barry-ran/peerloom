@@ -800,7 +800,9 @@ mod reset_tests {
                 .get_mut(&request)
                 .is_none()
         );
-        drop(task);
+        // The operation reports CLOSED, but a separately joined worker supplies
+        // positive cleanup evidence. Neither fact substitutes for the other.
+        assert_eq!(task.close().await, OK);
         assert!(events.try_recv().is_err());
     }
     #[test]

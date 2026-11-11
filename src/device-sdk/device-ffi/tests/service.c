@@ -10,9 +10,10 @@
 
 typedef struct host {
     uint64_t sdk, connection, revision;
-    char config[16384], snapshot[16384], incoming[64];
+    char config[16384], snapshot[16384], incoming[64], session[37];
     unsigned online, messages, saves, shutdown, flood_completions;
     unsigned offline, closed, last_closed_status;
+    unsigned owned_closed, local_close_status, owned_closed_reason;
     unsigned deletions, delete_started, allow_delete_reply;
     uint64_t accepted_business, accepted_flood, rejected_full;
     uint64_t completions[128]; uint32_t statuses[128]; unsigned count;
@@ -77,11 +78,32 @@ static void callback(uint64_t context, const dp_event *event) {
         assert(strlen(id)>=36 && id[36]=='"'); memcpy(h->incoming,id,36); h->incoming[36]=0;
         break;
     }
-    case DP_EVENT_CONNECTION_READY: h->connection=event->connection; assert(h->connection); break;
+    case DP_EVENT_CONNECTION_READY: {
+        h->connection=event->connection; assert(h->connection);
+        const char *id=value(json,"\"session_id\":\"");
+        assert(strlen(id)>=36 && id[36]=='"');
+        memcpy(h->session,id,36); h->session[36]=0;
+        break;
+    }
     case DP_EVENT_MESSAGE:
         assert(event->payload_len==sizeof(message) && !memcmp(event->payload,message,sizeof(message)));
         ++h->messages; break;
-    case DP_EVENT_CONNECTION_CLOSED: ++h->closed; h->last_closed_status=event->status; break;
+    case DP_EVENT_CONNECTION_CLOSED: {
+        ++h->closed; h->last_closed_status=event->status;
+        if (event->connection && event->connection==h->connection) {
+            const char *id=value(json,"\"session_id\":\"");
+            assert(strlen(id)>=36 && id[36]=='"' && !memcmp(id,h->session,36));
+            const char *status=value(json,"\"local_close_status\":");
+            assert(*status>='0' && *status<='9');
+            char *end=NULL;
+            const unsigned long parsed=strtoul(status,&end,10);
+            assert(end!=status && (*end==',' || *end=='}') && parsed<=UINT32_MAX);
+            h->local_close_status=(unsigned)parsed;
+            h->owned_closed_reason=event->status;
+            ++h->owned_closed;
+        }
+        break;
+    }
     case DP_EVENT_SHUTDOWN: ++h->shutdown; break;
     default: assert(!"unexpected SDK event");
     }
@@ -224,6 +246,13 @@ int main(void) {
         uint64_t close=submit(&hosts[0],DP_OP_CLOSE_CONNECTION,hosts[0].connection,NULL,0);
         assert(dp_sdk_submit(hosts[0].sdk,DP_OP_SEND,hosts[0].connection,message,sizeof(message),&ignored)==DP_CLOSED && !ignored);
         complete(&hosts[0],close);
+        wait_count(&hosts[0].owned_closed,1);
+        pthread_mutex_lock(&mutex);
+        assert(hosts[0].owned_closed==1);
+        assert(hosts[0].owned_closed_reason==DP_CLOSED);
+        assert(hosts[0].local_close_status==DP_OK);
+        pthread_mutex_unlock(&mutex);
+        puts("C ABI close: matching session/handle, terminal reason CLOSED, joined local cleanup OK PASS");
     }
     for(unsigned i=0;i<2;++i){uint64_t id;assert(dp_sdk_shutdown(hosts[i].sdk,&id)==DP_OK);wait_count(&hosts[i].shutdown,1);uint32_t status=DP_BUSY;for(unsigned n=0;n<10000&&status==DP_BUSY;++n){status=dp_sdk_release(hosts[i].sdk);if(status==DP_BUSY){struct timespec delay={0,1000000};nanosleep(&delay,NULL);}}assert(status==DP_OK);}
     pthread_mutex_lock(&mutex);

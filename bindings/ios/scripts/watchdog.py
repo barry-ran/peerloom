@@ -12,15 +12,30 @@ import signal
 import subprocess
 import sys
 import time
+from apple_launch_diagnostics import LaunchDiagnostics
 
 
-def run(command, timeout, grace, log_path, status_path, stdout_path=None):
+def diagnostic_action(diagnostics, method, *args):
+    # 旁路取证的解析/文件/工具错误不能改变测试结果或跳过主进程组清理。
+    try:
+        getattr(diagnostics, method)(*args)
+    except Exception:
+        diagnostics.errors.append(method + ":internal-error")
+        diagnostics.enabled = False
+        try:
+            diagnostics.close()
+        except Exception:
+            diagnostics.errors.append("close:internal-error")
+
+
+def run(command, timeout, grace, log_path, status_path, stdout_path=None, apple_launch_diagnostics=False):
     started = time.monotonic()
     status = {"started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "timeout_seconds": timeout, "classification": "starting"}
     interrupted = []
     previous = {}
     process = None
+    diagnostics = None
     group_cleanup_completed = False
     selector = selectors.DefaultSelector()
     # Existing evidence must not be overwritten by a repeated phase.
@@ -34,6 +49,8 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
         try:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        stdin=subprocess.DEVNULL, start_new_session=True)
+            if apple_launch_diagnostics:
+                diagnostics = LaunchDiagnostics(process, command, log_path, started)
             os.set_blocking(process.stdout.fileno(), False)
             os.set_blocking(process.stderr.fileno(), False)
             selector.register(process.stdout, selectors.EVENT_READ, "stdout")
@@ -49,6 +66,8 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
                     reason = "interrupted" if interrupted else "timeout"
                     terminate_at = now
                     signal_group(process.pid, signal.SIGTERM)
+                    if diagnostics is not None:
+                        diagnostic_action(diagnostics, "close")
                 if terminate_at is not None and killed_at is None and now >= terminate_at + grace:
                     # The leader may already have exited; descendants still belong to our group.
                     signal_group(process.pid, signal.SIGKILL)
@@ -66,7 +85,9 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
                     else:
                         selector.unregister(key.fileobj)
                         streams_open -= 1
-                code = process.poll()
+                if diagnostics is not None and reason is None:
+                    diagnostic_action(diagnostics, "tick", now)
+                code = None if diagnostics is not None and diagnostics.holds_target_pid else process.poll()
                 if reason is None and code is not None and not streams_open:
                     result = code if code >= 0 else 128 - code
                     status["classification"] = "passed" if code == 0 else "failed"
@@ -87,6 +108,9 @@ def run(command, timeout, grace, log_path, status_path, stdout_path=None):
         except OSError:
             status["classification"] = "launch-or-io-error"
         finally:
+            if diagnostics is not None:
+                diagnostic_action(diagnostics, "close")
+                status["launch_diagnostics"] = diagnostics.summary()
             if process is not None:
                 # Only skip redundant signals after the timeout/interruption loop has
                 # already completed group SIGKILL AND reaped our leader. Ordinary
@@ -132,6 +156,7 @@ def main():
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--status", type=Path, required=True)
     parser.add_argument("--stdout", type=Path, help="可选：只保存 stdout，便于严格解析 JSON/UUID")
+    parser.add_argument("--apple-launch-diagnostics", action="store_true", help="仅为本次 iOS XCTest 采集有界只读启动诊断")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -139,7 +164,7 @@ def main():
         parser.error("需要命令、0–3600 秒期限和 0–10 秒终止宽限")
     os.umask(0o077)
     try:
-        return run(command, args.timeout, args.grace, args.log, args.status, args.stdout)
+        return run(command, args.timeout, args.grace, args.log, args.status, args.stdout, args.apple_launch_diagnostics)
     except FileExistsError:
         print("拒绝覆盖已有测试证据", file=sys.stderr)
         return 2

@@ -1,0 +1,6 @@
+A筛查原始.jsonl send-owned 4 条件：delta与CI全部重现
+A小包延长原始.jsonl send-owned 1 条件：delta与CI全部重现
+B筛查原始.jsonl receive-owned 4 条件：delta与CI全部重现
+C1完整矩阵.jsonl capacity-notify 10 条件：delta与CI全部重现
+C2筛查原始.jsonl retained-permit 3 条件：delta与CI全部重现
+A2完整矩阵.jsonl full-frame-owned 10 条件：delta与CI全部重现

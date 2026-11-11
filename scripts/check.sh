@@ -9,6 +9,7 @@ python3 scripts/test-control-recovery-script.py
 python3 scripts/test-lifecycle-script.py
 python3 scripts/test-capacity-controller.py
 python3 scripts/test-capacity-ci.py
+python3 scripts/tests/test_stream_performance_summary.py
 python3 scripts/test-multiconnection-fixture.py
 python3 scripts/test-managed-relay-script.py
 python3 scripts/test-managed-relay-helper.py
@@ -41,6 +42,13 @@ python3 bindings/android/scripts/test-maven-evidence.py
   cargo fmt --all -- --check
   cargo clippy --workspace --all-targets --locked -- -D warnings
   cargo test --workspace --locked
+  if [[ "$(uname -s)" == Linux ]]; then
+    # 真实 UDP worker 回归不属于默认单测；只跳过显式性能测量。
+    timeout --signal=TERM --kill-after=10s 180s \
+      cargo test -p device-core --lib --locked \
+      sdk::channels::stream::tests::worker_performance:: -- \
+      --ignored --skip sdk_worker_backpressure_performance --nocapture --test-threads=1
+  fi
   cargo test -p webrtc --lib --locked peer_connection::driver::turn_flush_regression::core_relay_packet_must_reach_socket_in_same_flush_without_another_wake -- --exact
   cargo test -p webrtc --lib --locked peer_connection::driver::buffered_amount_advisory_regression::
 )

@@ -68,6 +68,22 @@ unsafe 仅限 `boundary.rs` 的 C 指针/导出边界；Rust core/storage/transp
 
 completion 可能早于 `submit` 返回；宿主应按 request ID 关联，不假设线程时序。连接 Ready 与消息在 callback 派发前再次检查只读 `ConnectionValidity`、本地关闭与 shutdown 状态。已经开始的 callback 或已经提交的网络发送不可追回。
 
+### 连接关闭证据
+
+`CONNECTION_CLOSED`（事件 7）保留原 `session_id`，增加可选整数 `local_close_status`。它与事件本身的 reason/status、已受理请求的 completion 独立：事件表示连接不可再使用，completion 结算请求，新增字段报告本地 worker 所观察的清理结果。ABI 仍为 1，C 结构和公开 Rust 事件类型不变，旧消费者应忽略未知 JSON 字段。
+
+`local_close_status=OK` 只表示拥有的 worker 清理路径返回成功，不保证全部操作系统或后端物理资源已退休。core 每代连接保留清理证据，只有 owner 实际 join 完成后才能发布成功，worker 返回前只能提前记录失败；已失败的 child/transport 清理不会被后续成功覆盖；worker panic、超时强制取消、未完成构建任务被取消或缺少对应 task 时返回非成功/未知。父连接失效仅禁止后续使用，不再冒充 child 清理完成；正常关闭等待已拥有的 child 清理和 join。流 reader 与 writer 的清理结果都会汇总。SEND 子任务的 panic 或取消同样保留为非成功，即使已在正常运行时回收，也不会被后续成功发送或关闭覆盖。重建 generation 不会覆盖旧句柄持有的证据。 对端先关闭导致底层句柄已移除时，transport 只有明确观察到该通道的 `OnClose` 才将重复关闭视为完成；必要时在原关闭总预算内读取排队终态。`OnError`、事件流结束或单纯 `Closed` 错误不能代替此证据，后来的 `OnClose` 不抹去已观察的错误。
+
+```mermaid
+flowchart LR
+    Fence[关闭授权 gate] --> Child[等待已拥有 child 清理]
+    Child --> Join[等待 worker join]
+    Join --> Evidence[保存当前代清理结果]
+    Evidence --> FFI[汇总 FFI worker 结果]
+    FFI --> Event[事件 7 可选 local_close_status]
+    Unknown[超时 / panic / 缺失证据] --> Evidence
+```
+
 ### Typed channel 与多连接
 
 保留原操作 1..7 与 `dp_event` 原字段偏移；`channel` 只追加在结构末尾，读取前检查 `struct_size`。新增 `OPEN_CHANNEL` 返回 child handle；对端开通道通过 `CHANNEL_READY` 通知。Ready 包含 session/generation/peer DeviceID，源端保留 CONNECT 的 request 关联，失败不冒用另一个连接。 CONNECTION_READY 的 JSON 增加可选 `ice_gathering` 元数据（`complete`、`partial_at_deadline`，未完成时为 `pending`）；只描述本地 SDP 收集状态，不表示连接类型或绕过授权。旧字段与 C 结构布局不变；消费 JSON 的应用应忽略未知可选字段。Kotlin/Swift 包装继续传递受 gate 保护的 payload，不使用拒绝未知字段的 Ready 解码器。

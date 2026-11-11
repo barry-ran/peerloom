@@ -1,0 +1,12 @@
+    Finished `release` profile [optimized] target(s) in 0.12s
+     Running unittests src/lib.rs (/tmp/peerloom-performance-target/release/deps/device_core-852e03f30bb359e9)
+
+running 5 tests
+test sdk::channels::stream::tests::worker_performance::full_delivery_queue_keeps_reverse_write_and_parent_expiry_live ... ok
+test sdk::channels::stream::tests::worker_performance::full_delivery_queue_observes_unnotified_continuous_expiry ... ok
+test sdk::channels::stream::tests::worker_performance::full_delivery_queue_observes_unnotified_installation_close ... ok
+test sdk::channels::stream::tests::worker_performance::full_delivery_queue_reader_drop_releases_worker_and_budget ... ok
+test sdk::channels::stream::tests::worker_performance::reserved_empty_queue_reader_drop_releases_worker_and_budget ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 3.05s
+

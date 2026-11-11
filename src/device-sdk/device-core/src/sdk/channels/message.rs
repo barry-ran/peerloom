@@ -230,9 +230,9 @@ impl MessageWorker {
                 let _ = completion.send(Err(SdkError::Closed));
             }
         }
-        let _ = raw.close().await;
+        let cleanup = raw.close().await.map_err(SdkError::Transport);
         drop(_permit);
-        self.scope.gate.finished();
+        self.scope.gate.finished(cleanup);
         result
     }
 }
@@ -250,7 +250,11 @@ impl Drop for MessageWorker {
         for (_, completion) in std::mem::take(&mut state.completions) {
             let _ = completion.send(Err(SdkError::Closed));
         }
-        self.scope.gate.finished();
+        if !self.scope.gate.finished.load(Ordering::Acquire) {
+            self.scope
+                .gate
+                .finished(Err(SdkError::RequestOutcomeUnknown));
+        }
     }
 }
 

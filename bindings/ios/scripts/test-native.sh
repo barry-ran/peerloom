@@ -20,9 +20,14 @@ DEVICE=''
 run() {
   local name=$1 seconds=$2
   shift 2
+  if [[ "$name" == ios-simulator ]]; then
+    set -- --apple-launch-diagnostics -- "$@"
+  else
+    set -- -- "$@"
+  fi
   printf '\n[Apple phase start] %s\n' "$name"
   if python3 "$HERE/scripts/watchdog.py" --timeout "$seconds" \
-      --log "$OUT/phase-$name.log" --status "$OUT/phase-$name.json" -- "$@"; then
+      --log "$OUT/phase-$name.log" --status "$OUT/phase-$name.json" "$@"; then
     printf '[Apple phase passed] %s\n' "$name"
   else
     local status=$?

@@ -1,0 +1,4 @@
+    Checking device-transport-webrtc v0.1.5 (/workspace/shared/peerloom-performance/src/device-sdk/device-transport-webrtc)
+    Checking device-core v0.1.5 (/workspace/shared/peerloom-performance/src/device-sdk/device-core)
+    Checking device-ffi v0.1.5 (/workspace/shared/peerloom-performance/src/device-sdk/device-ffi)
+    Finished `release` profile [optimized] target(s) in 4.14s

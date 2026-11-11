@@ -106,7 +106,9 @@ iOS 测试使用 `SimulatorHost` 中的空应用宿主和显式 XCTest target，
 
 此夹具仅支持 `iphonesimulator`，使用本地 ad-hoc Simulator 签名；不设置虚构 Team ID、不导入证书、不请求 provisioning profile。Keychain group 由 Xcode 展开标准 `$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)`，门禁检查实际 xctestrun 宿主及 Xcode 生成的 `.xcent`；Simulator entitlement 也可能被放入 Mach-O，而非代码签名，因此只看 `codesign` 不能冒充完整权限验收。应用宿主只是测试容器，没有业务 UI。该宿主已在上述精确提交中通过真实 CI；新增测试仍须当前门禁确认，不能外推为真机或生产 macOS DP 签名权限通过。
 
-为尽快定位模拟器问题，CI 先构建独立单 arm64 Simulator 诊断包并执行相同 12 项测试；此产物不是发布 XCFramework。诊断通过后仍须完成全部五 slice 构建与全部原生门禁，失败不会跳过检查晋级。
+为尽快定位模拟器问题，CI 先构建独立单 arm64 Simulator 诊断包并执行相同完整 XCTest 集合；此产物不是发布 XCFramework。诊断通过后仍须完成全部五 slice 构建与全部原生门禁，失败不会跳过检查晋级。
+
+当同一次 iOS XCTest 命令运行超过60秒时，watchdog 仅对自己创建的 xcodebuild PID 进行一次5秒符号栈采样，并读取最近1分钟的该 xcodebuild 日志，以及包含本设备 ID、本测试宿主或错误信息的宿主 CoreSimulator/debugserver 日志，不开启全局 debug 日志。每个诊断工具独立限时10秒，输入及最终证据各限1 MiB；不主动读取 argv/环境，丢弃含凭据/环境关键词的日志，匿名化 URL 与用户目录后保存到既有诊断 artifact。此过滤只用于测试夹具诊断，不是任意日志的通用脱敏器。采样退出或成功收到 SIGKILL 前保留测试进程 PID；未确认回收的诊断工具单独记录，绝不视为成功退出。诊断不修改签名、调试器、模拟器或测试集合，不延长原180秒测试期限，也不改变测试退出码；采集失败独立记录，不算原生通过。
 
 Linux 可运行 `python3 bindings/ios/scripts/test-static.py`，只覆盖打包边界与脚本，不替代原生运行。上述精确提交的原 14/12 项、独立服务场景及包装均已真实通过；服务 artifact `12847506114` 的 SHA256 为 `f37a8c7582c96904bccba29ba2b1ace370b84a93fe719d3b51d37b78386412c1`，明确记录 Swift 首次注册与重开同 ID。release-profile artifact `12847091166` 已通过未修改的 `release-policy.verify_zip` 整包校验，包含三平台变体/五架构、统一规范 C 头、notice/SBOM 与已记录缺项；正式交付仍须当前提交所有必需门禁及审核后的发布步骤。项目 MIT 不覆盖第三方，证据收集不等于法律清关，也不等于生产签名或真机验收。
 

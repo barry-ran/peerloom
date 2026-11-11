@@ -125,8 +125,38 @@ pub enum SdkEvent {
     IdentityPersistencePending,
 }
 
+// Private generation-local evidence. Missing evidence is never success, and a
+// failure cannot be overwritten by a later successful join.
+#[derive(Default)]
+struct CleanupOutcome(Mutex<Option<Result<(), SdkError>>>);
+impl CleanupOutcome {
+    fn record(&self, result: Result<(), SdkError>) {
+        let mut value = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if !matches!(*value, Some(Err(_))) {
+            *value = Some(result);
+        }
+    }
+    // Computing a worker's return value must not publish success before its
+    // owner has joined it. Earlier failures remain visible during that interval.
+    fn merge_result(&self, result: Result<(), SdkError>) -> Result<(), SdkError> {
+        let value = self.0.lock().map_err(|_| SdkError::RequestOutcomeUnknown)?;
+        match value.as_ref() {
+            Some(Err(error)) => Err(error.clone()),
+            _ => result,
+        }
+    }
+    fn result(&self) -> Result<(), SdkError> {
+        self.0
+            .lock()
+            .map_err(|_| SdkError::RequestOutcomeUnknown)?
+            .clone()
+            .unwrap_or(Err(SdkError::RequestOutcomeUnknown))
+    }
+}
+
 #[derive(Default)]
 struct Gate {
+    cleanup: CleanupOutcome,
     installation_closed: Arc<AtomicBool>,
     closed: AtomicBool,
     deadline: Mutex<Option<Instant>>,
@@ -240,13 +270,14 @@ impl Connection {
         .await
         {
             Ok(Ok(())) => {}
-            Ok(Err(_)) => return Ok(()),
+            Ok(Err(_)) => return self.gate.cleanup.result(),
             Err(_) => return Err(SdkError::QueueFull),
         }
         tokio::time::timeout(Duration::from_secs(12), completion)
             .await
             .map_err(|_| SdkError::Transport(TransportError::Timeout))?
-            .map_err(|_| SdkError::Closed)
+            .map_err(|_| SdkError::Closed)?;
+        self.gate.cleanup.result()
     }
 }
 impl Drop for Connection {
@@ -449,7 +480,23 @@ enum Internal {
 struct Worker {
     control: mpsc::Sender<SessionDescription>,
     stop: Option<oneshot::Sender<()>>,
-    task: JoinHandle<()>,
+    task: JoinHandle<Result<(), SdkError>>,
+}
+impl Worker {
+    async fn retire(&mut self, budget: Duration) -> Result<(), SdkError> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        match tokio::time::timeout(budget, &mut self.task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(SdkError::RequestOutcomeUnknown),
+            Err(_) => {
+                self.task.abort();
+                let _ = (&mut self.task).await;
+                Err(SdkError::RequestOutcomeUnknown)
+            }
+        }
+    }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
@@ -1584,7 +1631,7 @@ impl Actor {
                 peer_device_id,
                 request_id,
             )
-            .await;
+            .await
         });
         session.worker = Some(Worker {
             control,
@@ -1652,16 +1699,8 @@ impl Actor {
         };
         session.gate.close();
         if let Some(mut worker) = session.worker.take() {
-            if let Some(stop) = worker.stop.take() {
-                let _ = stop.send(());
-            }
-            if tokio::time::timeout(Duration::from_secs(5), &mut worker.task)
-                .await
-                .is_err()
-            {
-                worker.task.abort();
-                let _ = (&mut worker.task).await;
-            }
+            let result = worker.retire(Duration::from_secs(5)).await;
+            session.gate.cleanup.record(result);
         }
     }
     async fn prepare_recovery(&mut self, id: &str, reason: SdkError) -> Result<(), SdkError> {
@@ -1741,31 +1780,22 @@ impl Actor {
             session.gate.close();
             session.guard.invalidate();
         }
-        let mut workers: Vec<Worker> = self
+        let workers: Vec<_> = self
             .sessions
             .drain_sessions()
-            .filter_map(|mut session| session.worker.take())
+            .filter_map(|mut session| {
+                session
+                    .worker
+                    .take()
+                    .map(|worker| (session.gate.clone(), worker))
+            })
             .collect();
-        for worker in &mut workers {
-            if let Some(stop) = worker.stop.take() {
-                let _ = stop.send(());
-            }
-        }
-        // All joins share one bound; never N * five seconds on SDK/reset shutdown.
-        if tokio::time::timeout(
-            Duration::from_secs(5),
-            futures_util::future::join_all(workers.iter_mut().map(|worker| &mut worker.task)),
-        )
-        .await
-        .is_err()
-        {
-            for worker in &workers {
-                worker.task.abort();
-            }
-            let _ =
-                futures_util::future::join_all(workers.iter_mut().map(|worker| &mut worker.task))
-                    .await;
-        }
+        // Every retirement starts concurrently with the same bound, not N * five seconds.
+        futures_util::future::join_all(workers.into_iter().map(|(gate, mut worker)| async move {
+            gate.cleanup
+                .record(worker.retire(Duration::from_secs(5)).await);
+        }))
+        .await;
     }
 }
 impl Drop for Actor {
@@ -1884,7 +1914,7 @@ async fn transport_worker(
     outbound: OutboundBudget,
     peer_device_id: String,
     request_id: Option<String>,
-) {
+) -> Result<(), SdkError> {
     if let Some(relay) = managed_relay {
         let fetch = async {
             gate.check()?;
@@ -1905,7 +1935,7 @@ async fn transport_worker(
                 // The actor may already be awaiting this worker during close.
                 // Do not wait for space in its own full internal event queue.
                 let _ = events.try_send(Internal::Closed(id.clone(), generation, SdkError::Closed));
-                return;
+                return Ok(());
             },
             result = fetch => result,
         };
@@ -1914,7 +1944,7 @@ async fn transport_worker(
             Err(error) => {
                 gate.close();
                 report_worker_closed(&events, id, generation, error, &mut stop).await;
-                return;
+                return Ok(());
             }
         }
     }
@@ -1935,7 +1965,7 @@ async fn transport_worker(
                 &mut stop,
             )
             .await;
-            return;
+            return Ok(());
         }
     };
     let operation = async {
@@ -2033,15 +2063,29 @@ async fn transport_worker(
         )
         .await
     };
-    let result = tokio::select! {
-        biased;
-        _ = &mut stop => None,
-        result = operation => Some(result),
+    let result = {
+        tokio::pin!(operation);
+        tokio::select! {
+            biased;
+            _ = &mut stop => {
+                gate.close();
+                // Let established channel workers perform their owned cleanup.
+                // Negotiation may not observe the gate, so keep this bounded.
+                if tokio::time::timeout(Duration::from_secs(3), &mut operation).await.is_err() {
+                    gate.cleanup.record(Err(SdkError::RequestOutcomeUnknown));
+                }
+                None
+            },
+            result = &mut operation => Some(result),
+        }
     };
     #[cfg(feature = "test-diagnostics")]
     diagnostic.enter("closing");
     gate.close();
-    let _ = peer.close().await;
+    let cleanup = peer.close().await.map_err(SdkError::Transport);
+    if let Err(error) = &cleanup {
+        gate.cleanup.record(Err(error.clone()));
+    }
     if let Some(result) = result {
         report_worker_closed(
             &events,
@@ -2052,6 +2096,7 @@ async fn transport_worker(
         )
         .await;
     }
+    gate.cleanup.merge_result(cleanup)
 }
 
 async fn report_worker_closed(
@@ -2086,6 +2131,114 @@ fn recoverable_transport_error(error: &SdkError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cleanup_evidence_is_unknown_until_recorded_and_failure_is_sticky() {
+        let outcome = super::CleanupOutcome::default();
+        assert_eq!(
+            outcome.result(),
+            Err(super::SdkError::RequestOutcomeUnknown)
+        );
+        outcome.record(Ok(()));
+        assert_eq!(outcome.result(), Ok(()));
+        let failure = super::SdkError::Transport(super::TransportError::Timeout);
+        outcome.record(Err(failure.clone()));
+        outcome.record(Ok(()));
+        assert_eq!(outcome.result(), Err(failure));
+    }
+
+    #[tokio::test]
+    async fn worker_success_is_not_published_before_owner_joins() {
+        use super::*;
+        let gate = Arc::new(Gate::default());
+        let worker_gate = gate.clone();
+        let (returned, observed) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = worker_gate.cleanup.merge_result(Ok(()));
+            returned.send(()).unwrap();
+            released.await.unwrap();
+            result
+        });
+        observed.await.unwrap();
+        assert_eq!(gate.cleanup.result(), Err(SdkError::RequestOutcomeUnknown));
+        release.send(()).unwrap();
+        let (control, _) = mpsc::channel(1);
+        let mut worker = Worker {
+            control,
+            stop: None,
+            task,
+        };
+        gate.cleanup
+            .record(worker.retire(Duration::from_secs(1)).await);
+        assert_eq!(gate.cleanup.result(), Ok(()));
+    }
+
+    #[test]
+    fn worker_return_value_keeps_prior_failure_without_publishing_success() {
+        let outcome = super::CleanupOutcome::default();
+        assert_eq!(outcome.merge_result(Ok(())), Ok(()));
+        assert_eq!(
+            outcome.result(),
+            Err(super::SdkError::RequestOutcomeUnknown)
+        );
+        outcome.record(Err(super::SdkError::RequestOutcomeUnknown));
+        assert_eq!(
+            outcome.merge_result(Ok(())),
+            Err(super::SdkError::RequestOutcomeUnknown)
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_retirement_preserves_cleanup_failure_panic_and_timeout() {
+        use super::*;
+        fn worker(task: JoinHandle<Result<(), SdkError>>) -> Worker {
+            let (control, _) = mpsc::channel(1);
+            Worker {
+                control,
+                stop: None,
+                task,
+            }
+        }
+        let mut success = worker(tokio::spawn(async { Ok(()) }));
+        assert_eq!(success.retire(Duration::from_secs(1)).await, Ok(()));
+        let mut failure = worker(tokio::spawn(async {
+            Err(SdkError::Transport(TransportError::Timeout))
+        }));
+        assert_eq!(
+            failure.retire(Duration::from_secs(1)).await,
+            Err(SdkError::Transport(TransportError::Timeout))
+        );
+        let mut panic = worker(tokio::spawn(async { panic!("cleanup fixture") }));
+        assert_eq!(
+            panic.retire(Duration::from_secs(1)).await,
+            Err(SdkError::RequestOutcomeUnknown)
+        );
+        let mut pending = worker(tokio::spawn(std::future::pending()));
+        assert_eq!(
+            pending.retire(Duration::ZERO).await,
+            Err(SdkError::RequestOutcomeUnknown)
+        );
+        assert!(pending.task.is_finished());
+    }
+
+    #[tokio::test]
+    async fn connection_close_keeps_evidence_after_actor_or_generation_is_gone() {
+        use super::*;
+        for expected in [
+            Ok(()),
+            Err(SdkError::RequestOutcomeUnknown),
+            Err(SdkError::Transport(TransportError::Timeout)),
+        ] {
+            let (connection, gate, _) = channels::test_connection();
+            gate.cleanup.record(expected.clone());
+            assert_eq!(connection.close().await, expected);
+        }
+        let (connection, _, _) = channels::test_connection();
+        assert_eq!(
+            connection.close().await,
+            Err(SdkError::RequestOutcomeUnknown)
+        );
+    }
     #[test]
     fn close_during_continuous_clock_read_is_observed_before_check_returns() {
         for installation in [false, true] {
@@ -2228,6 +2381,7 @@ mod tests {
             )
             .unwrap();
             let gate = Arc::new(Gate {
+                cleanup: CleanupOutcome::default(),
                 installation_closed: Arc::new(AtomicBool::new(false)),
                 closed: AtomicBool::new(false),
                 deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
@@ -2272,6 +2426,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), task)
                 .await
                 .unwrap()
+                .unwrap()
                 .unwrap();
             assert!(gate.check().is_err());
             assert!(matches!(
@@ -2294,6 +2449,7 @@ mod tests {
         let id = uuid::Uuid::nil().to_string();
         let body = json!({"session_id":id,"negotiation_generation":1,"ice_servers":[]}).to_string();
         let gate = Arc::new(Gate {
+            cleanup: CleanupOutcome::default(),
             installation_closed: Arc::new(AtomicBool::new(false)),
             closed: AtomicBool::new(false),
             deadline: Mutex::new(Some(Instant::now() + Duration::from_secs(60))),
@@ -2331,7 +2487,8 @@ mod tests {
             uuid::Uuid::nil().to_string(),
             None,
         )
-        .await;
+        .await
+        .unwrap();
         server.await.unwrap();
         assert!(matches!(
             received.recv().await,
