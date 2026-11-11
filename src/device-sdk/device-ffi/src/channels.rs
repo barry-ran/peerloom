@@ -605,10 +605,10 @@ pub fn spawn_connection(
                 .map(|(id, _)| *id)
                 .collect();
             for id in finished {
-                if let Some(child) = children.remove(&id) {
-                    if child.close().await != OK {
-                        retired_children_status = UNKNOWN;
-                    }
+                if let Some(child) = children.remove(&id)
+                    && child.close().await != OK
+                {
+                    retired_children_status = UNKNOWN;
                 }
             }
             if *stopped.borrow() || !gate.is_valid() {
