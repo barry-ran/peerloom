@@ -296,6 +296,7 @@ async fn message_worker(
 ) -> u32 {
     let sender = channel.sender();
     let mut sends = JoinSet::new();
+    let mut send_status = OK;
     let mut close = None;
     loop {
         if *stop.borrow() || !gate.is_valid() {
@@ -303,7 +304,7 @@ async fn message_worker(
         }
         tokio::select! {
             _ = stop.changed() => {},
-            Some(_) = sends.join_next(), if !sends.is_empty() => {},
+            Some(result) = sends.join_next(), if !sends.is_empty() => record_send_join(&mut send_status, result),
             operation = commands.recv() => {
                 let Some(operation) = operation else { break };
                 let Some(guard) = CompletionGuard::start(instance.clone(), operation.take()) else { continue };
@@ -335,18 +336,12 @@ async fn message_worker(
         }
     }
     let pending = drain(&instance, &mut commands);
-    let mut status = channel.close().await.err().map(error).unwrap_or(OK);
+    let status = combine_cleanup_status(
+        channel.close().await.err().map(error).unwrap_or(OK),
+        send_status,
+    );
     // Closing the child resolves all core send futures; abort is a bounded final fallback.
-    if tokio::time::timeout(Duration::from_secs(2), async {
-        while sends.join_next().await.is_some() {}
-    })
-    .await
-    .is_err()
-    {
-        sends.abort_all();
-        while sends.join_next().await.is_some() {}
-        status = UNKNOWN;
-    }
+    let status = finish_sends(&mut sends, status, Duration::from_secs(2)).await;
     settle_cleanup(&instance, pending, status);
     if let Some(guard) = close {
         guard.finish(status, Vec::new(), None);
@@ -356,6 +351,30 @@ async fn message_worker(
 
 fn combine_cleanup_status(current: u32, next: u32) -> u32 {
     if current == OK { next } else { current }
+}
+
+fn record_send_join(status: &mut u32, result: Result<(), tokio::task::JoinError>) {
+    if result.is_err() {
+        *status = combine_cleanup_status(*status, UNKNOWN);
+    }
+}
+
+async fn finish_sends(sends: &mut JoinSet<()>, mut status: u32, budget: Duration) -> u32 {
+    if tokio::time::timeout(budget, async {
+        while let Some(result) = sends.join_next().await {
+            record_send_join(&mut status, result);
+        }
+    })
+    .await
+    .is_err()
+    {
+        status = combine_cleanup_status(status, UNKNOWN);
+        sends.abort_all();
+        while let Some(result) = sends.join_next().await {
+            record_send_join(&mut status, result);
+        }
+    }
+    status
 }
 
 struct ReadScope {
@@ -595,6 +614,7 @@ pub fn spawn_connection(
         let _registration = registration;
         let mut children: HashMap<u64, Task> = HashMap::new();
         let mut sends = JoinSet::new();
+        let mut send_status = OK;
         let mut close = None;
         let mut retired_children_status = OK;
         loop {
@@ -616,7 +636,7 @@ pub fn spawn_connection(
             }
             tokio::select! {
                 _ = stopped.changed() => {},
-                Some(_) = sends.join_next(), if !sends.is_empty() => {},
+                Some(result) = sends.join_next(), if !sends.is_empty() => record_send_join(&mut send_status, result),
                 operation = commands.recv() => {
                     let Some(queued) = operation else { break };
                     if queued.operation.as_ref().unwrap().kind >= 64 {
@@ -692,16 +712,12 @@ pub fn spawn_connection(
                 status = UNKNOWN;
             }
         }
-        if tokio::time::timeout(Duration::from_secs(2), async {
-            while sends.join_next().await.is_some() {}
-        })
-        .await
-        .is_err()
-        {
-            sends.abort_all();
-            while sends.join_next().await.is_some() {}
-            status = UNKNOWN;
-        }
+        status = finish_sends(
+            &mut sends,
+            combine_cleanup_status(status, send_status),
+            Duration::from_secs(2),
+        )
+        .await;
         settle_cleanup(&instance, pending, status);
         if let Some(guard) = close {
             guard.finish(status, Vec::new(), None);
@@ -743,6 +759,65 @@ fn read_overflow<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Overflow
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn send_panic_reaped_before_close_remains_unknown_after_later_success() {
+        let mut sends = JoinSet::new();
+        let mut status = OK;
+        sends.spawn(async {
+            panic!("send fixture");
+        });
+        record_send_join(&mut status, sends.join_next().await.unwrap());
+        assert_eq!(status, UNKNOWN);
+        sends.spawn(async {});
+        record_send_join(&mut status, sends.join_next().await.unwrap());
+        assert_eq!(
+            finish_sends(&mut sends, status, Duration::from_secs(1)).await,
+            UNKNOWN
+        );
+        assert!(sends.is_empty());
+    }
+    #[tokio::test]
+    async fn send_panic_or_abort_reaped_during_close_never_reports_success() {
+        let mut sends = JoinSet::new();
+        sends.spawn(async {});
+        sends.spawn(async {
+            panic!("send fixture");
+        });
+        assert_eq!(
+            finish_sends(&mut sends, OK, Duration::from_secs(1)).await,
+            UNKNOWN
+        );
+        assert!(sends.is_empty());
+        let pending = sends.spawn(std::future::pending::<()>());
+        pending.abort();
+        assert_eq!(
+            finish_sends(&mut sends, OK, Duration::from_secs(1)).await,
+            UNKNOWN
+        );
+        assert!(sends.is_empty());
+    }
+    #[tokio::test]
+    async fn send_drain_timeout_aborts_and_joins_owned_tasks() {
+        let mut sends = JoinSet::new();
+        sends.spawn(std::future::pending::<()>());
+        assert_eq!(
+            finish_sends(&mut sends, OK, Duration::ZERO).await,
+            UNKNOWN
+        );
+        assert!(sends.is_empty());
+    }
+    #[tokio::test]
+    async fn successful_send_drain_preserves_the_existing_cleanup_result() {
+        for status in [OK, CLOSED, UNKNOWN, INTERNAL] {
+            let mut sends = JoinSet::new();
+            sends.spawn(async {});
+            assert_eq!(
+                finish_sends(&mut sends, status, Duration::from_secs(1)).await,
+                status
+            );
+            assert!(sends.is_empty());
+        }
+    }
     #[test]
     fn stream_cleanup_combines_reader_and_writer_without_upgrading_failure() {
         for status in [OK, CLOSED, UNKNOWN, INTERNAL] {
