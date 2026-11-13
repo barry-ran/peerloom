@@ -11,7 +11,7 @@ fn request() -> RegistrationRequest {
     RegistrationRequest {
         application_id: APP.into(),
         platform: Platform::Linux,
-        installation_public_key: "test-key".into(),
+        installation_tag: "test-key".into(),
         registration_grant: SecretString::new("reg_test".into()),
         sdk_version: "0.1.0".into(),
         metadata: Default::default(),
@@ -19,7 +19,7 @@ fn request() -> RegistrationRequest {
 }
 fn body(token: char) -> String {
     format!(
-        r#"{{"device_id":"{DEVICE}","device_credential":"dev_{}","expires_at":"2027-01-01T00:00:00Z"}}"#,
+        r#"{{"device_id":"{DEVICE}","device_credential":"dev_{}"}}"#,
         token.to_string().repeat(43)
     )
 }
@@ -83,30 +83,34 @@ fn tls_and_origin_policy() {
     assert!(IdempotencyKey::new("contains\nnewline".into()).is_err());
 }
 #[tokio::test]
-async fn registration_and_rotation_use_exact_contract() {
-    let (client, handle) = server(vec![(201, body('a')), (200, body('b'))]).await;
+async fn registration_and_restart_keep_exact_identity() {
+    let (client, handle) = server(vec![(201, body('a'))]).await;
     let store = Arc::new(MemoryIdentityStore::default());
-    let mut session = IdentitySession::load(client, APP.into(), store)
+    let mut session = IdentitySession::load(client.clone(), APP.into(), store.clone())
         .await
         .unwrap();
     session
         .register(request(), IdempotencyKey::new("register-1".into()).unwrap())
         .await
         .unwrap();
-    session
-        .refresh(IdempotencyKey::new("refresh-1".into()).unwrap())
+    let reloaded = IdentitySession::load(client, APP.into(), store)
         .await
         .unwrap();
+    assert_eq!(reloaded.identity().unwrap().device_id, DEVICE);
+    assert_eq!(
+        reloaded.identity().unwrap().device_credential.expose(),
+        session.identity().unwrap().device_credential.expose()
+    );
     assert_eq!(
         session.identity().unwrap().device_credential.expose(),
-        format!("dev_{}", "b".repeat(43))
+        format!("dev_{}", "a".repeat(43))
     );
     let requests = handle.await.unwrap();
     assert!(requests[0].starts_with("POST /v1/device-registrations HTTP/1.1"));
     assert!(requests[0].contains("idempotency-key: register-1"));
+    assert!(requests[0].contains("installation_tag"));
+    assert!(!requests[0].contains("installation_public_key"));
     assert!(!requests[0].contains("authorization:"));
-    assert!(requests[1].contains(&format!("authorization: Bearer dev_{}", "a".repeat(43))));
-    assert!(requests[1].ends_with("{}"));
 }
 struct FailingStore;
 #[async_trait::async_trait]
@@ -127,7 +131,7 @@ impl IdentityStore for FailingStore {
     }
 }
 #[tokio::test]
-async fn persistence_failure_keeps_new_credential_and_blocks_rotation() {
+async fn persistence_failure_keeps_new_credential_and_blocks_duplicate_registration() {
     let (client, handle) = server(vec![(201, body('a'))]).await;
     let mut session = IdentitySession::load(client, APP.into(), Arc::new(FailingStore))
         .await
@@ -140,7 +144,7 @@ async fn persistence_failure_keeps_new_credential_and_blocks_rotation() {
     assert!(session.needs_persistence());
     assert!(!session.has_pending_mutation());
     assert_eq!(
-        session.refresh(IdempotencyKey::random()).await,
+        session.register(request(), IdempotencyKey::random()).await,
         Err(IdentityError::PendingMutation)
     );
     handle.await.unwrap();
@@ -428,4 +432,63 @@ async fn direct_registration_uses_secret_recovery_key_and_omits_grant() {
         client.register(&request, &malformed).await.unwrap_err(),
         IdentityError::InvalidRequest
     );
+}
+
+#[tokio::test]
+async fn legacy_expiring_credential_response_is_rejected() {
+    let mut legacy: serde_json::Value = serde_json::from_str(&body('a')).unwrap();
+    legacy["expires_at"] = serde_json::json!("2099-01-01T00:00:00Z");
+    let (client, handle) = server(vec![(201, legacy.to_string())]).await;
+    assert!(matches!(
+        client.register(&request(), &IdempotencyKey::random()).await,
+        Err(IdentityError::InvalidResponse)
+    ));
+    handle.await.unwrap();
+}
+
+struct ReadbackFailureStore {
+    inner: MemoryIdentityStore,
+    fail_readback: std::sync::atomic::AtomicBool,
+}
+#[async_trait::async_trait]
+impl IdentityStore for ReadbackFailureStore {
+    async fn load(&self, scope: &IdentityScope) -> Result<Snapshot, StorageError> {
+        if self.fail_readback.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(StorageError::Unavailable);
+        }
+        self.inner.load(scope).await
+    }
+    async fn save(
+        &self,
+        scope: &IdentityScope,
+        revision: u64,
+        identity: StoredIdentity,
+    ) -> Result<u64, StorageError> {
+        let result = self.inner.save(scope, revision, identity).await;
+        self.fail_readback
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        result
+    }
+    async fn delete(&self, scope: &IdentityScope, revision: u64) -> Result<u64, StorageError> {
+        self.inner.delete(scope, revision).await
+    }
+}
+#[tokio::test]
+async fn successful_save_with_failed_readback_remains_pending() {
+    let (client, handle) = server(vec![(201, body('a'))]).await;
+    let store = Arc::new(ReadbackFailureStore {
+        inner: MemoryIdentityStore::default(),
+        fail_readback: false.into(),
+    });
+    let mut session = IdentitySession::load(client, APP.into(), store.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        session.register(request(), IdempotencyKey::random()).await,
+        Err(IdentityError::Storage(StorageError::Unavailable))
+    );
+    assert!(session.needs_persistence());
+    assert!(!session.has_pending_mutation());
+    assert_eq!(session.identity().unwrap().device_id, DEVICE);
+    handle.await.unwrap();
 }

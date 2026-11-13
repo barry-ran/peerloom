@@ -426,7 +426,7 @@ impl Instance {
         self.emit(event);
     }
     pub fn submit(&self, kind: u32, connection: u64, input: impl AsRef<[u8]>) -> Result<u64, u32> {
-        if !(1..=8).contains(&kind) {
+        if !(1..=8).contains(&kind) || kind == 5 {
             return Err(UNSUPPORTED);
         }
         self.submit_scoped(kind, connection, 0, input.as_ref())
@@ -1085,6 +1085,13 @@ mod reset_tests {
     }
 
     #[test]
+    fn removed_rotation_operation_is_rejected_at_admission() {
+        let (instance, _commands, _callbacks) = setup();
+        assert_eq!(instance.submit(5, 0, vec![]), Err(UNSUPPORTED));
+        assert!(instance.operations.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn baseline_terminal_capacity_is_not_thirty_two_pending_operations() {
         let (instance, commands, _callbacks) = setup();
         for _ in 0..64 {
@@ -1102,7 +1109,7 @@ mod reset_tests {
     fn reset_admission_fences_and_cancels_queued_but_not_running_operations() {
         let (instance, commands, _callbacks) = setup();
         let queued = instance.submit(2, 0, vec![]).unwrap();
-        let running = instance.submit(5, 0, vec![]).unwrap();
+        let running = instance.submit(2, 0, vec![]).unwrap();
         instance.operations.lock().unwrap()[&running].store(1, Ordering::Release);
         assert_eq!(
             instance.submit(7, 0, b"{\"expected_device_id\":\"wrong\"}"),

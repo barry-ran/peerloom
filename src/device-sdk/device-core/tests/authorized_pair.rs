@@ -16,7 +16,6 @@ struct Device {
     application_id: String,
     device_id: String,
     device_credential: String,
-    expires_at: String,
 }
 impl Device {
     fn identity(self) -> (String, StoredIdentity) {
@@ -25,7 +24,6 @@ impl Device {
             StoredIdentity {
                 device_id: self.device_id,
                 device_credential: SecretString::new(self.device_credential),
-                expires_at: self.expires_at,
             },
         )
     }

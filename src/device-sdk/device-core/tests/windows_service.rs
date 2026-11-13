@@ -18,7 +18,6 @@ struct Device {
     application_id: String,
     device_id: String,
     device_credential: String,
-    expires_at: String,
 }
 impl Drop for Device {
     fn drop(&mut self) {
@@ -79,7 +78,6 @@ async fn peer(device: &Device, role: &str) -> DeviceSdk {
             StoredIdentity {
                 device_id: device.device_id.clone(),
                 device_credential: SecretString::new(device.device_credential.clone()),
-                expires_at: device.expires_at.clone(),
             },
         )
         .await
@@ -183,7 +181,7 @@ fn lease_probe_credential() -> zeroize::Zeroizing<String> {
 
 #[tokio::test]
 #[ignore = "requires native Windows + disposable Go/PG/Redis fixture"]
-async fn native_registration_pair_rotation_and_close() {
+async fn native_registration_pair_stable_identity_and_close() {
     let registration: Registration = fixture("TEST_REGISTRATION_FIXTURE_FILE");
     let mut identity = session(&registration.application_id, "registered").await;
     identity
@@ -191,7 +189,7 @@ async fn native_registration_pair_rotation_and_close() {
             RegistrationRequest {
                 application_id: registration.application_id.clone(),
                 platform: Platform::Windows,
-                installation_public_key: "native-windows-disposable-installation".into(),
+                installation_tag: "native-windows-disposable-installation".into(),
                 registration_grant: SecretString::new(registration.registration_grant.clone()),
                 sdk_version: env!("CARGO_PKG_VERSION").into(),
                 metadata: Default::default(),
@@ -227,15 +225,12 @@ async fn native_registration_pair_rotation_and_close() {
     assert_eq!(cb.receive().await.unwrap(), [0, 255, 1, 0]);
     cb.send("Windows 原生回显".as_bytes()).await.unwrap();
     assert_eq!(ca.receive().await.unwrap(), "Windows 原生回显".as_bytes());
-    a.refresh_credentials().await.unwrap();
-    assert!(matches!(next(&mut a).await, SdkEvent::Offline));
-    assert!(matches!(next(&mut a).await, SdkEvent::Online));
     let saved = store("source")
         .load(&scope(&pair.source.application_id))
         .await
         .unwrap();
-    assert!(saved.revision > 1);
-    assert!(saved.identity.unwrap().device_credential.expose() != pair.source.device_credential);
+    assert!(saved.revision == 1);
+    assert!(saved.identity.unwrap().device_credential.expose() == pair.source.device_credential);
     let (source_before, target_before) = initial.deadlines();
     let deadline = source_before.max(target_before);
     let remaining = deadline - time::OffsetDateTime::now_utc();
@@ -258,8 +253,8 @@ async fn native_registration_pair_rotation_and_close() {
         "Windows native persisted dual lease deadlines crossed; generation {} -> {}",
         initial.lease_generation, renewed.lease_generation
     );
-    ca.send(b"after-rotation-and-renew").await.unwrap();
-    assert_eq!(cb.receive().await.unwrap(), b"after-rotation-and-renew");
+    ca.send(b"after-lease-renew").await.unwrap();
+    assert_eq!(cb.receive().await.unwrap(), b"after-lease-renew");
     cb.send(b"renewed-reverse").await.unwrap();
     assert_eq!(ca.receive().await.unwrap(), b"renewed-reverse");
     ca.close().await.unwrap();

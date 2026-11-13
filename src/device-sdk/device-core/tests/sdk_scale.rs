@@ -9,7 +9,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 type Pair = (Connection, Connection);
 async fn gather(
     indices: &[usize],
@@ -319,30 +319,6 @@ async fn one_pc_five_hundred_real_native_peers() {
         &f.directory.join("renewed.json"),
         json!({"sessions":renewed,"hold_seconds":hold.elapsed().as_secs_f64(),"simultaneous_ready":pairs.len()}),
     );
-    phase("pc-wss-reconnect", started);
-    // Credential rotation exercises control-plane reconnect without claiming an ICE outage.
-    let (tx, rx) = oneshot::channel();
-    drivers[0]
-        .commands
-        .send(Command::Refresh(tx))
-        .await
-        .unwrap();
-    rx.await.unwrap();
-    let mut offline = false;
-    loop {
-        let (i, e) = next(&mut events).await;
-        assert_eq!(i, 0);
-        match e {
-            SdkEvent::Offline => offline = true,
-            SdkEvent::Online => {
-                assert!(offline);
-                break;
-            }
-            _ => panic!("rotation changed live data session"),
-        }
-    }
-    all_valid(&pairs, f.peer_count);
-    exchange(&mut pairs, "pc-wss-reconnected").await;
     phase("manual-new-sessions", started);
     let reconnect_count = f.peer_count.min(20);
     let mut closed_ids = BTreeSet::new();
@@ -411,6 +387,6 @@ async fn one_pc_five_hundred_real_native_peers() {
     latency.sort_by(f64::total_cmp);
     write_json(
         &f.directory.join("sdk-proof.json"),
-        json!({"status":if f.debug_close_only { "debug-only" } else { "passed" },"peer_count":f.peer_count,"pc_identity_count":1,"pc_sdk_instances":1,"native_simulated_peer_instances":f.peer_count,"simultaneous_ready":f.peer_count,"real_registration":true,"real_webrtc_bidirectional_unique_payloads":true,"all_initial_dual_deadlines_crossed_and_renewed":!f.debug_close_only,"hold_seconds":f.hold_seconds,"manual_new_session_count":reconnect_count,"pc_credential_rotation_wss_reconnect":true,"all_session_rows_closed":true,"all_local_gates_closed":true,"explicit_session_close_before_sdk_shutdown":true,"physical_android_devices":false,"video_tested":false,"connection_latency_ms":{"count":latency.len(),"min":latency[0],"p50":latency[latency.len()/2],"p95":latency[(latency.len()-1)*95/100],"max":latency.last()},"errors":0}),
+        json!({"status":if f.debug_close_only { "debug-only" } else { "passed" },"peer_count":f.peer_count,"pc_identity_count":1,"pc_sdk_instances":1,"native_simulated_peer_instances":f.peer_count,"simultaneous_ready":f.peer_count,"real_registration":true,"real_webrtc_bidirectional_unique_payloads":true,"all_initial_dual_deadlines_crossed_and_renewed":!f.debug_close_only,"hold_seconds":f.hold_seconds,"manual_new_session_count":reconnect_count,"all_session_rows_closed":true,"all_local_gates_closed":true,"explicit_session_close_before_sdk_shutdown":true,"physical_android_devices":false,"video_tested":false,"connection_latency_ms":{"count":latency.len(),"min":latency[0],"p50":latency[latency.len()/2],"p95":latency[(latency.len()-1)*95/100],"max":latency.last()},"errors":0}),
     );
 }

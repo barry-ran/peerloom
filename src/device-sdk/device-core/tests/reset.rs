@@ -20,7 +20,6 @@ fn identity(id: &str) -> StoredIdentity {
     StoredIdentity {
         device_id: id.into(),
         device_credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
-        expires_at: "2030-01-01T00:00:00Z".into(),
     }
 }
 async fn session(store: Arc<dyn IdentityStore>) -> IdentitySession {
@@ -117,12 +116,6 @@ async fn unknown_delete_retains_gate_and_retry_never_repeats_committed_delete() 
         assert!(owner.identity().is_none());
         assert_eq!(
             owner.reset(DEVICE).await,
-            Err(IdentityError::PendingMutation)
-        );
-        assert_eq!(
-            owner
-                .refresh(device_core::identity::IdempotencyKey::random())
-                .await,
             Err(IdentityError::PendingMutation)
         );
         store.mode.store(0, Ordering::SeqCst);

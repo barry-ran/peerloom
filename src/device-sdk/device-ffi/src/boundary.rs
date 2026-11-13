@@ -63,12 +63,12 @@ unsafe fn output_zero(output: *mut u64) -> Result<(), u32> {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dp_abi_version() -> u32 {
-    1
+    2
 }
-/// Capability bits are additive; ABI1 prefix remains stable.
+/// Capability bits are additive; ABI2 prefix remains stable.
 #[unsafe(no_mangle)]
 pub extern "C" fn dp_capabilities() -> u64 {
-    1 | 2 | 4 | 8 | 16 | 32 | 64 | 128
+    1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256
 }
 
 /// # Safety
@@ -167,7 +167,7 @@ pub unsafe extern "C" fn dp_sdk_create(
                     }
                     if deliver || event.kind == COMPLETE {
                         let view = DpEvent {
-                            abi_version: 1,
+                            abi_version: 2,
                             kind: event.kind,
                             request_id: event.request,
                             connection: event.connection,
@@ -443,7 +443,7 @@ mod capacity_tests {
             ),
         ] {
             let config = format!(
-                r#"{{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory","ice_servers":{servers}}}"#
+                r#"{{"abi_version":2,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory","ice_servers":{servers}}}"#
             );
             let mut sdk = 123;
             // SAFETY: input/output and static callback remain valid for this call.
@@ -475,7 +475,7 @@ mod capacity_tests {
                 assert!(self.0.is_empty(), "all owned instances must release");
             }
         }
-        let config = br#"{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"}"#;
+        let config = br#"{"abi_version":2,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"}"#;
         let mut owned = Owned(Vec::new());
         for _ in 0..20 {
             let mut sdk = 0;

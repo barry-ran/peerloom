@@ -372,8 +372,8 @@ class PostgresIntegration(unittest.TestCase):
                 db.query("""BEGIN;
 INSERT INTO tenants(id,name) VALUES ('00000000-0000-4000-8000-000000000001','backup A'),('00000000-0000-4000-8000-000000000002','backup B');
 INSERT INTO applications(id,tenant_id,name) VALUES('00000000-0000-4000-8000-000000000003','00000000-0000-4000-8000-000000000001','backup app');
-INSERT INTO devices(id,tenant_id,application_id,installation_key_hash,platform,status) VALUES ('00000000-0000-4000-8000-000000000004','00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000003',sha256('installation'::bytea),'linux','revoked');
-INSERT INTO device_credentials(tenant_id,device_id,credential_hash,expires_at,revoked_at) VALUES('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000004',sha256('credential'::bytea),now()+interval '1 day',now());
+INSERT INTO devices(id,tenant_id,application_id,installation_tag_hash,platform,status) VALUES ('00000000-0000-4000-8000-000000000004','00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000003',sha256('installation'::bytea),'linux','revoked');
+INSERT INTO device_credentials(tenant_id,device_id,credential_hash,revoked_at) VALUES('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000004',sha256('credential'::bytea),now());
 INSERT INTO registration_grants(tenant_id,application_id,secret_hash,expires_at,consumed_at) VALUES('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000003',sha256('grant'::bytea),now()+interval '1 day',now());
 INSERT INTO audit_events(tenant_id,actor_type,action,details) VALUES('00000000-0000-4000-8000-000000000001','operator','backup.fixture','{"恢复":"验证"}');
 COMMIT;

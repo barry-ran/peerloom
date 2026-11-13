@@ -310,7 +310,7 @@ func TestRelayBearerRevocationWaitsBeforeCachedIssuance(t *testing.T) {
 }
 
 func TestRelayExpiryDuringIssuanceRollsBackAllWrites(t *testing.T) {
-	for _, expiry := range []string{"lease", "credential"} {
+	for _, expiry := range []string{"lease"} {
 		t.Run(expiry, func(t *testing.T) {
 			f := setup(t)
 			issuer := setupRelay(t, f)
@@ -332,11 +332,7 @@ func TestRelayExpiryDuringIssuanceRollsBackAllWrites(t *testing.T) {
  CREATE TRIGGER relay_expiry_barrier BEFORE INSERT ON relay_issuances FOR EACH ROW EXECUTE FUNCTION delay_relay_insert()`); err != nil {
 				t.Fatal(err)
 			}
-			if expiry == "lease" {
-				_, err = f.pool.Exec(f.ctx, "UPDATE sessions SET source_lease_expires_at=clock_timestamp()+interval '500 milliseconds' WHERE id=$1", session.ID)
-			} else {
-				_, err = f.pool.Exec(f.ctx, "UPDATE device_credentials SET expires_at=clock_timestamp()+interval '500 milliseconds' WHERE device_id=$1", pair.actors[0].ID)
-			}
+			_, err = f.pool.Exec(f.ctx, "UPDATE sessions SET source_lease_expires_at=clock_timestamp()+interval '500 milliseconds' WHERE id=$1", session.ID)
 			if err != nil {
 				t.Fatal(err)
 			}

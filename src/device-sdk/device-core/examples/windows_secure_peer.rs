@@ -23,7 +23,7 @@ mod windows {
     #[serde(deny_unknown_fields)]
     struct RegistrationInput {
         registration_grant: String,
-        installation_public_key: String,
+        installation_tag: String,
         idempotency_key: String,
     }
     impl Drop for RegistrationInput {
@@ -69,7 +69,7 @@ mod windows {
                 if args[0] == "register" {
                     let mut registration: RegistrationInput = serde_json::from_slice(&bytes)?;
                     let request = RegistrationRequest { application_id: application, platform: Platform::Windows,
-                        installation_public_key: std::mem::take(&mut registration.installation_public_key),
+                        installation_tag: std::mem::take(&mut registration.installation_tag),
                         registration_grant: SecretString::new(std::mem::take(&mut registration.registration_grant)),
                         sdk_version: env!("CARGO_PKG_VERSION").into(), metadata: Default::default() };
                     session.register(request, IdempotencyKey::new(std::mem::take(&mut registration.idempotency_key))?).await?;
@@ -108,6 +108,7 @@ mod windows {
                             connection.close().await?;
                             return Ok::<(), Error>(());
                         }
+                        SdkEvent::IdentityPersisted => {},
                         SdkEvent::IdentityPersistencePending => return Err("安全存储失败；停止，不回退 / Secure persistence failed; stopping".into()),
                         SdkEvent::Stopped(error) | SdkEvent::ConnectionClosed { reason: error, .. } | SdkEvent::ConnectionRequestFailed { reason: error, .. } => return Err(error.into()),
                     }

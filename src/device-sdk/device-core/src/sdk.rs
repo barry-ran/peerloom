@@ -123,6 +123,8 @@ pub enum SdkEvent {
     },
     Stopped(SdkError),
     IdentityPersistencePending,
+    /// SDK has reconciled and durably saved the pending installation identity.
+    IdentityPersisted,
 }
 
 // Private generation-local evidence. Missing evidence is never success, and a
@@ -424,17 +426,6 @@ impl DeviceSdk {
             .map_err(|_| SdkError::QueueFull)?;
         rx.await.map_err(|_| SdkError::Closed)?
     }
-    /// 主动轮换后用新凭证重建 WSS；旧数据授权期限在 sync/renew 前不延长。
-    pub async fn refresh_credentials(&self) -> Result<(), SdkError> {
-        if self.reset_started {
-            return Err(SdkError::Closed);
-        }
-        let (tx, rx) = oneshot::channel();
-        self.commands
-            .try_send(Command::Refresh(tx))
-            .map_err(|_| SdkError::QueueFull)?;
-        rx.await.map_err(|_| SdkError::Closed)?
-    }
     pub async fn next_event(&mut self) -> Option<SdkEvent> {
         if self.reset_started {
             return None;
@@ -470,7 +461,6 @@ enum Command {
     Connect(String, oneshot::Sender<Result<String, SdkError>>),
     Respond(String, bool, oneshot::Sender<Result<(), SdkError>>),
     CloseConnection(String, u64, Option<oneshot::Sender<()>>),
-    Refresh(oneshot::Sender<Result<(), SdkError>>),
 }
 enum Internal {
     Description(String, u64, &'static str, String),
@@ -530,7 +520,7 @@ struct Session {
     sync_requested: bool,
     requests: std::collections::VecDeque<(String, u64)>,
 }
-type RefreshOutcome = (Result<(), IdentityError>, Option<StoredIdentity>);
+type PersistOutcome = (Result<(), IdentityError>, Option<StoredIdentity>);
 
 struct Actor {
     outbound: OutboundBudget,
@@ -538,10 +528,9 @@ struct Actor {
     config: SdkConfig,
     identity: Arc<tokio::sync::Mutex<IdentitySession>>,
     identity_client: IdentityClient,
-    refresh: Option<JoinHandle<RefreshOutcome>>,
-    refresh_waiters: Vec<oneshot::Sender<Result<(), SdkError>>>,
-    refresh_at: Instant,
-    refresh_needs_retry: bool,
+    persist: Option<JoinHandle<PersistOutcome>>,
+    persist_at: Instant,
+    persist_needs_retry: bool,
     online_since: Option<Instant>,
     unstable_connections: u32,
     stored: StoredIdentity,
@@ -581,15 +570,9 @@ impl Actor {
             installation_closed: Arc::new(AtomicBool::new(false)),
             identity_client: identity.client.clone(),
             identity: Arc::new(tokio::sync::Mutex::new(identity)),
-            refresh: None,
-            refresh_waiters: Vec::new(),
-            refresh_at: Instant::now()
-                + if dirty {
-                    Duration::from_secs(30)
-                } else {
-                    Duration::from_secs(12 * 3600)
-                },
-            refresh_needs_retry: dirty,
+            persist: None,
+            persist_at: Instant::now() + Duration::from_secs(30),
+            persist_needs_retry: dirty,
             online_since: None,
             unstable_connections: 0,
             stored,
@@ -635,15 +618,15 @@ impl Actor {
                         Ok(message) => self.message(message).await?,
                         Err(error) => self.disconnected(error).await?,
                     },
-                    refreshed = async {
-                        match &mut self.refresh {
+                    persisted = async {
+                        match &mut self.persist {
                             Some(task) => task.await,
                             None => std::future::pending().await,
                         }
                     } => {
-                        self.refresh.take();
-                        let (outcome, latest) = refreshed.map_err(|_| SdkError::Closed)?;
-                        self.refreshed(outcome, latest).await?;
+                        self.persist.take();
+                        let (outcome, latest) = persisted.map_err(|_| SdkError::Closed)?;
+                        self.persisted(outcome, latest).await?;
                     },
                     command = commands.recv() => {
                         let Some(command) = command else { return Ok(()); };
@@ -668,8 +651,8 @@ impl Actor {
             session.gate.close();
         }
         // Graceful close lets a bounded in-flight credential mutation finish, instead of
-        // dropping its new token after the server has already rotated the old one.
-        if let Some(mut task) = self.refresh.take()
+        // dropping its new token after the server has already issued the installation credential.
+        if let Some(mut task) = self.persist.take()
             && tokio::time::timeout(Duration::from_secs(22), &mut task)
                 .await
                 .is_err()
@@ -690,15 +673,6 @@ impl Actor {
         }
     }
     async fn connected(&mut self, signal: SignalClient) -> Result<(), SdkError> {
-        if !self.refresh_needs_retry {
-            self.refresh_at = Instant::now()
-                + signal
-                    .server_clock()
-                    .remaining_until(&self.stored.expires_at, Instant::now())
-                    .unwrap_or_default()
-                    .saturating_sub(Duration::from_secs(300))
-                    .min(Duration::from_secs(12 * 3600));
-        }
         self.online_since = Some(Instant::now());
         self.signal = Some(signal);
         self.emit(SdkEvent::Online)?;
@@ -715,17 +689,15 @@ impl Actor {
         Ok(())
     }
 
-    fn start_refresh(&mut self) {
+    fn start_persist(&mut self) {
         let identity = self.identity.clone();
-        self.refresh = Some(tokio::spawn(async move {
+        self.persist = Some(tokio::spawn(async move {
             let mut identity = identity.lock().await;
             let operation = async {
                 if identity.needs_persistence() {
                     identity.retry_persist().await
-                } else if identity.has_pending_mutation() {
-                    identity.retry_pending().await
                 } else {
-                    identity.refresh(IdempotencyKey::random()).await
+                    Ok(())
                 }
             };
             let result = tokio::time::timeout(Duration::from_secs(20), operation)
@@ -734,37 +706,22 @@ impl Actor {
             (result, identity.identity().cloned())
         }));
     }
-    async fn refreshed(
+    async fn persisted(
         &mut self,
         outcome: Result<(), IdentityError>,
         latest: Option<StoredIdentity>,
     ) -> Result<(), SdkError> {
-        let changed = latest.as_ref().is_some_and(|latest| {
-            latest.device_credential.expose() != self.stored.device_credential.expose()
-        });
         if let Some(latest) = latest {
             self.stored = latest;
         }
-        for waiter in self.refresh_waiters.drain(..) {
-            let _ = waiter.send(outcome.clone().map_err(SdkError::Identity));
-        }
-        if matches!(outcome, Err(IdentityError::Storage(_))) && !self.refresh_needs_retry {
+        if matches!(outcome, Err(IdentityError::Storage(_))) && !self.persist_needs_retry {
             self.emit(SdkEvent::IdentityPersistencePending)?;
         }
-        self.refresh_needs_retry = outcome.is_err();
-        self.refresh_at = Instant::now() + refresh_delay(&outcome);
-        if changed {
-            if let Some(task) = self.dial.take() {
-                task.abort();
-                let _ = task.await;
-            }
-            if let Some(signal) = self.signal.take() {
-                signal.close().await;
-                self.emit(SdkEvent::Offline)?;
-            }
-            self.online_since = None;
-            self.retry_at = Instant::now();
+        if self.persist_needs_retry && outcome.is_ok() {
+            self.emit(SdkEvent::IdentityPersisted)?;
         }
+        self.persist_needs_retry = outcome.is_err();
+        self.persist_at = Instant::now() + persist_delay(&outcome);
         if matches!(outcome, Err(IdentityError::Server {status:400..=428 | 430..=499,..})
             | Err(IdentityError::InvalidConfiguration | IdentityError::InvalidRequest | IdentityError::InvalidResponse | IdentityError::ResponseTooLarge))
         {
@@ -787,14 +744,12 @@ impl Actor {
                 reason: SdkError::RequestOutcomeUnknown,
             })?;
         }
-        let refreshing = self.refresh.is_some();
         if error == SignalError::InvalidMessage
-            || (!refreshing
-                && (!self.config.auto_reconnect
-                    || matches!(
-                        error,
-                        SignalError::AuthorizationRejected | SignalError::PolicyRejected
-                    )))
+            || (!self.config.auto_reconnect
+                || matches!(
+                    error,
+                    SignalError::AuthorizationRejected | SignalError::PolicyRejected
+                ))
         {
             return Err(SdkError::Signal(error));
         }
@@ -858,12 +813,12 @@ impl Actor {
             self.attempt = 0;
             self.unstable_connections = 0;
         }
-        if self.refresh.is_none() && now >= self.refresh_at {
-            self.start_refresh();
+        if self.persist_needs_retry && self.persist.is_none() && now >= self.persist_at {
+            self.start_persist();
         }
         if self.signal.is_none()
             && self.dial.is_none()
-            && self.refresh.is_none()
+            && self.persist.is_none()
             && now >= self.retry_at
         {
             let client = self.identity_client.clone();
@@ -996,16 +951,6 @@ impl Actor {
 
     async fn command(&mut self, command: Command) -> Result<(), SdkError> {
         match command {
-            Command::Refresh(result) => {
-                if self.refresh_waiters.len() >= 32 {
-                    let _ = result.send(Err(SdkError::Busy));
-                } else {
-                    self.refresh_waiters.push(result);
-                    if self.refresh.is_none() {
-                        self.start_refresh();
-                    }
-                }
-            }
             Command::Connect(target, result) => {
                 let outcome = if target == self.stored.device_id {
                     Err(SdkError::InvalidConfiguration)
@@ -1804,7 +1749,7 @@ impl Drop for Actor {
         for (_, session) in self.sessions.iter() {
             session.gate.close();
         }
-        if let Some(task) = self.refresh.as_ref() {
+        if let Some(task) = self.persist.as_ref() {
             task.abort();
         }
         if let Some(task) = self.dial.as_ref() {
@@ -1812,11 +1757,11 @@ impl Drop for Actor {
         }
     }
 }
-fn refresh_delay(outcome: &Result<(), IdentityError>) -> Duration {
+fn persist_delay(outcome: &Result<(), IdentityError>) -> Duration {
     match outcome {
-        Ok(()) => Duration::from_secs(12 * 3600),
+        Ok(()) => Duration::from_secs(30),
         Err(IdentityError::Storage(_)) => Duration::from_secs(30),
-        // Preserve the original key/token and retry within the server's 30s overlap.
+        // Retry local persistence failures without rotating the installation credential.
         Err(_) => Duration::from_millis(1000 + (uuid::Uuid::new_v4().as_u128() % 1000) as u64),
     }
 }
@@ -2523,11 +2468,11 @@ mod tests {
         assert!(!valid_message_metadata(&metadata));
     }
     #[test]
-    fn uncertain_rotation_retry_fits_old_token_overlap() {
-        let retry = refresh_delay(&Err(IdentityError::Transport));
+    fn persistence_retry_is_bounded() {
+        let retry = persist_delay(&Err(IdentityError::Transport));
         assert!((Duration::from_secs(1)..Duration::from_secs(2)).contains(&retry));
         assert_eq!(
-            refresh_delay(&Err(IdentityError::Storage(
+            persist_delay(&Err(IdentityError::Storage(
                 device_storage::StorageError::Unavailable
             ))),
             Duration::from_secs(30)

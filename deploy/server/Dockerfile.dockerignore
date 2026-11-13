@@ -27,6 +27,8 @@
 !infra/migrations/000009_webhook_delivery.up.sql
 !infra/migrations/000010_optional_capacity.down.sql
 !infra/migrations/000010_optional_capacity.up.sql
+!infra/migrations/000011_installation_identity.down.sql
+!infra/migrations/000011_installation_identity.up.sql
 !deploy/
 !deploy/Dockerfile
 !deploy/Dockerfile.dockerignore

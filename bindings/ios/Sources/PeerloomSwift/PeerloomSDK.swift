@@ -29,7 +29,7 @@ public struct PeerloomConfiguration: Encodable, Sendable {
     public var ffiResourceBudgetBytes = 134217728
     /// nil 保持托管配置；空列表只使用 host 候选。
     public var iceServers: [PeerloomIceServer]? = nil
-    private let abiVersion = 1
+    private let abiVersion = 2
     private let storage = "external"
     enum CodingKeys: String, CodingKey {
         case origin, applicationID = "application_id", developmentLoopback = "development_loopback"
@@ -42,7 +42,7 @@ public struct PeerloomConfiguration: Encodable, Sendable {
     public init(origin: String, applicationID: String) { self.origin = origin; self.applicationID = applicationID }
 }
 public struct PeerloomRegistration: Encodable, Sendable {
-    public let installationPublicKey: String
+    public let installationTag: String
     public let registrationGrant: String
     public var sdkVersion = "peerloom-swift/0.1.0"
     public var metadata: [String: String] = [:]
@@ -52,11 +52,11 @@ public struct PeerloomRegistration: Encodable, Sendable {
     private let platform = "macos"
     #endif
     enum CodingKeys: String, CodingKey {
-        case installationPublicKey = "installation_public_key", registrationGrant = "registration_grant"
+        case installationTag = "installation_tag", registrationGrant = "registration_grant"
         case sdkVersion = "sdk_version", metadata, platform
     }
-    public init(installationPublicKey: String, registrationGrant: String) {
-        self.installationPublicKey = installationPublicKey; self.registrationGrant = registrationGrant
+    public init(installationTag: String, registrationGrant: String) {
+        self.installationTag = installationTag; self.registrationGrant = registrationGrant
     }
 }
 public struct PeerloomEvents: AsyncSequence, Sendable {
@@ -106,7 +106,6 @@ public final class PeerloomSDK: @unchecked Sendable {
         guard data.count <= 65536 else { throw PeerloomError.native(1) }
         _ = try await core.perform(operation: 4, connection: connection, input: data)
     }
-    public func refreshCredentials() async throws { _ = try await core.perform(operation: 5, connection: 0, input: Data()) }
     public func closeConnection(_ connection: UInt64) async throws { _ = try await core.perform(operation: 6, connection: connection, input: Data()) }
     public func resetIdentity(expectedDeviceID: String, retry: Bool = false) async throws {
         struct Reset: Encodable { let expected_device_id: String; let retry: Bool }

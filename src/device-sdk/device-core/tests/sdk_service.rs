@@ -11,7 +11,6 @@ struct Device {
     application_id: String,
     device_id: String,
     device_credential: String,
-    expires_at: String,
 }
 #[derive(Deserialize)]
 struct Fixture {
@@ -31,7 +30,6 @@ async fn sdk(origin: &str, device: Device) -> DeviceSdk {
             StoredIdentity {
                 device_id: device.device_id,
                 device_credential: SecretString::new(device.device_credential),
-                expires_at: device.expires_at,
             },
         )
         .await
@@ -137,7 +135,7 @@ fn lease_probe_credential() -> zeroize::Zeroizing<String> {
 
 #[tokio::test]
 #[ignore = "requires fresh authorized pair fixture and real Go/PG/Redis/UDP"]
-async fn facade_connect_message_rotation_and_close() {
+async fn facade_connect_message_stable_identity_and_close() {
     let path = std::env::var("TEST_SIGNAL_FIXTURE_FILE").expect("pair fixture");
     #[cfg(unix)]
     {
@@ -178,10 +176,6 @@ async fn facade_connect_message_rotation_and_close() {
     assert_eq!(cb.receive().await.unwrap(), "facade 双向消息".as_bytes());
     cb.send(&[0, 255, 0]).await.unwrap();
     assert_eq!(ca.receive().await.unwrap(), [0, 255, 0]);
-    // 真实 credential 轮换，旧WSS退出，新token连接+sync；原P2P不无故关闭。
-    a.refresh_credentials().await.unwrap();
-    assert!(matches!(next(&mut a).await, SdkEvent::Offline));
-    assert!(matches!(next(&mut a).await, SdkEvent::Online));
     if let Some((credential, initial)) = probe {
         // ApprovalTimeout=30s is NOT LeaseTTL=60s. Observe persisted deadlines,
         // wait past both actual captured deadlines, then prove BOTH were renewed.
@@ -214,8 +208,8 @@ async fn facade_connect_message_rotation_and_close() {
             initial.lease_generation, renewed.lease_generation
         );
     }
-    ca.send(b"after-rotation").await.unwrap();
-    assert_eq!(cb.receive().await.unwrap(), b"after-rotation");
+    ca.send(b"stable-credential").await.unwrap();
+    assert_eq!(cb.receive().await.unwrap(), b"stable-credential");
     cb.send(b"renewed-reverse").await.unwrap();
     assert_eq!(ca.receive().await.unwrap(), b"renewed-reverse");
     ca.close().await.unwrap();

@@ -12,24 +12,23 @@ type Settings struct {
 	DirectAppPerMinute    int
 	DirectAppPerDay       int
 	DirectAppDevices      int
-	CredentialTTL         time.Duration
 	ReplayTTL             time.Duration
-	RotationOverlap       time.Duration
 }
 
 func DefaultSettings() Settings {
-	return Settings{CredentialTTL: 24 * time.Hour, ReplayTTL: 10 * time.Minute, RotationOverlap: 30 * time.Second}
+	return Settings{ReplayTTL: 10 * time.Minute}
 }
 
 func LoadSettings(getenv func(string) string) (Settings, error) {
+	if getenv("CREDENTIAL_TTL") != "" || getenv("ROTATION_OVERLAP") != "" {
+		return Settings{}, errors.New("obsolete credential lifetime settings are not supported")
+	}
 	settings := DefaultSettings()
 	for _, item := range []struct {
 		name   string
 		target *time.Duration
 	}{
-		{"CREDENTIAL_TTL", &settings.CredentialTTL},
 		{"REPLAY_TTL", &settings.ReplayTTL},
-		{"ROTATION_OVERLAP", &settings.RotationOverlap},
 	} {
 		if value := getenv(item.name); value != "" {
 			parsed, err := time.ParseDuration(value)
@@ -69,7 +68,7 @@ func (s Settings) Validate() error {
 			return errors.New("direct registration quota outside SQL integer representation")
 		}
 	}
-	if s.CredentialTTL < time.Minute || s.CredentialTTL > 30*24*time.Hour || s.ReplayTTL < time.Second || s.ReplayTTL > time.Hour || s.RotationOverlap < time.Second || s.RotationOverlap > 5*time.Minute || s.RotationOverlap > s.CredentialTTL || s.ReplayTTL > s.CredentialTTL {
+	if s.ReplayTTL < time.Second || s.ReplayTTL > time.Hour {
 		return errors.New("identity durations outside safe bounds")
 	}
 	return nil

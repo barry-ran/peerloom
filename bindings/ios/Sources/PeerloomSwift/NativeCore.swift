@@ -93,7 +93,7 @@ private let callback: NativeCallback = { context, pointer in
     guard context != 0, let address = UnsafeRawPointer(bitPattern: UInt(context)), let pointer else { return }
     let core = Unmanaged<NativeCore>.fromOpaque(address).takeUnretainedValue()
     let event = pointer.pointee
-    guard event.abi_version == 1, event.struct_size >= UInt32(MemoryLayout<dp_event>.size),
+    guard event.abi_version == 2, event.struct_size >= UInt32(MemoryLayout<dp_event>.size),
           let length = Int(exactly: event.payload_len), length >= 0, length <= 65536, length == 0 || event.payload != nil else {
         core.fail(PeerloomError.invalidEvent); return
     }

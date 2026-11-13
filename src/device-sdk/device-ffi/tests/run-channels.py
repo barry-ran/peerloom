@@ -25,8 +25,8 @@ subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
 with tempfile.NamedTemporaryFile(mode="w", prefix="peerloom-c-channels-") as data:
     for role in ("source", "target", "third"):
         device = fixture[role]
-        config = dict(abi_version=1, origin=os.environ["TEST_IDENTITY_BASE_URL"], application_id=device["application_id"], storage="external", development_loopback=True, max_connections=2, max_channels_per_connection=4, max_channel_creations_per_connection=8)
-        snapshot = dict(revision=1, identity={key: device[key] for key in ("device_id", "device_credential", "expires_at")})
+        config = dict(abi_version=2, origin=os.environ["TEST_IDENTITY_BASE_URL"], application_id=device["application_id"], storage="external", development_loopback=True, max_connections=2, max_channels_per_connection=4, max_channel_creations_per_connection=8)
+        snapshot = dict(revision=1, identity={key: device[key] for key in ("device_id", "device_credential")})
         data.write(json.dumps(config, separators=(",", ":")) + "\n")
         data.write(json.dumps(snapshot, separators=(",", ":")) + "\n")
     for role in ("source", "target", "third"):

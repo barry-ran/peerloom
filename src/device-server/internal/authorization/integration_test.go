@@ -104,7 +104,7 @@ func setup(t *testing.T) fixture {
 			t.Fatal(err)
 		}
 		var peer identity.Device
-		if err = pool.QueryRow(ctx, `INSERT INTO devices(tenant_id,application_id,installation_key_hash,platform)
+		if err = pool.QueryRow(ctx, `INSERT INTO devices(tenant_id,application_id,installation_tag_hash,platform)
 VALUES($1,$2,$3,'linux') RETURNING id::text,tenant_id::text,application_id::text`, owner, app, []byte{byte(i + 1)}).Scan(&peer.ID, &peer.TenantID, &peer.ApplicationID); err != nil {
 			t.Fatal(err)
 		}

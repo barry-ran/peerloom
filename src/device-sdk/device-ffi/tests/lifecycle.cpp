@@ -32,7 +32,7 @@ void record(std::uint64_t id) {
 }
 void callback(std::uint64_t context, const dp_event *event) noexcept {
     CHECK(context == 721 && event != nullptr);
-    CHECK(event->abi_version == 1 && event->struct_size >= sizeof(dp_event));
+    CHECK(event->abi_version == 2 && event->struct_size >= sizeof(dp_event));
     std::unique_lock<std::mutex> guard(mutex);
     if (callback_seen) CHECK(callback_thread == std::this_thread::get_id());
     else { callback_seen = true; callback_thread = std::this_thread::get_id(); }
@@ -67,8 +67,8 @@ std::uint64_t wait_storage() {
 }
 } // namespace
 int main() {
-    char config[] = "{\"abi_version\":1,\"origin\":\"http://127.0.0.1:1\",\"application_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"storage\":\"external\",\"development_loopback\":true}";
-    CHECK(dp_abi_version() == 1 && dp_capabilities() == 255);
+    char config[] = "{\"abi_version\":2,\"origin\":\"http://127.0.0.1:1\",\"application_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"storage\":\"external\",\"development_loopback\":true}";
+    CHECK(dp_abi_version() == 2 && dp_capabilities() == 511);
     std::uint64_t handle = 99;
     CHECK(dp_sdk_create(nullptr, 1, callback, 721, &handle) == DP_INVALID_ARGUMENT && handle == 0);
     CHECK(dp_sdk_create(reinterpret_cast<const std::uint8_t *>(config), sizeof(config) - 1, callback, 721, &handle) == DP_OK && handle != 0);

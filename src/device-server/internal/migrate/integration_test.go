@@ -121,3 +121,35 @@ func TestFailedMigrationIsAtomic(t *testing.T) {
 		t.Fatalf("failed migration left partial state: %v", err)
 	}
 }
+
+// Upgrading the identity contract must not silently turn old expiring secrets
+// into permanent credentials or delete existing device data.
+func TestLongLivedMigrationRejectsPopulatedLegacyCredentials(t *testing.T) {
+	pool, ctx := integrationPool(t)
+	ms, err := Load(migrationDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Apply(ctx, pool, ms[:len(ms)-1], "up"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `WITH tenant AS (
+ INSERT INTO tenants(name) VALUES('legacy migration test') RETURNING id
+ ), app AS (
+ INSERT INTO applications(tenant_id,name) SELECT id,'legacy app' FROM tenant RETURNING id,tenant_id
+ ), device AS (
+ INSERT INTO devices(tenant_id,application_id,installation_key_hash,platform)
+ SELECT tenant_id,id,decode('01','hex'),'linux' FROM app RETURNING id,tenant_id
+ ) INSERT INTO device_credentials(tenant_id,device_id,credential_hash,expires_at)
+ SELECT tenant_id,id,decode('02','hex'),clock_timestamp()-interval '1 day' FROM device`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Apply(ctx, pool, ms, "up"); err == nil {
+		t.Fatal("silently upgraded legacy credentials")
+	}
+	var count int
+	if err = pool.QueryRow(ctx, "SELECT count(*) FROM device_credentials WHERE expires_at < clock_timestamp()").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("legacy identity mutated: %d %v", count, err)
+	}
+}

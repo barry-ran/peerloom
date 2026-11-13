@@ -29,33 +29,38 @@ def validator(name):
 
 
 class ContractTests(unittest.TestCase):
-    def test_device_self_trusted_expiry_schema(self):
+    def test_device_self_long_lived_identity_schema(self):
         api = json.loads((ROOT / 'api/openapi.json').read_text())
         device = api['components']['schemas']['Device']
-        self.assertIn('credential_expires_at', device['required'])
+        self.assertNotIn('credential_expires_at', device['properties'])
         check = Draft202012Validator(device, format_checker=FORMATS)
         value = {'device_id': UUID, 'tenant_id': UUID, 'application_id': UUID,
-                 'platform': 'linux', 'metadata': {}, 'credential_expires_at': '2026-10-29T12:00:00.123456Z'}
+                 'platform': 'linux', 'metadata': {}}
         check.validate(value)
-        for expiry in ('not-a-date', '2026-10-29T12:00:00', None, 123):
-            self.assertFalse(check.is_valid(dict(value, credential_expires_at=expiry)))
-        del value['credential_expires_at']
-        self.assertFalse(check.is_valid(value))
+        self.assertFalse(check.is_valid(dict(value, credential_expires_at='2026-10-29T12:00:00Z')))
+        self.assertNotIn('/v1/device-credentials/refresh', api['paths'])
+
+    def test_long_lived_credential_rejects_legacy_expiry(self):
+        api = json.loads((ROOT / 'api/openapi.json').read_text())
+        check = Draft202012Validator(api['components']['schemas']['Credential'], format_checker=FORMATS)
+        value = {'device_id': UUID, 'device_credential': 'dev_' + 'a' * 43}
+        check.validate(value)
+        self.assertFalse(check.is_valid(dict(value, expires_at='2099-01-01T00:00:00Z')))
 
     def test_registration_valid_platforms(self):
         check = validator('device-registration.schema.json')
         for platform in ('windows', 'macos', 'linux', 'android', 'ios', 'web'):
             check.validate({'application_id': UUID, 'platform': platform,
-                            'installation_public_key': 'opaque-installation-label', 'registration_grant': 'reg_test'})
+                            'installation_tag': 'opaque-installation-label', 'registration_grant': 'reg_test'})
 
     def test_registration_negative(self):
         check = validator('device-registration.schema.json')
-        valid = {'application_id': UUID, 'platform': 'linux', 'installation_public_key': 'key', 'registration_grant': 'reg_test'}
+        valid = {'application_id': UUID, 'platform': 'linux', 'installation_tag': 'key', 'registration_grant': 'reg_test'}
         bad = [dict(valid, registration_grant=''), dict(valid, registration_grant=None), dict(valid, platform='other'), dict(valid, application_id='not-uuid'),
                dict(valid, tenant_id=UUID), dict(valid, metadata={'deep': {'nested': True}}),
                dict(valid, metadata={'text': 'x' * 1025}),
                dict(valid, metadata={str(i): i for i in range(33)})]
-        for field in ('application_id', 'platform', 'installation_public_key'):
+        for field in ('application_id', 'platform', 'installation_tag'):
             case = dict(valid)
             del case[field]
             bad.append(case)
@@ -64,7 +69,7 @@ class ContractTests(unittest.TestCase):
                 self.assertFalse(check.is_valid(case))
 
     def test_direct_registration_body_and_conditional_secret_contract(self):
-        body = {'application_id': UUID, 'platform': 'linux', 'installation_public_key': 'public-label'}
+        body = {'application_id': UUID, 'platform': 'linux', 'installation_tag': 'public-label'}
         standalone = validator('device-registration.schema.json')
         embedded = self.management_validator('Registration')
         for check in (standalone, embedded):
@@ -86,7 +91,7 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(create.is_valid({'name': 'test', 'registration_mode': 'both'}))
         self.assertEqual(api['components']['schemas']['ManagementApplicationCreate']['properties']['registration_mode']['default'], 'grant')
         bootstrap = self.management_validator('BootstrapCapabilities')
-        value = {'api_version': 1, 'signaling_path': '/v1/device-signal', 'registration_modes': ['grant', 'direct'], 'channel_types': ['reliable_message', 'low_latency_message'], 'managed_turn': False, 'application_e2ee': False, 'webrtc_dtls_required': True, 'max_signal_frame_bytes': 131072, 'max_message_bytes': 65536}
+        value = {'identity_version': 2, 'credential_lifetime': 'until_revoked', 'api_version': 1, 'signaling_path': '/v1/device-signal', 'registration_modes': ['grant', 'direct'], 'channel_types': ['reliable_message', 'low_latency_message'], 'managed_turn': False, 'application_e2ee': False, 'webrtc_dtls_required': True, 'max_signal_frame_bytes': 131072, 'max_message_bytes': 65536}
         bootstrap.validate(value)
         self.assertFalse(bootstrap.is_valid(dict(value, registration_modes=['grant', 'direct', 'both'])))
 
@@ -124,7 +129,7 @@ class ContractTests(unittest.TestCase):
         expected = {
             '/healthz': {'get'}, '/readyz': {'get'}, '/metrics': {'get'},
             '/v1/device-registrations': {'post'}, '/v1/device-self': {'get'},
-            '/v1/device-credentials/refresh': {'post'}, '/v1/device-signal': {'get'},
+            '/v1/device-signal': {'get'},
             '/v1/bootstrap': {'get'}, '/v1/applications': {'get', 'post'},
             '/v1/applications/{id}': {'get', 'patch'},
             '/v1/registration-grants': {'post'}, '/v1/devices': {'get'},

@@ -8,9 +8,9 @@
 
 | 能力 | 状态 |
 |---|---|
-| 加载已有身份、grant 注册、凭证轮换 | 调用真实 HTTP 身份客户端；注册须传入并保留幂等键 |
+| 加载已有长期身份、grant 注册 | 调用真实 HTTP 身份客户端；注册须传入并保留幂等键 |
 | WSS、目标确认、授权租约、可靠消息 | 调用真实 `DeviceSdk` actor，不复制控制面协议 |
-| 自动 WSS 重连、轮换后重新认证 | 沿用 Rust facade；重连本身不延长旧授权 |
+| 自动 WSS 重连与重新认证 | 沿用 Rust facade；重连本身不延长旧授权 |
 | 存储 | 显式 `memory` 或宿主异步 `external` CAS；无默认明文落盘 |
 | 安全整数句柄、有界回调、取消、关闭 | 已实现并运行真实 C 生命周期与服务集成测试 |
 | 显式身份 reset | 支持能力位、确认 DeviceID、CAS tombstone 与未知结果恢复；验证证据见开发与验收 |
@@ -57,7 +57,6 @@ unsafe 仅限 `boundary.rs` 的 C 指针/导出边界；Rust core/storage/transp
 | CONNECT | `{"target_device_id":"UUID"}`；completion 只表示请求已提交，等待 CONNECTION_READY 才可发送 |
 | RESPOND | `{"session_id":"UUID","accept":true}`；服务端仍决定权威授权状态 |
 | SEND | connection handle 与二进制；成功仅表示本地发送队列接受，不是远端业务确认 |
-| REFRESH | 空输入；使用身份模块串行轮换与恢复逻辑，并重新认证 WSS |
 | CLOSE_CONNECTION | 空输入；接受后立即拒绝新增 send 与后续消息/Ready 回调，再等待实际资源清理 |
 
 立即失败时输出 request=0，不产生 completion。受理前预留输入复制、最大 READ 回复、操作元数据及终态队列位置；每个受理操作恰好结算一次，信用持有至终态 callback 返回并销毁原生 payload。缩小当前对象数量只影响新接纳，不撤回已受理信用。
@@ -100,7 +99,7 @@ Kotlin 暴露 MessageChannel/ByteStream、typed send disposition/partial-write c
 
 ### 取消与不确定结果
 
-`dp_sdk_cancel` 只取消尚未执行的普通操作，产生一次 `CANCELLED` completion。运行中的操作及已接受的关闭返回 `BUSY`，不会伪称回滚远端注册/凭证轮换。连接关闭的本地禁止收发效果不可撤销；若紧接 shutdown，关闭操作在同一清理完成后结算，不谎报取消。
+`dp_sdk_cancel` 只取消尚未执行的普通操作，产生一次 `CANCELLED` completion。运行中的操作及已接受的关闭返回 `BUSY`，不会伪称回滚远端注册。连接关闭的本地禁止收发效果不可撤销；若紧接 shutdown，关闭操作在同一清理完成后结算，不谎报取消。
 
 网络响应丢失可能返回 `OUTCOME_UNKNOWN`。注册调用方必须保留原请求与幂等键，在服务端有限 replay 窗口内恢复。当前待定变更日志仍只在内存中；进程崩溃、持续丢响应或持续存储失败并不保证凭证可恢复。
 
@@ -168,7 +167,7 @@ cargo clippy --locked -p device-ffi --all-targets -- -D warnings
 - 持续命令洪泛期间 Ready/Message 仍取得进展；回调消费不被命令优先级永久饿死。
 - HTTPS/WSS 自签拒绝、受信任 CA 正确 SAN 连接、错误 SAN 拒绝；CA 测试用独立子进程隔离环境。
 
-真实服务测试必须使用独立新 fixture，会轮换 source credential：
+真实服务测试必须使用独立新 fixture，不操作现场安装身份：
 
 ```bash
 TEST_IDENTITY_BASE_URL=http://127.0.0.1:8080 \
@@ -181,3 +180,7 @@ fixture 必须为 0600；runner 自动生成并删除 0600 临时 C 输入，不
 ### 多通道联合验证
 
 `TEST_MULTICONNECTION_FIXTURE_FILE` 指向管理 HTTP 创建的 source/target/third 三设备新 0600 fixture，配合 `TEST_IDENTITY_BASE_URL` 运行 `python3 src/device-sdk/device-ffi/tests/run-channels.py`。测试覆盖两条跨应用授权连接、三类通道、256KiB 部分读写、同时双向流、FIN、跨父句柄拒绝和兄弟连接存活；真实低延迟链路不承诺全部消息必达。原 service.c 洪泛与 reset 测试继续保留，含无秘密阶段/计数诊断；本地通过不解释此前远端偶发洪泛超时，精确 CI 仍必须通过。
+
+ABI 2 身份 JSON 只有 `device_id` 与 `device_credential`，`DP_CAP_LONG_LIVED_IDENTITY` 声明长期可撤销身份能力。旧 ABI 配置拒绝创建，操作编号 5 不再提供 refresh；不重排其他操作编号。
+
+`DP_EVENT_IDENTITY_PERSISTED`（15，status 为 `DP_OK`，payload 为空）仅在此前持久化待定状态恢复成功后发送。SDK 先完成 CAS 或确认自己的未知提交，再通过公共 storage LOAD 精确核验 revision、ID 和凭据，随后解除 dirty 状态。普通 host LOAD 不能替代该确认；消费者还须保留实例关闭、STOPPED、撤销及会话租约栅栏。重复成功不重复发送，读回失败仍保持 pending。

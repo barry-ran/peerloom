@@ -126,7 +126,7 @@ try:
     with open(sys.argv[1], encoding="utf-8") as stream:
         data = json.load(stream)
     for side in ("source", "target"):
-        for key in ("application_id", "device_id", "device_credential", "expires_at"):
+        for key in ("application_id", "device_id", "device_credential"):
             assert isinstance(data[side][key], str) and data[side][key]
 except Exception:
     raise SystemExit("disposable pair fixture validation failed; contents withheld") from None
@@ -149,7 +149,7 @@ try:
     with open(sys.argv[1], encoding="utf-8") as stream:
         data = json.load(stream)
     for side in ("source", "target"):
-        for key in ("application_id", "device_id", "device_credential", "expires_at"):
+        for key in ("application_id", "device_id", "device_credential"):
             assert isinstance(data[side][key], str) and data[side][key]
 except Exception:
     raise SystemExit("disposable pair fixture validation failed; contents withheld") from None
@@ -204,7 +204,7 @@ try:
     with open(sys.argv[1], encoding="utf-8") as stream:
         data = json.load(stream)
     for side in ("source", "target"):
-        for key in ("application_id", "device_id", "device_credential", "expires_at"):
+        for key in ("application_id", "device_id", "device_credential"):
             assert isinstance(data[side][key], str) and data[side][key]
 except Exception:
     raise SystemExit("disposable pair fixture validation failed; contents withheld") from None

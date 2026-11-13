@@ -337,143 +337,6 @@
         }
       }
     },
-    "/v1/device-credentials/refresh": {
-      "post": {
-        "summary": "轮换设备凭证；旧凭证仅短暂重叠",
-        "security": [
-          {
-            "DeviceCredential": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 8,
-              "maxLength": 128
-            },
-            "description": "相同授权上下文与逻辑请求使用相同键；不能用新键再次消费一次性 grant。"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "description": "须 Content-Type: application/json；允许空请求体或空对象",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "成功；凭证响应禁止缓存或日志记录",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Credential"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdentityProblem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdentityProblem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdentityProblem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdentityProblem"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdentityProblem"
-                }
-              }
-            }
-          },
-          "415": {
-            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdentityProblem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdentityProblem"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdentityProblem"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "认证、输入、幂等或依赖失败，按稳定 code 判断",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdentityProblem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/device-signal": {
       "get": {
         "summary": "原生设备 WebSocket 信令",
@@ -4896,13 +4759,13 @@
       "Registration": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "设备注册输入",
-        "description": "支持 grant 注册与应用显式启用的 direct 注册。grant 请求提供非空 registration_grant；direct 省略该字段，HTTP Idempotency-Key 必须是 CSPRNG 32字节的canonical base64url无padding（43字符），该恢复秘密不得日志记录。非空无效grant不会降级direct。schema只验证body，不能证明随机性或跨body/header及应用当前配置；runtime另行实施。metadata仅有限标量字段，入口原始body限16 KiB；公开installation_public_key只作为非认证安装标签哈希。",
+        "description": "支持 grant 注册与应用显式启用的 direct 注册。grant 请求提供非空 registration_grant；direct 省略该字段，HTTP Idempotency-Key 必须是 CSPRNG 32字节的canonical base64url无padding（43字符），该恢复秘密不得日志记录。非空无效grant不会降级direct。schema只验证body，不能证明随机性或跨body/header及应用当前配置；runtime另行实施。metadata仅有限标量字段，入口原始body限16 KiB；公开installation_tag只作为非认证安装标签哈希。",
         "type": "object",
         "additionalProperties": false,
         "required": [
           "application_id",
           "platform",
-          "installation_public_key"
+          "installation_tag"
         ],
         "properties": {
           "application_id": {
@@ -4919,7 +4782,7 @@
               "web"
             ]
           },
-          "installation_public_key": {
+          "installation_tag": {
             "type": "string",
             "minLength": 1,
             "maxLength": 4096
@@ -4970,8 +4833,7 @@
         "type": "object",
         "required": [
           "device_id",
-          "device_credential",
-          "expires_at"
+          "device_credential"
         ],
         "properties": {
           "device_id": {
@@ -4981,12 +4843,9 @@
           "device_credential": {
             "type": "string",
             "pattern": "^dev_[A-Za-z0-9_-]{43}$"
-          },
-          "expires_at": {
-            "type": "string",
-            "format": "date-time"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "Device": {
         "type": "object",
@@ -4995,8 +4854,7 @@
           "tenant_id",
           "application_id",
           "platform",
-          "metadata",
-          "credential_expires_at"
+          "metadata"
         ],
         "properties": {
           "device_id": {
@@ -5049,13 +4907,9 @@
                 }
               ]
             }
-          },
-          "credential_expires_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "本次已认证设备凭证在数据库中的到期时间（UTC）。刷新重叠窗口返回旧凭证缩短后的期限，不是设备生命周期或客户端声明。该认证快照不能保证响应之后不会撤销；业务离线票据须另行处理撤销与逐请求重验。"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "IdentityProblem": {
         "allOf": [
@@ -6402,6 +6256,14 @@
           "max_message_bytes": {
             "type": "integer",
             "minimum": 1
+          },
+          "identity_version": {
+            "type": "integer",
+            "const": 2
+          },
+          "credential_lifetime": {
+            "type": "string",
+            "const": "until_revoked"
           }
         },
         "required": [
@@ -6413,7 +6275,9 @@
           "application_e2ee",
           "webrtc_dtls_required",
           "max_signal_frame_bytes",
-          "max_message_bytes"
+          "max_message_bytes",
+          "identity_version",
+          "credential_lifetime"
         ]
       },
       "ManagementWebhookEndpoint": {

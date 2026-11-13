@@ -18,7 +18,7 @@ func TestBootstrapAdvertisesManagedTURNWithoutRequiringDeployedNodes(t *testing.
 	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
 		t.Fatal(err)
 	}
-	if value.APIVersion != 1 || value.SignalingPath != "/v1/device-signal" || !value.WebRTCDTLSRequired || !value.ManagedTURN || value.ApplicationE2EE {
+	if value.IdentityVersion != 2 || value.CredentialLifetime != "until_revoked" || value.APIVersion != 1 || value.SignalingPath != "/v1/device-signal" || !value.WebRTCDTLSRequired || !value.ManagedTURN || value.ApplicationE2EE {
 		t.Fatal("incorrect capabilities")
 	}
 	if len(value.RegistrationModes) != 2 || value.RegistrationModes[0] != "grant" || value.RegistrationModes[1] != "direct" || len(value.ChannelTypes) != 2 {

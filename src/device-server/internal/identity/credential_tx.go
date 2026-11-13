@@ -9,8 +9,8 @@ import (
 )
 
 // AuthenticateCredentialInTx requires the caller to hold application/tenant and
-// device locks first, in the same order as Refresh. It adds the credential lock
-// and rechecks expiry/revocation without committing the caller's transaction.
+// device locks first, in the shared authorization lock order. It adds the credential lock
+// and rechecks revocation and scope without committing the caller's transaction.
 func AuthenticateCredentialInTx(ctx context.Context, tx pgx.Tx, actor Device, token string) error {
 	if !strings.HasPrefix(token, "dev_") || len(token) != 47 {
 		return Fail("AUTH_INVALID", 401)

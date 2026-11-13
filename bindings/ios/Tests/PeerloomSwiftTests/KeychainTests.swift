@@ -64,7 +64,7 @@ final class KeychainTests: XCTestCase {
         if let directory { try FileManager.default.removeItem(at: directory) }
     }
     private func identity(_ suffix: String = "one") -> StoredIdentity {
-        StoredIdentity(deviceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", deviceCredential: "dev_private_" + suffix, expiresAt: "2030-01-01T00:00:00Z")
+        StoredIdentity(deviceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", deviceCredential: "dev_private_" + suffix)
     }
     #if os(iOS)
     private func traceIOSFixture() async throws {
@@ -117,6 +117,13 @@ final class KeychainTests: XCTestCase {
         try await traceIOSFixture()
         #endif
         let store = store!, scope = scope!, value = identity()
+        let encoded = try encodeJSON(value)
+        XCTAssertEqual(try JSONDecoder().decode(StoredIdentity.self, from: encoded), value)
+        var oldIdentity = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        oldIdentity["expires_at"] = "2030-01-01T00:00:00Z"
+        XCTAssertThrowsError(try JSONDecoder().decode(StoredIdentity.self,
+            from: JSONSerialization.data(withJSONObject: oldIdentity)))
+
         let initial = try await onWorker { try store.perform(StorageRequest(operation: .load, scope: scope)) }
         XCTAssertEqual(initial, StorageReply(revision: 0))
         let saved = try await onWorker { try store.perform(StorageRequest(operation: .save, scope: scope, expectedRevision: 0, identity: value)) }
@@ -186,7 +193,7 @@ final class KeychainTests: XCTestCase {
         }
         let document: [String: Any] = ["keychain": keychainPath!, "password": password!, "locks": directory.appendingPathComponent("locks").path,
             "service": service!, "request": ["operation": "save", "scope": ["server_origin": scope.serverOrigin, "application_id": scope.applicationID],
-            "expected_revision": 0, "identity": ["device_id": identity().deviceID, "device_credential": identity().deviceCredential, "expires_at": identity().expiresAt]]]
+            "expected_revision": 0, "identity": ["device_id": identity().deviceID, "device_credential": identity().deviceCredential]]]
         let data = try JSONSerialization.data(withJSONObject: document)
         let outcomes: [String] = try await onWorker {
             var children: [(Process, Pipe)] = []

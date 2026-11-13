@@ -1,5 +1,7 @@
 # Windows 安全存储
 
+ABI 2 的安装身份只有 `device_id` 与 `device_credential`，无到期字段。平台存储 schema/密文格式版本为 2，保留原作用域定位；旧格式、损坏、丢密钥明确失败，不自动清空或注册。CAS、tombstone、安全存储和线程边界不变；历史原生测试不能替代新提交验收。
+
 ## 验证状态与边界
 
 本地预检使用 Rust Windows-MSVC std 在 Linux 上做 `cargo check/clippy`，**这不代表 Windows 链接或运行验证**。必须在 Windows 2022 原生 runner 运行下述测试，实际运行结果以对应精确 SHA 的必需 CI 记录为准；全部成功后才能晋升 master。Wine、WSL、Linux 编译不能替代原生验证。
@@ -11,7 +13,7 @@
 - 使用 `CryptProtectData/CryptUnprotectData` 的 CurrentUser 语义，设置 `CRYPTPROTECT_UI_FORBIDDEN`，prompt/reserved为空，不设置 LOCAL_MACHINE，不更改或回退进程/线程身份。
 - 若线程处于 impersonation 状态则拒绝，避免文件 SID 与 DPAPI 身份不一致；不调用 RevertToSelf。
 - 域分离、长度编码后的 origin/application SHA-256 作为可公开 scope 标识及 DPAPI optional entropy；加密快照内再绑定 scope。不能将一个作用域的 blob 搬到另一作用域使用。
-- 凭证、device ID、expires_at、revision/tombstone 一起进入 DPAPI 密文；磁盘没有明文身份文件。scope 锁文件仅含空/0/1 标记。
+- 凭证、device ID、revision/tombstone 一起进入 DPAPI 密文；磁盘没有明文身份文件。scope 锁文件仅含空/0/1 标记。
 - 仅支持绝对本地 NTFS 盘符路径；拒绝 UNC、设备/ADS、`..`、尾随空格/点、所有 reparse/junction 祖先和目标。父目录须存在。
 - 创建最终目录及文件时使用当前 process-token 用户 SID 独占、protected DACL；已有对象必须 owner 匹配、只有一个当前 SID full-control ACE、无继承标志，不能静默修补或接管其他用户文件。
 - 所有祖先目录 handle 在事务期间不允许 FILE_SHARE_DELETE，并由 RAII 释放，阻止 rename 导致锁命名空间分裂。锁和数据文件拒绝硬链接。

@@ -369,7 +369,7 @@ def create_authorized_pair(client, credential):
                                {'application_id': app['id'], 'expires_in_seconds': 300}, prefix + name + '-grant')
         device = client.request('POST', '/v1/device-registrations', 201, body={
             'application_id': app['id'], 'platform': 'windows',
-            'installation_public_key': 'native-windows-' + uuid.uuid4().hex,
+            'installation_tag': 'native-windows-' + uuid.uuid4().hex,
             'registration_grant': grant['grant']}, key=prefix + name + '-device')
         pair[name] = {'application_id': app['id'], **device}
     client.request('POST', '/v1/connection-grants', 201, credential, {

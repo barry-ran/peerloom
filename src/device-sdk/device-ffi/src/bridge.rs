@@ -62,7 +62,7 @@ impl Config {
             .map_err(|value| error(SdkError::Transport(value)))
     }
     pub fn validate(&self) -> bool {
-        self.abi_version == 1
+        self.abi_version == 2
             && (crate::budget::MIN_BYTES..=isize::MAX as usize)
                 .contains(&self.ffi_resource_budget_bytes)
             && matches!(self.storage.as_str(), "memory" | "external")
@@ -106,7 +106,7 @@ struct Start {
 #[serde(deny_unknown_fields)]
 struct Registration {
     platform: Platform,
-    installation_public_key: String,
+    installation_tag: String,
     #[serde(default)]
     registration_grant: String,
     sdk_version: String,
@@ -164,7 +164,7 @@ async fn sdk_event(sdk: &mut Option<DeviceSdk>) -> Option<SdkEvent> {
     }
 }
 
-// Optional ABI1 payload evidence, not a replacement for event reason/status or
+// Optional ABI2 payload evidence, not a replacement for event reason/status or
 // an accepted operation's terminal. Zero means the owned worker cleanup paths
 // reported success; it is not a guarantee that every OS/backend resource retired.
 fn closed_payload(session: &str, local_close_status: u32) -> Vec<u8> {
@@ -280,6 +280,7 @@ pub async fn run(
                         else { instance.emit(event); }
                     },
                     Some(SdkEvent::IdentityPersistencePending) => { instance.emit(Event::new(8, 0, 0, NOT_READY, Vec::new())); },
+                    Some(SdkEvent::IdentityPersisted) => { instance.emit(Event::new(15, 0, 0, OK, Vec::new())); },
                     Some(SdkEvent::Stopped(reason)) => { instance.emit(Event::new(11, 0, 0, error(reason), Vec::new())); instance.stop(); },
                     None => instance.stop(),
                 }
@@ -349,7 +350,7 @@ async fn execute(
                 RegistrationRequest {
                     application_id: config.application_id.clone(),
                     platform: registration.platform,
-                    installation_public_key: registration.installation_public_key,
+                    installation_tag: registration.installation_tag,
                     registration_grant: SecretString::new(registration.registration_grant),
                     sdk_version: registration.sdk_version,
                     metadata: registration.metadata,
@@ -417,12 +418,6 @@ async fn execute(
                 sdk.reject(&r.session_id).await
             }
             .map_err(error)?;
-        }
-        5 => {
-            if op.connection != 0 || !op.input.is_empty() {
-                return Err(INVALID);
-            }
-            sdk.refresh_credentials().await.map_err(error)?;
         }
         _ => return Err(UNSUPPORTED),
     }
@@ -536,7 +531,7 @@ mod tests {
             response.extend_from_slice(&[203 ^ 0x21, 0x12, 113 ^ 0xa4, 1 ^ 0x42]);
             listener.send_to(&response, peer).await.unwrap();
         });
-        let value = serde_json::json!({"abi_version":1,"origin":"https://localhost",
+        let value = serde_json::json!({"abi_version":2,"origin":"https://localhost",
             "application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory",
             "development_loopback":true,"ice_servers":[{"urls":[format!("stun:{address}")]}]});
         let config: super::Config = serde_json::from_value(value).unwrap();
@@ -570,7 +565,7 @@ mod tests {
     }
     #[test]
     fn custom_ice_json_preserves_defaults_and_replaces_managed() {
-        let base = serde_json::json!({"abi_version":1,"origin":"https://localhost",
+        let base = serde_json::json!({"abi_version":2,"origin":"https://localhost",
             "application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"});
         let original: super::Config = serde_json::from_value(base.clone()).unwrap();
         assert!(original.sdk().managed_relays);
@@ -662,7 +657,7 @@ mod tests {
     }
     #[test]
     fn ffi_optional_count_caps_match_core_semantics() {
-        let mut config: Config = serde_json::from_str(r#"{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"}"#).unwrap();
+        let mut config: Config = serde_json::from_str(r#"{"abi_version":2,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"}"#).unwrap();
         assert!(config.validate());
         assert_eq!(
             config.ffi_resource_budget_bytes,
@@ -695,6 +690,13 @@ mod tests {
         assert!(config.validate());
         config.max_channels_per_connection = 0;
         config.max_channel_creations_per_connection = 1;
+        assert!(config.validate());
+    }
+    #[test]
+    fn legacy_abi_cannot_silently_load_long_lived_identity_contract() {
+        let mut config: Config = serde_json::from_str(r#"{"abi_version":1,"origin":"https://localhost","application_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","storage":"memory"}"#).unwrap();
+        assert!(!config.validate());
+        config.abi_version = 2;
         assert!(config.validate());
     }
 }

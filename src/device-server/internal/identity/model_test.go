@@ -10,7 +10,7 @@ import (
 )
 
 func validRegistration() Registration {
-	return Registration{ApplicationID: "10000000-0000-0000-0000-000000000001", Platform: "linux", InstallationPublicKey: "public-installation-label", RegistrationGrant: "reg_example"}
+	return Registration{ApplicationID: "10000000-0000-0000-0000-000000000001", Platform: "linux", InstallationTag: "public-installation-label", RegistrationGrant: "reg_example"}
 }
 
 func TestRegistrationValidation(t *testing.T) {
@@ -20,8 +20,8 @@ func TestRegistrationValidation(t *testing.T) {
 	for name, mutate := range map[string]func(*Registration){
 		"application":  func(r *Registration) { r.ApplicationID = "bad" },
 		"platform":     func(r *Registration) { r.Platform = "invalid" },
-		"key-empty":    func(r *Registration) { r.InstallationPublicKey = "" },
-		"key-large":    func(r *Registration) { r.InstallationPublicKey = strings.Repeat("a", 4097) },
+		"key-empty":    func(r *Registration) { r.InstallationTag = "" },
+		"key-large":    func(r *Registration) { r.InstallationTag = strings.Repeat("a", 4097) },
 		"no-grant":     func(r *Registration) { r.RegistrationGrant = "" },
 		"nested":       func(r *Registration) { r.Metadata = map[string]any{"x": map[string]any{"y": 1}} },
 		"array":        func(r *Registration) { r.Metadata = map[string]any{"x": []any{1}} },
@@ -94,12 +94,12 @@ func TestSettingsAndIdempotencyBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := LoadSettings(func(k string) string {
-		if k == "ROTATION_OVERLAP" {
+		if k == "REPLAY_TTL" {
 			return "24h"
 		}
 		return ""
 	}); err == nil {
-		t.Fatal("unbounded overlap")
+		t.Fatal("unbounded replay")
 	}
 	for _, key := range []string{"", "short", "line\nbreak", strings.Repeat("a", 129)} {
 		if validIdempotency(key) {
@@ -108,5 +108,19 @@ func TestSettingsAndIdempotencyBounds(t *testing.T) {
 	}
 	if !validIdempotency("request-key-123") {
 		t.Fatal("valid key rejected")
+	}
+}
+
+func TestObsoleteCredentialLifetimeSettingsRejected(t *testing.T) {
+	for _, name := range []string{"CREDENTIAL_TTL", "ROTATION_OVERLAP"} {
+		_, err := LoadSettings(func(key string) string {
+			if key == name {
+				return "24h"
+			}
+			return ""
+		})
+		if err == nil {
+			t.Fatalf("obsolete setting %s silently accepted", name)
+		}
 	}
 }

@@ -156,7 +156,7 @@ impl Host {
             COLLECTOR.set(collector.clone()).is_ok(),
             "exactly one PC host"
         );
-        let config = serde_json::to_vec(&json!({"abi_version":1,"origin":f.origin,
+        let config = serde_json::to_vec(&json!({"abi_version":2,"origin":f.origin,
             "application_id":f.registrations[0].application_id,"storage":"external",
             "development_loopback":true}))
         .unwrap();
@@ -416,10 +416,10 @@ async fn one_c_pc_five_hundred_real_native_streams() {
     let mut host = Host::new(&f);
     phase("register", started);
     let registration = &f.registrations[0];
-    let request = json!({"registration":{"platform":"linux","installation_public_key":format!("capacity-c-public-label-{}",uuid::Uuid::new_v4()),"registration_grant":registration.grant,"sdk_version":env!("CARGO_PKG_VERSION"),"metadata":{}},"idempotency_key":uuid::Uuid::new_v4().to_string()});
+    let request = json!({"registration":{"platform":"linux","installation_tag":format!("capacity-c-public-label-{}",uuid::Uuid::new_v4()),"registration_grant":registration.grant,"sdk_version":env!("CARGO_PKG_VERSION"),"metadata":{}},"idempotency_key":uuid::Uuid::new_v4().to_string()});
     let start = host.submit(1, 0, &serde_json::to_vec(&request).unwrap());
     // Real external-store load deliberately remains outstanding, which keeps the
-    // serial START in flight. A subsequent REFRESH is provably queued, not racing
+    // serial START in flight. A subsequent CONNECT is provably queued, not racing
     // an already-running asynchronous read or remote credential mutation.
     let load = host.next().await;
     assert_eq!(load.kind, 10);
@@ -427,7 +427,11 @@ async fn one_c_pc_five_hundred_real_native_streams() {
         serde_json::from_slice::<Value>(&load.bytes).unwrap()["operation"],
         "load"
     );
-    let queued = host.submit(5, 0, &[]);
+    let queued = host.submit(
+        2,
+        0,
+        br#"{"target_device_id":"00000000-0000-4000-8000-000000000002"}"#,
+    );
     assert_eq!(unsafe { capacity_cancel(host.sdk, queued) }, OK);
     host.storage(&load);
     let complete = host.ok(start).await;

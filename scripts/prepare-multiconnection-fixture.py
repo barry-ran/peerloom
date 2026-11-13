@@ -24,7 +24,7 @@ def prepare(base_url, admin_fixture, output):
                            {'application_id': application, 'expires_in_seconds': 300}, key + '-grant')
     third = client.request('POST', '/v1/device-registrations', 201, body={
         'application_id': application, 'platform': 'linux',
-        'installation_public_key': key, 'registration_grant': grant['grant'],
+        'installation_tag': key, 'registration_grant': grant['grant'],
     }, key=key + '-register')
     pair['third'] = {'application_id': application, **third}
     client.request('POST', '/v1/connection-grants', 201, admin, {

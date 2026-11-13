@@ -10,15 +10,14 @@ private struct ServiceDevice: Decodable, Sendable {
     let application_id: String
     let device_id: String
     let device_credential: String
-    let expires_at: String
     var stored: StoredIdentity {
-        StoredIdentity(deviceID: device_id, deviceCredential: device_credential, expiresAt: expires_at)
+        StoredIdentity(deviceID: device_id, deviceCredential: device_credential)
     }
 }
 private struct ServiceRegistration: Decodable, Sendable {
     let application_id: String
     let registration_grant: String
-    let installation_public_key: String
+    let installation_tag: String
     let idempotency_key: String
 }
 private struct ServiceFixture: Decodable, Sendable {
@@ -52,7 +51,7 @@ private struct ServiceFixture: Decodable, Sendable {
         guard UUID(uuidString: registration.application_id) != nil,
               !devices.contains(where: { $0.application_id == registration.application_id }),
               !registration.registration_grant.isEmpty, registration.registration_grant.utf8.count <= 4096,
-              !registration.installation_public_key.isEmpty, registration.installation_public_key.utf8.count <= 4096,
+              !registration.installation_tag.isEmpty, registration.installation_tag.utf8.count <= 4096,
               !registration.idempotency_key.isEmpty, registration.idempotency_key.utf8.count <= 128 else {
             throw ServiceFailure.fixture
         }
@@ -174,7 +173,7 @@ final class SwiftServiceTests: XCTestCase {
             let firstSDK = try await PeerloomSDK.open(configuration: firstConfig)
             registrationSDK = firstSDK
             let registeredID = try await firstSDK.start(registration: PeerloomRegistration(
-                installationPublicKey: first.installation_public_key, registrationGrant: first.registration_grant),
+                installationTag: first.installation_tag, registrationGrant: first.registration_grant),
                 idempotencyKey: first.idempotency_key)
             guard UUID(uuidString: registeredID) != nil,
                   !devices.contains(where: { $0.device_id == registeredID }) else { throw ServiceFailure.mismatch }

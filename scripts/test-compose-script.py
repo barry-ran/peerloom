@@ -85,7 +85,7 @@ if name == "python3":
             assert json.loads(path.read_text())["service_credential"] == os.environ["TEST_EPHEMERAL_GRANT"]
         output = pathlib.Path(sys.argv[sys.argv.index("--pair-output") + 1])
         assert not output.exists()
-        output.write_text(json.dumps({side: {"application_id": side, "device_id": side, "device_credential": os.environ["TEST_EPHEMERAL_GRANT"], "expires_at": "test-expiry"} for side in ("source", "target")}))
+        output.write_text(json.dumps({side: {"application_id": side, "device_id": side, "device_credential": os.environ["TEST_EPHEMERAL_GRANT"]} for side in ("source", "target")}))
         output.chmod(0o600)
         pathlib.Path("management-test-invoked").touch()
         sys.exit(9 if os.environ["TEST_FAIL_TARGET"] == "management" else 0)
@@ -110,7 +110,7 @@ if name == "docker":
         print(json.dumps({"tenant_id": "00000000-0000-4000-8000-000000000001", "service_credential": os.environ["TEST_EPHEMERAL_GRANT"]}))
     if "device-bootstrap" in sys.argv:
         if "--pair" in sys.argv:
-            print(json.dumps({side: {"application_id": side, "device_id": side, "device_credential": os.environ["TEST_EPHEMERAL_GRANT"], "expires_at": "test-expiry"} for side in ("source", "target")}))
+            print(json.dumps({side: {"application_id": side, "device_id": side, "device_credential": os.environ["TEST_EPHEMERAL_GRANT"]} for side in ("source", "target")}))
         else:
             print(json.dumps({"application_id": "test-app", "registration_grant": os.environ["TEST_EPHEMERAL_GRANT"]}))
     if "down" in sys.argv:

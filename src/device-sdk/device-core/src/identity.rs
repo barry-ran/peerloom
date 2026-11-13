@@ -83,7 +83,8 @@ pub enum Platform {
 pub struct RegistrationRequest {
     pub application_id: String,
     pub platform: Platform,
-    pub installation_public_key: String,
+    /// Opaque installation label, not a public key or proof of identity.
+    pub installation_tag: String,
     /// Empty only for explicitly requested direct enrollment; server policy still controls access.
     pub registration_grant: SecretString,
     pub sdk_version: String,
@@ -92,7 +93,7 @@ pub struct RegistrationRequest {
 impl RegistrationRequest {
     fn body(&self) -> Result<Zeroizing<Vec<u8>>, IdentityError> {
         if uuid::Uuid::parse_str(&self.application_id).is_err()
-            || !(1..=4096).contains(&self.installation_public_key.chars().count())
+            || !(1..=4096).contains(&self.installation_tag.chars().count())
             || (!self.registration_grant.expose().is_empty()
                 && !self.registration_grant.expose().starts_with("reg_"))
             || self.registration_grant.expose().len() > 512
@@ -120,7 +121,7 @@ impl RegistrationRequest {
         struct Wire<'a> {
             application_id: &'a str,
             platform: Platform,
-            installation_public_key: &'a str,
+            installation_tag: &'a str,
             #[serde(skip_serializing_if = "Option::is_none")]
             registration_grant: Option<&'a str>,
             sdk_version: &'a str,
@@ -130,7 +131,7 @@ impl RegistrationRequest {
             serde_json::to_vec(&Wire {
                 application_id: &self.application_id,
                 platform: self.platform,
-                installation_public_key: &self.installation_public_key,
+                installation_tag: &self.installation_tag,
                 registration_grant: (!self.registration_grant.expose().is_empty())
                     .then(|| self.registration_grant.expose()),
                 sdk_version: &self.sdk_version,
@@ -305,29 +306,6 @@ impl IdentityClient {
                 .await?,
         )
     }
-    pub async fn refresh(
-        &self,
-        identity: &StoredIdentity,
-        key: &IdempotencyKey,
-    ) -> Result<StoredIdentity, IdentityError> {
-        validate_identity(identity)?;
-        let next = credential(
-            &self
-                .request(
-                    Method::POST,
-                    "/v1/device-credentials/refresh",
-                    Some(&identity.device_credential),
-                    Some(key),
-                    Some(b"{}"),
-                    200,
-                )
-                .await?,
-        )?;
-        if next.device_id != identity.device_id {
-            return Err(IdentityError::InvalidResponse);
-        }
-        Ok(next)
-    }
     pub async fn device_self(
         &self,
         identity: &StoredIdentity,
@@ -362,11 +340,6 @@ fn validate_identity(identity: &StoredIdentity) -> Result<(), IdentityError> {
         || !token[4..]
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        || time::OffsetDateTime::parse(
-            &identity.expires_at,
-            &time::format_description::well_known::Rfc3339,
-        )
-        .is_err()
     {
         return Err(IdentityError::InvalidResponse);
     }
@@ -374,16 +347,15 @@ fn validate_identity(identity: &StoredIdentity) -> Result<(), IdentityError> {
 }
 fn credential(data: &[u8]) -> Result<StoredIdentity, IdentityError> {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct Wire {
         device_id: String,
         device_credential: String,
-        expires_at: String,
     }
     let wire: Wire = serde_json::from_slice(data).map_err(|_| IdentityError::InvalidResponse)?;
     let identity = StoredIdentity {
         device_id: wire.device_id,
         device_credential: SecretString::new(wire.device_credential),
-        expires_at: wire.expires_at,
     };
     validate_identity(&identity)?;
     Ok(identity)
@@ -391,9 +363,8 @@ fn credential(data: &[u8]) -> Result<StoredIdentity, IdentityError> {
 #[derive(Clone)]
 enum Pending {
     Register(RegistrationRequest, IdempotencyKey),
-    Refresh(StoredIdentity, IdempotencyKey),
 }
-/// Single mutable owner serializes rotations. Separate owners are fenced by store CAS.
+/// Single mutable owner serializes registration. Separate owners are fenced by store CAS.
 /// Dropping an in-flight future preserves pending retry data; dropping this entire object
 /// loses that in-memory recovery data. Durable crash recovery is not implemented.
 pub struct IdentitySession {
@@ -480,19 +451,10 @@ impl IdentitySession {
         self.pending = Some(Pending::Register(request, key));
         self.retry_pending().await
     }
-    pub async fn refresh(&mut self, key: IdempotencyKey) -> Result<(), IdentityError> {
-        if self.reset_pending.is_some() || self.pending.is_some() || self.dirty {
-            return Err(IdentityError::PendingMutation);
-        }
-        let identity = self.identity.clone().ok_or(IdentityError::NoIdentity)?;
-        self.pending = Some(Pending::Refresh(identity, key));
-        self.retry_pending().await
-    }
     /// Retries exactly the original key/body/token. Server replay windows remain finite.
     pub async fn retry_pending(&mut self) -> Result<(), IdentityError> {
         let next = match self.pending.clone().ok_or(IdentityError::NoIdentity)? {
             Pending::Register(request, key) => self.client.register(&request, &key).await?,
-            Pending::Refresh(identity, key) => self.client.refresh(&identity, &key).await?,
         };
         self.identity = Some(next);
         self.pending = None;
@@ -522,7 +484,6 @@ impl IdentitySession {
                 if snapshot.revision > self.revision
                     && snapshot.identity.as_ref().is_some_and(|stored| {
                         stored.device_id == identity.device_id
-                            && stored.expires_at == identity.expires_at
                             && stored.device_credential.expose()
                                 == identity.device_credential.expose()
                     })
@@ -533,6 +494,22 @@ impl IdentitySession {
                 }
             }
         };
+        // A successful host save receipt alone does not re-open a host observer
+        // fenced by an earlier unknown outcome. Re-read and verify the exact CAS
+        // result before publishing SDK persistence recovery.
+        let snapshot = self
+            .store
+            .load(&self.scope)
+            .await
+            .map_err(IdentityError::Storage)?;
+        if snapshot.revision != self.revision
+            || !snapshot.identity.as_ref().is_some_and(|stored| {
+                stored.device_id == identity.device_id
+                    && stored.device_credential.expose() == identity.device_credential.expose()
+            })
+        {
+            return Err(IdentityError::Storage(StorageError::Conflict));
+        }
         self.dirty = false;
         Ok(())
     }

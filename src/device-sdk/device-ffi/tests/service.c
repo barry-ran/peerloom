@@ -27,7 +27,7 @@ static const char *value(const char *json, const char *key) {
     const char *p = strstr(json,key); assert(p); return p + strlen(key);
 }
 static void callback(uint64_t context, const dp_event *event) {
-    assert(context < 2 && event->abi_version == 1 && event->struct_size >= sizeof(dp_event)); host *h = &hosts[context];
+    assert(context < 2 && event->abi_version == 2 && event->struct_size >= sizeof(dp_event)); host *h = &hosts[context];
     pthread_mutex_lock(&mutex);
     assert(!h->shutdown);
     char json[16385]; assert(event->payload_len < sizeof(json));
@@ -219,7 +219,6 @@ int main(void) {
     wait_count(&hosts[0].messages,1);
     assert(!pthread_join(flood_thread,NULL));
     pthread_mutex_lock(&mutex);assert(hosts[0].flood_completions);pthread_mutex_unlock(&mutex);
-    complete(&hosts[0],submit(&hosts[0],DP_OP_REFRESH,0,NULL,0));wait_count(&hosts[0].saves,1);wait_count(&hosts[0].online,2);
     complete(&hosts[0],submit(&hosts[0],DP_OP_SEND,hosts[0].connection,message,sizeof(message)));wait_count(&hosts[1].messages,2);
     if (reset_mode) {
         char reset[160];
@@ -266,6 +265,6 @@ int main(void) {
         (unsigned long long)hosts[0].accepted_flood,
         (unsigned long long)(hosts[0].rejected_full+hosts[1].rejected_full));
     pthread_mutex_unlock(&mutex);
-    puts("C ABI service: real identity/WSS/approval/WebRTC binary echo, host CAS rotation, reconnect, cross-parent handle rejection, immediate close gate PASS");
+    puts("C ABI service: real identity/WSS/approval/WebRTC binary echo, stable host CAS identity, reconnect, cross-parent handle rejection, immediate close gate PASS");
     return 0;
 }

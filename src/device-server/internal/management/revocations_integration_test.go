@@ -40,7 +40,7 @@ func makePair(t *testing.T, f fixture) devicePair {
 		if err != nil {
 			t.Fatal(err)
 		}
-		credential, err := store.Register(f.ctx, identity.Registration{ApplicationID: app.ID, Platform: "linux", InstallationPublicKey: fmt.Sprintf("pair-install-%d", i), RegistrationGrant: grant.Grant}, fmt.Sprintf("pair-register-%d", i))
+		credential, err := store.Register(f.ctx, identity.Registration{ApplicationID: app.ID, Platform: "linux", InstallationTag: fmt.Sprintf("pair-install-%d", i), RegistrationGrant: grant.Grant}, fmt.Sprintf("pair-register-%d", i))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -62,7 +62,7 @@ func makePair(t *testing.T, f fixture) devicePair {
 	return result
 }
 
-func TestManagementDeviceRevocationSerializesRefreshRequestAndRenew(t *testing.T) {
+func TestManagementDeviceRevocationSerializesRequestAndRenew(t *testing.T) {
 	f := setup(t)
 	pair := makePair(t, f)
 	session, err := pair.auth.Request(f.ctx, pair.actors[0], pair.actors[1].ID, "00000000-0000-0000-0000-000000000001")
@@ -71,15 +71,9 @@ func TestManagementDeviceRevocationSerializesRefreshRequestAndRenew(t *testing.T
 	}
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	var refreshed identity.Credential
-	var refreshErr, errorRevoke error
+	var errorRevoke error
 	var result Revocation
-	wg.Add(4)
-	go func() {
-		defer wg.Done()
-		<-start
-		refreshed, refreshErr = pair.store.Refresh(f.ctx, pair.credentials[0].DeviceCredential, "concurrent-refresh")
-	}()
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		<-start
@@ -102,11 +96,6 @@ func TestManagementDeviceRevocationSerializesRefreshRequestAndRenew(t *testing.T
 	}
 	if _, err = pair.store.Authenticate(f.ctx, pair.credentials[0].DeviceCredential); err == nil {
 		t.Fatal("old credential survived revocation")
-	}
-	if refreshErr == nil {
-		if _, err = pair.store.Authenticate(f.ctx, refreshed.DeviceCredential); err == nil {
-			t.Fatal("concurrent refreshed credential survived revocation")
-		}
 	}
 	var active int
 	if err = f.pool.QueryRow(f.ctx, "SELECT count(*) FROM sessions WHERE tenant_id=$1 AND state<>'closed'", f.principal.TenantID()).Scan(&active); err != nil || active != 0 {

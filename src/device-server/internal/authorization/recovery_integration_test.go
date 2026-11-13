@@ -14,8 +14,8 @@ func (f fixture) credential(t *testing.T, peer int) string {
 	t.Helper()
 	token := "dev_" + strings.Repeat(string(rune('a'+peer)), 43)
 	hash := sha256.Sum256([]byte(token))
-	f.exec(t, `INSERT INTO device_credentials(tenant_id,device_id,credential_hash,expires_at)
-VALUES($1,$2,$3,clock_timestamp()+interval '1 hour')`, f.peers[peer].TenantID, f.peers[peer].ID, hash[:])
+	f.exec(t, `INSERT INTO device_credentials(tenant_id,device_id,credential_hash)
+VALUES($1,$2,$3)`, f.peers[peer].TenantID, f.peers[peer].ID, hash[:])
 	return token
 }
 

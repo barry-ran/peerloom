@@ -157,7 +157,6 @@ impl Api {
 
 pub enum Command {
     Connect(String, oneshot::Sender<()>),
-    Refresh(oneshot::Sender<()>),
     Stop,
 }
 pub struct Driver {
@@ -199,7 +198,7 @@ pub async fn register(
         RegistrationRequest {
             application_id: registration.application_id.clone(),
             platform: Platform::Linux,
-            installation_public_key: format!("capacity-public-label-{}", uuid::Uuid::new_v4()),
+            installation_tag: format!("capacity-public-label-{}", uuid::Uuid::new_v4()),
             registration_grant: SecretString::new(registration.grant.clone()),
             sdk_version: env!("CARGO_PKG_VERSION").into(),
             metadata: serde_json::Map::new(),
@@ -215,7 +214,6 @@ pub async fn register(
             tokio::select! {
                 command = requests.recv() => match command {
                     Some(Command::Connect(target, done)) => { sdk.connect(&target).await.expect("connect admitted"); let _ = done.send(()); }
-                    Some(Command::Refresh(done)) => { sdk.refresh_credentials().await.expect("credential refresh"); let _ = done.send(()); }
                     Some(Command::Stop) | None => break,
                 },
                 event = sdk.next_event() => {

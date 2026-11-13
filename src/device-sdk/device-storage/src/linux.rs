@@ -379,7 +379,6 @@ struct DiskSnapshot {
 struct DiskIdentity {
     device_id: String,
     device_credential: String,
-    expires_at: String,
 }
 impl Drop for DiskIdentity {
     fn drop(&mut self) {
@@ -388,12 +387,11 @@ impl Drop for DiskIdentity {
 }
 fn encode(snapshot: &Snapshot) -> Result<Zeroizing<Vec<u8>>, StorageError> {
     let wire = DiskSnapshot {
-        version: 1,
+        version: 2,
         revision: snapshot.revision,
         identity: snapshot.identity.as_ref().map(|i| DiskIdentity {
             device_id: i.device_id.clone(),
             device_credential: i.device_credential.expose().to_owned(),
-            expires_at: i.expires_at.clone(),
         }),
     };
     let bytes = Zeroizing::new(serde_json::to_vec(&wire).map_err(|_| StorageError::Unavailable)?);
@@ -411,7 +409,7 @@ fn decode(bytes: &[u8]) -> Result<Snapshot, StorageError> {
     }
     let wire: DiskSnapshot =
         serde_json::from_slice(bytes).map_err(|_| StorageError::Unavailable)?;
-    if wire.version != 1 || wire.revision == 0 {
+    if wire.version != 2 || wire.revision == 0 {
         return Err(StorageError::Unavailable);
     }
     Ok(Snapshot {
@@ -419,7 +417,6 @@ fn decode(bytes: &[u8]) -> Result<Snapshot, StorageError> {
         identity: wire.identity.map(|mut i| StoredIdentity {
             device_id: std::mem::take(&mut i.device_id),
             device_credential: SecretString::new(std::mem::take(&mut i.device_credential)),
-            expires_at: std::mem::take(&mut i.expires_at),
         }),
     })
 }
@@ -484,7 +481,6 @@ mod tests {
             identity: Some(StoredIdentity {
                 device_id: "id".into(),
                 device_credential: SecretString::new("secret".into()),
-                expires_at: "later".into(),
             }),
         };
         let decoded = decode(&encode(&snapshot).unwrap()).unwrap();
@@ -506,8 +502,9 @@ mod tests {
             5
         );
         assert!(decode(b"not-json").is_err());
-        assert!(decode(br#"{"version":2,"revision":1,"identity":null}"#).is_err());
-        assert!(decode(br#"{"version":1,"revision":0,"identity":null}"#).is_err());
+        assert!(decode(br#"{"version":1,"revision":1,"identity":null}"#).is_err());
+        assert!(decode(br#"{"version":2,"revision":0,"identity":null}"#).is_err());
+        assert!(decode(br#"{"version":2,"revision":1,"identity":{"device_id":"id","device_credential":"secret","expires_at":"2099-01-01T00:00:00Z"}}"#).is_err());
         assert!(decode(&vec![0; MAX_SNAPSHOT + 1]).is_err());
         assert_eq!(decode(&[]).unwrap().revision, 0);
     }

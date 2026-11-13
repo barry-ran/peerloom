@@ -23,7 +23,6 @@ struct Reply {
 struct Identity {
     device_id: String,
     device_credential: String,
-    expires_at: String,
 }
 struct Pending {
     instance: Arc<Instance>,
@@ -77,7 +76,6 @@ impl ExternalStore {
             "identity": identity.as_ref().map(|identity| json!({
                 "device_id": identity.device_id,
                 "device_credential": identity.device_credential.expose(),
-                "expires_at": identity.expires_at,
             })),
         });
         if !instance.emit(Event::new(
@@ -121,7 +119,6 @@ impl IdentityStore for ExternalStore {
             identity: reply.identity.map(|i| StoredIdentity {
                 device_id: i.device_id,
                 device_credential: SecretString::new(i.device_credential),
-                expires_at: i.expires_at,
             }),
         })
     }
@@ -195,7 +192,6 @@ mod tests {
         StoredIdentity {
             device_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
             device_credential: SecretString::new("dev_example_not_logged".into()),
-            expires_at: "2030-01-01T00:00:00Z".into(),
         }
     }
     async fn event(rx: &crate::queue::Receiver<Event>) -> Event {
@@ -290,5 +286,22 @@ mod tests {
         assert!(!i.storage.lock().unwrap().contains_key(&e.request));
         // The host may already have atomically committed: dropping this wait does not roll it back.
         i.release_credit(e);
+    }
+    #[tokio::test]
+    async fn legacy_expiring_identity_is_not_an_empty_installation() {
+        let (instance, events) = setup();
+        let store = ExternalStore(Arc::downgrade(&instance));
+        let task = tokio::spawn(async move { store.load(&scope()).await });
+        let e = event(&events).await;
+        reply(
+            &instance,
+            e,
+            OK,
+            r#"{"revision":1,"identity":{"device_id":"old","device_credential":"secret","expires_at":"2099-01-01T00:00:00Z"}}"#,
+        );
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(StorageError::Unavailable)
+        ));
     }
 }

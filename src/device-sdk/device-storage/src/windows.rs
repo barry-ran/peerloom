@@ -198,7 +198,6 @@ struct DiskSnapshot {
 struct DiskIdentity {
     device_id: String,
     device_credential: String,
-    expires_at: String,
 }
 impl Drop for DiskIdentity {
     fn drop(&mut self) {
@@ -207,13 +206,12 @@ impl Drop for DiskIdentity {
 }
 fn encode(snapshot: &Snapshot, hash: &str) -> Result<Zeroizing<Vec<u8>>, StorageError> {
     let wire = DiskSnapshot {
-        version: 1,
+        version: 2,
         scope: hash.into(),
         revision: snapshot.revision,
         identity: snapshot.identity.as_ref().map(|i| DiskIdentity {
             device_id: i.device_id.clone(),
             device_credential: i.device_credential.expose().to_owned(),
-            expires_at: i.expires_at.clone(),
         }),
     };
     let bytes = Zeroizing::new(serde_json::to_vec(&wire).map_err(|_| StorageError::Unavailable)?);
@@ -228,7 +226,7 @@ fn decode(bytes: &[u8], hash: &str) -> Result<Snapshot, StorageError> {
     }
     let wire: DiskSnapshot =
         serde_json::from_slice(bytes).map_err(|_| StorageError::Unavailable)?;
-    if wire.version != 1 || wire.revision == 0 || wire.scope != hash {
+    if wire.version != 2 || wire.revision == 0 || wire.scope != hash {
         return Err(StorageError::Unavailable);
     }
     Ok(Snapshot {
@@ -236,7 +234,6 @@ fn decode(bytes: &[u8], hash: &str) -> Result<Snapshot, StorageError> {
         identity: wire.identity.map(|mut i| StoredIdentity {
             device_id: std::mem::take(&mut i.device_id),
             device_credential: SecretString::new(std::mem::take(&mut i.device_credential)),
-            expires_at: std::mem::take(&mut i.expires_at),
         }),
     })
 }
@@ -258,7 +255,6 @@ mod tests {
         StoredIdentity {
             device_id: "crash-device".into(),
             device_credential: SecretString::new(value.into()),
-            expires_at: "2030-01-01T00:00:00Z".into(),
         }
     }
     #[test]

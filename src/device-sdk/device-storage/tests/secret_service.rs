@@ -27,7 +27,6 @@ fn identity() -> StoredIdentity {
         device_credential: SecretString::new(
             "dev_never_write_this_credential_to_a_plain_file".into(),
         ),
-        expires_at: "2030-01-01T00:00:00Z".into(),
     }
 }
 #[tokio::test]

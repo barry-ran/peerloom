@@ -70,7 +70,7 @@ func TestLegacyConnectedFrameOnlyAdmitsGenerationOne(t *testing.T) {
 	peers := make([]identity.Device, 2)
 	for i := range peers {
 		peers[i].TenantID, peers[i].ApplicationID = tenant, app
-		if err = pool.QueryRow(ctx, `INSERT INTO devices(tenant_id,application_id,installation_key_hash,platform)
+		if err = pool.QueryRow(ctx, `INSERT INTO devices(tenant_id,application_id,installation_tag_hash,platform)
 VALUES($1,$2,$3,'linux') RETURNING id::text`, tenant, app, []byte{byte(i + 1)}).Scan(&peers[i].ID); err != nil {
 			t.Fatal(err)
 		}

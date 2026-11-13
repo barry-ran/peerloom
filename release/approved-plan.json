@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "repository": "barry-ran/peerloom",
-  "approved": true,
+  "approved": false,
   "administration_sha": "event",
   "operation": "release",
   "release_sha": "150b29b428bf5c98bb0bc3864b9bfa00e74231f4",

@@ -142,20 +142,6 @@ impl ServerClockBound {
             expires,
         }))
     }
-    pub(crate) fn remaining_until(
-        &self,
-        expires: &str,
-        received: Instant,
-    ) -> Result<Duration, LeaseError> {
-        let expires =
-            OffsetDateTime::parse(expires, &Rfc3339).map_err(|_| LeaseError::InvalidUpdate)?;
-        let elapsed = self.elapsed(received)?;
-        let upper = self
-            .server_at_hello
-            .checked_add(time::Duration::try_from(elapsed).map_err(|_| LeaseError::InvalidUpdate)?)
-            .ok_or(LeaseError::InvalidUpdate)?;
-        Duration::try_from(expires - upper).map_err(|_| LeaseError::Expired)
-    }
     fn deadline(&self, expires: OffsetDateTime, received: Instant) -> Result<Instant, LeaseError> {
         let elapsed = self.elapsed(received)?;
         let upper = self

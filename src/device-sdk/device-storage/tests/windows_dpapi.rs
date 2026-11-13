@@ -36,7 +36,6 @@ fn identity() -> StoredIdentity {
         device_credential: SecretString::new(
             "dev_windows_synthetic_credential_not_plaintext".into(),
         ),
-        expires_at: "2030-01-01T00:00:00Z".into(),
     }
 }
 fn runtime() -> tokio::runtime::Runtime {

@@ -73,7 +73,7 @@ func TestDirectAtomicReplayAndExpiry(t *testing.T) {
 		t.Fatal("non-atomic duplicate registration")
 	}
 	changed := input
-	changed.InstallationPublicKey = "changed-public-installation"
+	changed.InstallationTag = "changed-public-installation"
 	_, err := s.RegisterDirect(ctx, changed, key, "192.0.2.1")
 	requireCode(t, err, "IDEMPOTENCY_CONFLICT")
 	if _, err = p.Exec(ctx, "UPDATE identity_replays SET expires_at=clock_timestamp()-interval '1 second'"); err != nil {
@@ -304,7 +304,7 @@ func TestDirectUnlimitedDefaultsKeepIdentitySecurityWithoutCounters(t *testing.T
 	s, p, ctx, input := directFixture(t)
 	// Efficiently seed the former 10,000-device/500-daily ceilings in this owned
 	// schema; no credentials or real installations are fabricated outside it.
-	if _, err := p.Exec(ctx, `INSERT INTO devices(tenant_id,application_id,installation_key_hash,platform)
+	if _, err := p.Exec(ctx, `INSERT INTO devices(tenant_id,application_id,installation_tag_hash,platform)
  SELECT tenant_id,id,decode(repeat('00',32),'hex'),'linux' FROM applications CROSS JOIN generate_series(1,10000) WHERE id=$1`, input.ApplicationID); err != nil {
 		t.Fatal(err)
 	}
@@ -373,6 +373,12 @@ func TestDirectCounterMigrationPreservesRowsAndRollbackFailsClosed(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// First remove identity schema 11, then exercise the counter migration 10
+	// explicitly instead of assuming it is always the newest migration.
+	if err = migrate.Apply(ctx, p, migrations, "down"); err != nil {
+		t.Fatal(err)
+	}
+	migrations = migrations[:10]
 	if err = migrate.Apply(ctx, p, migrations, "down"); err != nil {
 		t.Fatal(err)
 	}

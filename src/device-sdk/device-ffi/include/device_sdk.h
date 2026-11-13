@@ -1,7 +1,7 @@
 #ifndef PEERLOOM_DEVICE_SDK_H
 #define PEERLOOM_DEVICE_SDK_H
 /* MIT — Copyright (c) 2026 Peerloom contributors.
- * Native ABI v1 with append-only event extension. C11/C++17.
+ * Native ABI v2 with append-only event extension. C11/C++17.
  * No Rust layout, owning pointer, or caller buffer crosses an asynchronous task.
  */
 #include <stddef.h>
@@ -26,7 +26,7 @@ extern "C" {
 #define DP_OP_CONNECT UINT32_C(2)
 #define DP_OP_RESPOND UINT32_C(3)
 #define DP_OP_SEND UINT32_C(4)
-#define DP_OP_REFRESH UINT32_C(5)
+/* Operation 5 was credential rotation in ABI1; ABI2 rejects it. */
 #define DP_OP_CLOSE_CONNECTION UINT32_C(6)
 #define DP_OP_RESET_IDENTITY UINT32_C(7)
 #define DP_OP_OPEN_CHANNEL UINT32_C(8)
@@ -49,6 +49,8 @@ extern "C" {
 #define DP_EVENT_CHANNEL_READY UINT32_C(12)
 #define DP_EVENT_CHANNEL_CLOSED UINT32_C(13)
 #define DP_EVENT_CHANNEL_MESSAGE UINT32_C(14)
+/* Pending installation save has been reconciled by the SDK, not just the host store. */
+#define DP_EVENT_IDENTITY_PERSISTED UINT32_C(15)
 #define DP_CAP_RELIABLE_MESSAGE UINT64_C(1)
 #define DP_CAP_ASYNC_CAS_STORE UINT64_C(2)
 #define DP_CAP_EXPLICIT_MEMORY_STORE UINT64_C(4)
@@ -57,6 +59,7 @@ extern "C" {
 #define DP_CAP_TYPED_CHANNELS UINT64_C(32)
 #define DP_CAP_RELIABLE_STREAM UINT64_C(64)
 #define DP_CAP_LOW_LATENCY_MESSAGE UINT64_C(128)
+#define DP_CAP_LONG_LIVED_IDENTITY UINT64_C(256)
 
 typedef struct dp_event {
     uint32_t abi_version;
@@ -67,7 +70,7 @@ typedef struct dp_event {
     uint32_t struct_size;
     const uint8_t *payload;
     size_t payload_len;
-    /* Optional appended ABI-v1 field; check struct_size before reading. */
+    /* Optional appended ABI-v2 field; check struct_size before reading. */
     uint64_t channel;
 } dp_event;
 /* Payload/event pointers are borrowed ONLY during this callback. Copy if retained.
@@ -87,7 +90,7 @@ uint32_t dp_android_tls_initialize(void *jni_env, void *application_context);
 uint32_t dp_abi_version(void);
 uint64_t dp_capabilities(void);
 /* JSON UTF-8 <=16KiB, no trailing NUL. Required fields:
- * {"abi_version":1,"origin":"https://...","application_id":"UUID",
+ * {"abi_version":2,"origin":"https://...","application_id":"UUID",
  *  "storage":"external"|"memory","development_loopback":false,"auto_reconnect":true}
  * HTTPS/WSS required except explicit dev IP-literal loopback. Memory is not durable.
  * Optional ice_servers: [{"urls":["stun:host:3478"],"username":"...","credential":"..."}].
@@ -122,7 +125,7 @@ uint32_t dp_sdk_create(const uint8_t *json, size_t len, dp_callback callback,
  * revoke existing reservations. Successful admission => unique request ID and exactly one COMPLETE event.
  * Completion may occur before submit returns; correlate by returned request ID.
  * Start: {} loads host store; registration:
- * {"registration":{"platform":"linux","installation_public_key":"...",
+ * {"registration":{"platform":"linux","installation_tag":"...",
  * "registration_grant":"reg_...","sdk_version":"...","metadata":{}},
  * "idempotency_key":"host-retained-key"}. Keep exact request/key for uncertain replay.
  * Direct enrollment omits registration_grant; server must explicitly enable direct.
@@ -130,7 +133,7 @@ uint32_t dp_sdk_create(const uint8_t *json, size_t len, dp_callback callback,
  * Keep it securely with the exact body; UUID/public installation keys are not sufficient.
  * Connect: {"target_device_id":"UUID"}; respond: {"session_id":"UUID","accept":true}.
  * Send: raw binary <=65536 bytes, connection handle required. Empty messages allowed.
- * Refresh/close: empty input; close requires connection handle. Others connection=0.
+ * Close: empty input; requires connection handle. Others connection=0.
  * Successful close admission immediately refuses new sends/message callbacks; already
  * running callback/send cannot be recalled. Existing queued sends may settle first.
  * Connect completion means request submitted, not connected; await CONNECTION_READY.
@@ -181,7 +184,7 @@ uint32_t dp_channel_submit(uint64_t sdk, uint64_t connection, uint64_t channel,
 uint32_t dp_channel_is_valid(uint64_t sdk, uint64_t connection, uint64_t channel);
 /* Only queued work can be cancelled (one CANCELLED completion). Close admission is
  * irreversible locally and cannot be cancelled. Running work/close/reset => BUSY,
- * not aborted: remote registration/rotation cannot safely be rolled back. Cancellation
+ * not aborted: remote registration cannot safely be rolled back. Cancellation
  * never retracts a completed remote mutation. Process crash recovery journal not provided.
  */
 uint32_t dp_sdk_cancel(uint64_t sdk, uint64_t request_id);
@@ -195,7 +198,7 @@ uint32_t dp_sdk_shutdown(uint64_t sdk, uint64_t *out_request);
  * application_id}, expected_revision (null on load), identity (save only).
  * Host MUST perform atomic CAS, use encrypted platform storage, preserve tombstone revision.
  * Callback may schedule async work then return; finish via storage_complete within10s.
- * Load OK JSON: {"revision":N,"identity":null|{device_id,device_credential,expires_at}}.
+ * Load OK JSON: {"revision":N,"identity":null|{device_id,device_credential}}.
  * Save/delete OK: {"revision":expected+1}. BUSY means CAS conflict; INTERNAL unavailable.
  * All replies <=16KiB. Timeouts/cancellation permit old OR fully committed new snapshot,
  * never partial writes. SDK reconciles a cancelled committed save by load+identity match.

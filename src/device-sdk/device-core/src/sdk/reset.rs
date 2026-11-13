@@ -119,7 +119,6 @@ mod tests {
         let stored = StoredIdentity {
             device_id: source.clone(),
             device_credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
-            expires_at: "2099-01-01T00:00:00Z".into(),
         };
         store
             .save(

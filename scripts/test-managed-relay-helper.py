@@ -45,8 +45,7 @@ class HelperTests(unittest.TestCase):
     def test_pair_requires_device_audience(self):
         device = {'application_id': '11111111-1111-4111-8111-111111111111',
                   'device_id': '22222222-2222-4222-8222-222222222222',
-                  'device_credential': 'dev_' + 'a' * 43,
-                  'expires_at': '2099-01-01T00:00:00Z'}
+                  'device_credential': 'dev_' + 'a' * 43}
         pair = {'source': dict(device), 'target': dict(device)}
         MODULE.validate_pair(json.dumps(pair).encode())
         pair['source']['device_credential'] = 'svc_' + 'a' * 43

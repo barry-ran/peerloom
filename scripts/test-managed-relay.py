@@ -64,8 +64,6 @@ def validate_pair(data):
         uuid.UUID(device['device_id'])
         if not re.fullmatch(r'dev_[A-Za-z0-9_-]{43}', device['device_credential']):
             raise Failure('pair fixture requires device audience')
-        if not isinstance(device['expires_at'], str) or len(device['expires_at']) > 64:
-            raise Failure('pair fixture expiry missing')
 
 
 def validate_lease_probe(data):

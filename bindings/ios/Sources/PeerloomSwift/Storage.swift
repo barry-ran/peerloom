@@ -26,19 +26,33 @@ public struct IdentityScope: Codable, Equatable, Sendable {
 public struct StoredIdentity: Codable, Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public let deviceID: String
     public let deviceCredential: String
-    public let expiresAt: String
     enum CodingKeys: String, CodingKey {
-        case deviceID = "device_id", deviceCredential = "device_credential", expiresAt = "expires_at"
+        case deviceID = "device_id", deviceCredential = "device_credential"
     }
-    public init(deviceID: String, deviceCredential: String, expiresAt: String) {
-        self.deviceID = deviceID; self.deviceCredential = deviceCredential; self.expiresAt = expiresAt
+    public init(deviceID: String, deviceCredential: String) {
+        self.deviceID = deviceID; self.deviceCredential = deviceCredential
+    }
+    // ABI 2 rejects legacy and unknown identity fields rather than silently migrating secrets.
+    private struct IdentityKey: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+    public init(from decoder: Decoder) throws {
+        let keys = try decoder.container(keyedBy: IdentityKey.self)
+        guard Set(keys.allKeys.map(\.stringValue)) == Set(["device_id", "device_credential"])
+        else { throw StoreError.invalidRecord }
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        deviceID = try values.decode(String.self, forKey: .deviceID)
+        deviceCredential = try values.decode(String.self, forKey: .deviceCredential)
+        try validate()
     }
     public var description: String { "StoredIdentity(<redacted>)" }
     public var debugDescription: String { description }
     func validate() throws {
         guard UUID(uuidString: deviceID) != nil, deviceCredential.hasPrefix("dev_"),
-              deviceCredential.utf8.count <= 4096, !deviceCredential.contains("\n"),
-              expiresAt.utf8.count <= 64, !expiresAt.isEmpty else { throw StoreError.invalidRecord }
+              deviceCredential.utf8.count <= 4096, !deviceCredential.contains("\n") else { throw StoreError.invalidRecord }
     }
 }
 

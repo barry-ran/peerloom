@@ -12,7 +12,7 @@ struct Fixture {
 }
 #[tokio::test]
 #[ignore = "requires disposable Go identity service and TEST_IDENTITY_FIXTURE_FILE JSON path"]
-async fn actual_go_registration_self_and_rotation() {
+async fn actual_go_registration_self_and_stable_identity() {
     let path = std::env::var("TEST_IDENTITY_FIXTURE_FILE").expect("test fixture path required");
     #[cfg(unix)]
     {
@@ -40,7 +40,7 @@ async fn actual_go_registration_self_and_rotation() {
     let registration = RegistrationRequest {
         application_id: fixture.application_id,
         platform: Platform::Linux,
-        installation_public_key: "integration-test-installation-key".into(),
+        installation_tag: "integration-test-installation-key".into(),
         registration_grant: SecretString::new(fixture.registration_grant),
         sdk_version: "0.1.0-integration".into(),
         metadata: Default::default(),
@@ -53,10 +53,9 @@ async fn actual_go_registration_self_and_rotation() {
     session.register(registration, register_key).await.unwrap();
     let before = session.device_self().await.unwrap();
     let old = session.identity().unwrap().device_credential.clone();
-    session.refresh(IdempotencyKey::random()).await.unwrap();
     let after = session.device_self().await.unwrap();
     assert_eq!(before.device_id, after.device_id);
     assert_eq!(before.application_id, after.application_id);
-    assert!(old.expose() != session.identity().unwrap().device_credential.expose());
+    assert!(old.expose() == session.identity().unwrap().device_credential.expose());
     assert!(!session.needs_persistence());
 }

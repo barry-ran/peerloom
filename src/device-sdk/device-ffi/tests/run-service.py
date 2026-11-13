@@ -23,13 +23,13 @@ subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic", "-
 with tempfile.NamedTemporaryFile(mode="w", prefix="peerloom-c-pair-", delete=True) as data:
     for role in ("source", "target"):
         device = fixture[role]
-        config = dict(abi_version=1, origin=origin, application_id=device["application_id"], storage="external", development_loopback=True)
-        snapshot = dict(revision=1, identity={key: device[key] for key in ("device_id", "device_credential", "expires_at")})
+        config = dict(abi_version=2, origin=origin, application_id=device["application_id"], storage="external", development_loopback=True)
+        snapshot = dict(revision=1, identity={key: device[key] for key in ("device_id", "device_credential")})
         data.write(json.dumps(config, separators=(",", ":")) + "\n")
         data.write(json.dumps(snapshot, separators=(",", ":")) + "\n")
     data.write(fixture["target"]["device_id"] + "\n")
     reset = fixture.get("direct_reset_enabled") is True
     if reset:
-        data.write(json.dumps(dict(registration=dict(platform="linux", installation_public_key="reset-test-" + secrets.token_hex(16), sdk_version="0.1.0", metadata={}), idempotency_key=secrets.token_urlsafe(32)), separators=(",", ":")) + "\n")
+        data.write(json.dumps(dict(registration=dict(platform="linux", installation_tag="reset-test-" + secrets.token_hex(16), sdk_version="0.1.0", metadata={}), idempotency_key=secrets.token_urlsafe(32)), separators=(",", ":")) + "\n")
     data.flush()
     subprocess.run([str(output)], env={**os.environ, "TEST_C_PAIR_INPUT": data.name, **({"TEST_C_RESET":"1"} if reset else {})}, timeout=180, check=True)

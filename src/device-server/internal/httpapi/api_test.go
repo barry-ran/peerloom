@@ -45,13 +45,15 @@ func TestHTTPInputAndAudience(t *testing.T) {
 		name, path, method, body, auth string
 		status                         int
 	}{
+		{"removed-refresh", "/v1/device-credentials/refresh", "POST", "{}", "Bearer dev_example", 404},
+		{"old-field", "/v1/device-registrations", "POST", `{"installation_public_key":"old"}`, "", 422},
 		{"unknown", "/v1/unknown", "GET", "", "", 404},
 		{"no-auth", "/v1/device-self", "GET", "", "", 401},
 		{"wrong-audience", "/v1/device-self", "GET", "", "Bearer reg_secret", 401},
 		{"method", "/v1/device-self", "POST", "{}", "", 405},
 		{"unknown-field", "/v1/device-registrations", "POST", `{"tenant_id":"injected"}`, "", 422},
 		{"trailing-json", "/v1/device-registrations", "POST", `{} {}`, "", 422},
-		{"oversized", "/v1/device-registrations", "POST", `{"installation_public_key":"` + strings.Repeat("x", 17<<10) + `"}`, "", 413},
+		{"oversized", "/v1/device-registrations", "POST", `{"installation_tag":"` + strings.Repeat("x", 17<<10) + `"}`, "", 413},
 		{"invalid-shape", "/v1/device-registrations", "POST", `{}`, "", 422},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,13 +114,12 @@ func TestDirectUsesTransportPeerNotForwardedHeaders(t *testing.T) {
 	}
 }
 
-func TestDeviceSelfCredentialExpirySnapshotJSON(t *testing.T) {
+func TestDeviceSelfLongLivedIdentityJSON(t *testing.T) {
 	service := &stubService{device: identity.Device{
 		ID:            "00000000-0000-4000-8000-000000000001",
 		TenantID:      "00000000-0000-4000-8000-000000000002",
 		ApplicationID: "00000000-0000-4000-8000-000000000003",
 		Platform:      "linux", Metadata: json.RawMessage(`{}`),
-		CredentialExpiresAt: "2026-10-29T12:00:00.123456Z",
 	}}
 	req := httptest.NewRequest("GET", "/v1/device-self", nil)
 	req.Header.Set("Authorization", "Bearer dev_private-test-value")
@@ -131,17 +132,13 @@ func TestDeviceSelfCredentialExpirySnapshotJSON(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body) != 6 {
+	if len(body) != 5 {
 		t.Fatal("unexpected public identity fields")
 	}
-	for _, field := range []string{"device_id", "tenant_id", "application_id", "platform", "metadata", "credential_expires_at"} {
+	for _, field := range []string{"device_id", "tenant_id", "application_id", "platform", "metadata"} {
 		if _, ok := body[field]; !ok {
 			t.Fatalf("missing public field %s", field)
 		}
-	}
-	var expiry string
-	if err := json.Unmarshal(body["credential_expires_at"], &expiry); err != nil || expiry != service.device.CredentialExpiresAt {
-		t.Fatal("trusted expiry not preserved")
 	}
 	if strings.Contains(w.Body.String(), "private-test-value") {
 		t.Fatal("credential leaked in snapshot")

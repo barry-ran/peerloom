@@ -37,7 +37,7 @@ internal constructor(context: Context, private val rename: (String, String) -> U
     companion object {
         private val processLock = ReentrantLock()
         private const val MAX_BYTES = 65536
-        private val MAGIC = byteArrayOf(80, 76, 73, 68, 1)
+        private val MAGIC = byteArrayOf(80, 76, 73, 68, 2)
     }
 
     class Conflict : Exception()
@@ -122,7 +122,7 @@ internal constructor(context: Context, private val rename: (String, String) -> U
                                         .put(
                                             "identity",
                                             if (request.getString("operation") == "save") {
-                                                request.getJSONObject("identity")
+                                                request.getJSONObject("identity").also { validateIdentity(it) }
                                             } else {
                                                 JSONObject.NULL
                                             },
@@ -160,6 +160,15 @@ internal constructor(context: Context, private val rename: (String, String) -> U
                     }
             }
         }
+
+    private fun validateIdentity(identity: JSONObject) {
+        require(identity.keys().asSequence().toSet() == setOf("device_id", "device_credential")) {
+            "unsupported identity schema; explicit recovery required"
+        }
+        java.util.UUID.fromString(identity.getString("device_id"))
+        val credential = identity.getString("device_credential")
+        require(credential.startsWith("dev_") && credential.length <= 4096 && !credential.contains("\n"))
+    }
 
     private fun validateFile(info: android.system.StructStat) {
         check(
@@ -209,7 +218,7 @@ internal constructor(context: Context, private val rename: (String, String) -> U
         check(
             bytes.size >= MAGIC.size + 12 + 16 &&
                 bytes.copyOfRange(0, MAGIC.size).contentEquals(MAGIC)
-        )
+        ) { "unsupported or damaged identity format; explicit recovery required" }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(
             Cipher.DECRYPT_MODE,
@@ -219,7 +228,13 @@ internal constructor(context: Context, private val rename: (String, String) -> U
         cipher.updateAAD(scope.toByteArray(UTF_8))
         val plain = cipher.doFinal(bytes, MAGIC.size + 12, bytes.size - MAGIC.size - 12)
         return try {
-            JSONObject(String(plain, UTF_8)).also { check(it.getLong("revision") > 0) }
+            JSONObject(String(plain, UTF_8)).also {
+                check(it.getLong("revision") > 0)
+                check(it.has("identity"))
+                if (!it.isNull("identity")) {
+                    validateIdentity(it.getJSONObject("identity"))
+                }
+            }
         } finally {
             plain.fill(0)
         }

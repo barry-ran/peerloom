@@ -12,7 +12,6 @@ struct Device {
     application_id: String,
     device_id: String,
     device_credential: String,
-    expires_at: String,
 }
 #[derive(Deserialize)]
 struct Fixture {
@@ -33,7 +32,6 @@ async fn sdk(origin: &str, device: Device, capacity: usize) -> DeviceSdk {
             StoredIdentity {
                 device_id: device.device_id,
                 device_credential: SecretString::new(device.device_credential),
-                expires_at: device.expires_at,
             },
         )
         .await
@@ -214,10 +212,6 @@ async fn three_devices_share_one_wss_with_bounded_admission_and_reset() {
     let probe = lease_probe_credential();
     let initial_ab = lease_snapshot(&origin, &ab, &probe).await;
     let initial_ac = lease_snapshot(&origin, &ac, &probe).await;
-    // One credential rotation reconnects the one WSS and syncs BOTH leases.
-    a.refresh_credentials().await.unwrap();
-    assert!(matches!(next(&mut a).await, SdkEvent::Offline));
-    assert!(matches!(next(&mut a).await, SdkEvent::Online));
     let (ab_source, ab_target) = initial_ab.deadlines();
     let (ac_source, ac_target) = initial_ac.deadlines();
     let deadline = ab_source.max(ab_target).max(ac_source).max(ac_target);

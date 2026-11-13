@@ -205,7 +205,7 @@ class RegistrationTest {
                     val registration =
                         JSONObject()
                             .put("platform", "android")
-                            .put("installation_public_key", "android-disposable-installation")
+                            .put("installation_tag", "android-disposable-installation")
                             .put("registration_grant", initial.getString("registration_grant"))
                             .put("sdk_version", "0.1.0")
                             .put("metadata", JSONObject())
@@ -261,8 +261,7 @@ class ServiceTest {
                         "identity",
                         JSONObject()
                             .put("device_id", device.getString("device_id"))
-                            .put("device_credential", device.getString("device_credential"))
-                            .put("expires_at", device.getString("expires_at")),
+                            .put("device_credential", device.getString("device_credential")),
                     )
             )
         }
@@ -395,8 +394,6 @@ class ServiceTest {
                 assertArrayEquals(message, next(targetQueue, 6).payload)
                 await(cb.send(message))
                 assertArrayEquals(message, next(sourceQueue, 6).payload)
-                await(a.refreshCredentials())
-                next(sourceQueue, 2)
                 // Proven host-queue negative case: a real message has scheduled a paused
                 // application drain, then real management grant revocation invalidates its gate.
                 targetExecutor.pause()

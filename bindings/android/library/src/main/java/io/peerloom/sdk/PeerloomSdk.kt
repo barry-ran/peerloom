@@ -160,7 +160,7 @@ private constructor(
             val application = context.applicationContext
             val encoded =
                 JSONObject(config.toString())
-                    .put("abi_version", 1)
+                    .put("abi_version", 2)
                     .put("storage", "external")
                     .toString()
                     .toByteArray(UTF_8)
@@ -231,7 +231,6 @@ private constructor(
                 .toByteArray(UTF_8),
         )
 
-    fun refreshCredentials(): Operation = submit(5, 0, byteArrayOf())
 
     fun resetIdentity(expectedDeviceId: String, retry: Boolean = false): Operation =
         submit(

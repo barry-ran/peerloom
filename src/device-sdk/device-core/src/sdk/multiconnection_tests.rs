@@ -21,7 +21,6 @@ async fn target_terminal_session_ignores_late_snapshot_and_offer(reject: bool) {
     let stored = StoredIdentity {
         device_id: target.clone(),
         device_credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
-        expires_at: "2099-01-01T00:00:00Z".into(),
     };
     store
         .save(
@@ -119,7 +118,6 @@ async fn queued_local_description_rechecks_generation_lease_and_reset_gate() {
         let stored = StoredIdentity {
             device_id: target.clone(),
             device_credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
-            expires_at: "2099-01-01T00:00:00Z".into(),
         };
         store
             .save(
@@ -235,7 +233,6 @@ async fn capacity_actor(
     let stored = StoredIdentity {
         device_id: uuid::Uuid::new_v4().to_string(),
         device_credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
-        expires_at: "2099-01-01T00:00:00Z".into(),
     };
     let store = Arc::new(MemoryIdentityStore::default());
     store
@@ -773,4 +770,54 @@ async fn local_close_releases_active_capacity_but_keeps_replay_fence_until_termi
     assert!(actor.sessions.release_reservation(reservation));
     actor.signal.take().unwrap().close().await;
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn persisted_identity_has_no_periodic_credential_mutation() {
+    use device_storage::{IdentityScope, MemoryIdentityStore, SecretString};
+    let app = uuid::Uuid::new_v4().to_string();
+    let config = SdkConfig::new("https://identity.example".into(), app.clone());
+    let store = Arc::new(MemoryIdentityStore::default());
+    let stored = StoredIdentity {
+        device_id: uuid::Uuid::new_v4().to_string(),
+        device_credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
+    };
+    let scope = IdentityScope {
+        server_origin: "https://identity.example/".into(),
+        application_id: app,
+    };
+    store.save(&scope, 0, stored.clone()).await.unwrap();
+    let identity = DeviceSdk::identity(&config, store.clone()).await.unwrap();
+    let (commands, _command_rx) = mpsc::channel(32);
+    let (events, mut event_rx) = mpsc::channel(32);
+    let mut actor = Actor::new(config, identity, stored.clone(), commands, events);
+    // An elapsed maintenance deadline must not create a credential mutation job.
+    actor.persist_at = Instant::now() - Duration::from_secs(48 * 3600);
+    actor.retry_at = Instant::now() + Duration::from_secs(60);
+    actor.tick().await.unwrap();
+    assert!(actor.persist.is_none());
+    actor.persist_needs_retry = true;
+    actor
+        .persisted(
+            Err(IdentityError::Storage(
+                device_storage::StorageError::Unavailable,
+            )),
+            Some(stored.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(event_rx.try_recv().is_err());
+    actor.persisted(Ok(()), Some(stored.clone())).await.unwrap();
+    assert!(matches!(
+        event_rx.try_recv().unwrap(),
+        SdkEvent::IdentityPersisted
+    ));
+    actor.persisted(Ok(()), Some(stored.clone())).await.unwrap();
+    assert!(event_rx.try_recv().is_err());
+    let snapshot = store.load(&scope).await.unwrap();
+    assert_eq!(snapshot.revision, 1);
+    assert_eq!(
+        snapshot.identity.unwrap().device_credential.expose(),
+        stored.device_credential.expose()
+    );
 }

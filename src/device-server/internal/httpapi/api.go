@@ -20,7 +20,6 @@ type Service interface {
 	Register(context.Context, identity.Registration, string) (identity.Credential, error)
 	RegisterDirect(context.Context, identity.Registration, string, string) (identity.Credential, error)
 	Authenticate(context.Context, string) (identity.Device, error)
-	Refresh(context.Context, string, string) (identity.Credential, error)
 }
 
 type API struct {
@@ -87,22 +86,6 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result, err := a.service.Authenticate(ctx, token)
-		respond(w, id, result, err, http.StatusOK)
-	case "/v1/device-credentials/refresh":
-		if !method(w, r, id, http.MethodPost) {
-			return
-		}
-		token, err := bearer(r)
-		if err != nil {
-			writeError(w, id, err)
-			return
-		}
-		var input struct{}
-		if err = decode(w, r, &input, true); err != nil {
-			writeError(w, id, err)
-			return
-		}
-		result, err := a.service.Refresh(ctx, token, r.Header.Get("Idempotency-Key"))
 		respond(w, id, result, err, http.StatusOK)
 	default:
 		writeError(w, id, identity.Fail("NOT_FOUND", 404))

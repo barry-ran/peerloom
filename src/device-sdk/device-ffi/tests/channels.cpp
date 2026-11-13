@@ -67,7 +67,7 @@ static uint32_t number(const std::string &json, const char *key) {
 }
 static void callback(uint64_t context, const dp_event *event) noexcept {
     try {
-        assert(context < hosts.size() && event && event->abi_version == 1);
+        assert(context < hosts.size() && event && event->abi_version == 2);
         assert(event->struct_size >= sizeof(dp_event) && event->payload_len <= 65536);
         std::unique_lock<std::mutex> lock(mutex);
         auto &host = hosts[context];

@@ -84,7 +84,7 @@ func seedRegistration(t *testing.T, ctx context.Context, pool *pgxpool.Pool) Reg
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Registration{ApplicationID: seed.ApplicationID, Platform: "linux", InstallationPublicKey: "not-an-authenticator", RegistrationGrant: seed.RegistrationGrant, Metadata: map[string]any{"name": "test"}}
+	return Registration{ApplicationID: seed.ApplicationID, Platform: "linux", InstallationTag: "not-an-authenticator", RegistrationGrant: seed.RegistrationGrant, Metadata: map[string]any{"name": "test"}}
 }
 
 func requireCode(t *testing.T, err error, code string) {
@@ -167,7 +167,7 @@ func TestRegistrationDurabilityAndIsolation(t *testing.T) {
 	}
 }
 
-func TestConcurrentRegistrationAndRotation(t *testing.T) {
+func TestConcurrentRegistration(t *testing.T) {
 	store, pool, ctx, _ := identityFixture(t)
 	input := seedRegistration(t, ctx, pool)
 	var wg sync.WaitGroup
@@ -193,55 +193,6 @@ func TestConcurrentRegistrationAndRotation(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM devices").Scan(&count); err != nil || count != 1 {
 		t.Fatal("concurrent registration exceeded one identity")
 	}
-	old := results[0]
-	for i := range results {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			results[i], errs[i] = store.Refresh(ctx, old.DeviceCredential, "concurrent-rotation")
-		}(i)
-	}
-	wg.Wait()
-	for i, err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-		if results[i] != results[0] {
-			t.Fatal("concurrent rotation issued multiple successors")
-		}
-	}
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM device_credentials").Scan(&count); err != nil || count != 2 {
-		t.Fatal("unexpected credential count")
-	}
-	_, err := store.Refresh(ctx, old.DeviceCredential, "another-rotation-key")
-	requireCode(t, err, "CREDENTIAL_ALREADY_ROTATED")
-	if _, err = store.Authenticate(ctx, old.DeviceCredential); err != nil {
-		t.Fatal("overlap window missing")
-	}
-	replayedOld, err := store.Register(ctx, input, "concurrent-registration")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replayedOld.DeviceCredential != old.DeviceCredential || replayedOld.ExpiresAt == old.ExpiresAt {
-		t.Fatal("registration replay advertised stale pre-rotation lifetime")
-	}
-	effectiveExpiry, err := time.Parse(time.RFC3339Nano, replayedOld.ExpiresAt)
-	if err != nil || time.Until(effectiveExpiry) > time.Minute {
-		t.Fatal("replay expiry exceeds overlap window")
-	}
-	if _, err = pool.Exec(ctx, "UPDATE device_credentials SET expires_at=clock_timestamp()-interval '1 second' WHERE credential_hash=$1", digest(old.DeviceCredential)); err != nil {
-		t.Fatal(err)
-	}
-	_, err = store.Authenticate(ctx, old.DeviceCredential)
-	requireCode(t, err, "AUTH_INVALID")
-	if _, err = store.Authenticate(ctx, results[0].DeviceCredential); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = pool.Exec(ctx, "UPDATE devices SET status='revoked' WHERE id=$1", old.DeviceID); err != nil {
-		t.Fatal(err)
-	}
-	_, err = store.Authenticate(ctx, results[0].DeviceCredential)
-	requireCode(t, err, "AUTH_INVALID")
 }
 
 func TestExpiryDisableAndReplayPurge(t *testing.T) {
@@ -274,113 +225,8 @@ func TestExpiryDisableAndReplayPurge(t *testing.T) {
 	requireCode(t, err, "GRANT_CONSUMED")
 }
 
-func TestRefreshCannotRaceCredentialRevocation(t *testing.T) {
-	store, pool, ctx, _ := identityFixture(t)
-	input := seedRegistration(t, ctx, pool)
-	credential, err := store.Register(ctx, input, "revoke-race-registration")
-	if err != nil {
-		t.Fatal(err)
-	}
-	holder, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rollback(holder)
-	if _, err = holder.Exec(ctx, "SELECT id FROM device_credentials WHERE credential_hash=$1 FOR UPDATE", digest(credential.DeviceCredential)); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := store.Refresh(ctx, credential.DeviceCredential, "revoke-race-refresh")
-		done <- err
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	waiting := false
-	for time.Now().Before(deadline) {
-		if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT id::text,rotated_at FROM device_credentials%')`).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !waiting {
-		t.Fatal("refresh never reached credential lock barrier")
-	}
-	if _, err = holder.Exec(ctx, "UPDATE device_credentials SET revoked_at=clock_timestamp() WHERE credential_hash=$1", digest(credential.DeviceCredential)); err != nil {
-		t.Fatal(err)
-	}
-	if err = holder.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err = <-done:
-		requireCode(t, err, "AUTH_INVALID")
-	case <-ctx.Done():
-		t.Fatal("refresh deadlocked after revocation")
-	}
-	var count int
-	if err = pool.QueryRow(ctx, "SELECT count(*) FROM device_credentials").Scan(&count); err != nil || count != 1 {
-		t.Fatal("revoked credential minted a successor")
-	}
-}
-
-// The returned expiry belongs to the authenticated credential row, not the
-// original registration response or another credential for the same device.
-func TestAuthenticatedCredentialExpirySnapshot(t *testing.T) {
-	store, pool, ctx, _ := identityFixture(t)
-	input := seedRegistration(t, ctx, pool)
-	old, err := store.Register(ctx, input, "expiry-snapshot-register")
-	if err != nil {
-		t.Fatal(err)
-	}
-	check := func(token string) Device {
-		t.Helper()
-		got, err := store.Authenticate(ctx, token)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var expected time.Time
-		if err := pool.QueryRow(ctx, "SELECT expires_at FROM device_credentials WHERE credential_hash=$1", digest(token)).Scan(&expected); err != nil {
-			t.Fatal(err)
-		}
-		if got.CredentialExpiresAt != expected.UTC().Format(time.RFC3339Nano) {
-			t.Fatal("expiry not bound to authenticated database row")
-		}
-		return got
-	}
-	before := check(old.DeviceCredential)
-	next, err := store.Refresh(ctx, old.DeviceCredential, "expiry-snapshot-refresh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	overlap, current := check(old.DeviceCredential), check(next.DeviceCredential)
-	if overlap.ID != current.ID || overlap.TenantID != current.TenantID || overlap.ApplicationID != current.ApplicationID {
-		t.Fatal("rotation changed device scope")
-	}
-	if overlap.CredentialExpiresAt == before.CredentialExpiresAt || overlap.CredentialExpiresAt == current.CredentialExpiresAt {
-		t.Fatal("old credential did not advertise shortened overlap expiry")
-	}
-	otherInput := seedRegistration(t, ctx, pool)
-	other, err := store.Register(ctx, otherInput, "expiry-other-tenant")
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherDevice := check(other.DeviceCredential)
-	if otherDevice.TenantID == current.TenantID || otherDevice.ApplicationID == current.ApplicationID || otherDevice.ID == current.ID {
-		t.Fatal("different tenant credentials aliased")
-	}
-	if _, err := pool.Exec(ctx, "UPDATE device_credentials SET revoked_at=clock_timestamp() WHERE credential_hash=$1", digest(next.DeviceCredential)); err != nil {
-		t.Fatal(err)
-	}
-	_, err = store.Authenticate(ctx, next.DeviceCredential)
-	requireCode(t, err, "AUTH_INVALID")
-	check(other.DeviceCredential)
-}
-
-func TestCredentialExpiryDoesNotWeakenAuthentication(t *testing.T) {
-	for _, scenario := range []string{"expired", "credential-revoked", "device-revoked", "application-disabled", "tenant-disabled"} {
+func TestLongLivedCredentialRevocationAndDisable(t *testing.T) {
+	for _, scenario := range []string{"credential-revoked", "device-revoked", "application-disabled", "tenant-disabled"} {
 		t.Run(scenario, func(t *testing.T) {
 			store, pool, ctx, _ := identityFixture(t)
 			input := seedRegistration(t, ctx, pool)
@@ -390,8 +236,6 @@ func TestCredentialExpiryDoesNotWeakenAuthentication(t *testing.T) {
 			}
 			var statement string
 			switch scenario {
-			case "expired":
-				statement = "UPDATE device_credentials SET expires_at=clock_timestamp()-interval '1 second'"
 			case "credential-revoked":
 				statement = "UPDATE device_credentials SET revoked_at=clock_timestamp()"
 			case "device-revoked":
@@ -406,9 +250,43 @@ func TestCredentialExpiryDoesNotWeakenAuthentication(t *testing.T) {
 			}
 			got, err := store.Authenticate(ctx, credential.DeviceCredential)
 			requireCode(t, err, "AUTH_INVALID")
-			if got.CredentialExpiresAt != "" || got.ID != "" {
+			if got.ID != "" {
 				t.Fatal("failed authentication leaked identity snapshot")
 			}
 		})
+	}
+}
+
+func TestLongOfflineIdentitySurvivesRestart(t *testing.T) {
+	store, pool, ctx, key := identityFixture(t)
+	input := seedRegistration(t, ctx, pool)
+	credential, err := store.Register(ctx, input, "long-offline-registration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Age persistent creation time well beyond the former 24h TTL. There is no
+	// credential expiry column, sentinel date, or time-dependent authentication.
+	if _, err = pool.Exec(ctx, "UPDATE device_credentials SET created_at=clock_timestamp()-interval '10 years'"); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(pool, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := restarted.Authenticate(ctx, credential.DeviceCredential)
+	if err != nil || got.ID != credential.DeviceID {
+		t.Fatalf("long-offline identity lost: %v", err)
+	}
+	var count int
+	if err = pool.QueryRow(ctx, "SELECT count(*) FROM device_credentials").Scan(&count); err != nil || count != 1 {
+		t.Fatal("authentication rotated credential")
+	}
+}
+
+func TestLongLivedIdentitySchemaHasNoExpiry(t *testing.T) {
+	_, pool, ctx, _ := identityFixture(t)
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='device_credentials' AND column_name IN ('expires_at','rotated_at')").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("legacy credential lifetime columns remain: %d %v", count, err)
 	}
 }

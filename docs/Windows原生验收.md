@@ -1,5 +1,7 @@
 # Windows 原生验收
 
+本文引用的旧提交/CI结果只证明对应历史版本，不代表当前 ABI 2 长期身份契约已经通过平台实测。当前身份不再提供刷新/轮换 API；新版本须重新执行注册、持久化重启、跨旧24小时边界认证及撤销门禁。
+
 ## 运行边界
 
 `native.yml` 的 `windows-native` 作业在 Windows Server 2022 上运行原生 Go、Rust SDK、CurrentUser DPAPI 和 MSVC C/C++ ABI 测试。控制面联合测试脚本已接线，但必须以同一提交的 Windows 作业实际通过作为验收证据；本地 Linux 静态检查不能替代它。

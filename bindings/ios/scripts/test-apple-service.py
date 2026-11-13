@@ -151,14 +151,14 @@ class ServiceSafety(unittest.TestCase):
                 calls.append((method, path, expected, credential, body))
                 if path == '/v1/applications': return {'id': 'app-' + str(len(calls))}
                 if path == '/v1/registration-grants': return {'grant': 'synthetic'}
-                if path == '/v1/device-registrations': return {'device_id': 'device-' + str(len(calls)), 'device_credential': 'synthetic', 'expires_at': 'synthetic'}
+                if path == '/v1/device-registrations': return {'device_id': 'device-' + str(len(calls)), 'device_credential': 'synthetic'}
                 return {'id': 'grant'}
         devices = SERVICE.fixture(Client(), 'synthetic-admin')
         self.assertEqual(len({value['application_id'] for value in devices.values()}), 4)
         first = devices['first_registration']
-        self.assertEqual(set(first), {'application_id', 'registration_grant', 'installation_public_key', 'idempotency_key'})
+        self.assertEqual(set(first), {'application_id', 'registration_grant', 'installation_tag', 'idempotency_key'})
         self.assertTrue(first['registration_grant'])
-        self.assertTrue(first['installation_public_key'])
+        self.assertTrue(first['installation_tag'])
         self.assertTrue(first['idempotency_key'])
         self.assertNotIn('synthetic-admin', json.dumps(devices))
         first_app = [body for _, path, _, _, body in calls if path == '/v1/applications'][-1]

@@ -264,7 +264,7 @@ def fixture(client, admin):
         grant = client.request('POST', '/v1/registration-grants', 201, admin,
                                {'application_id': app['id'], 'expires_in_seconds': 300}, key + role + '-grant')
         device = client.request('POST', '/v1/device-registrations', 201, body={
-            'application_id': app['id'], 'platform': 'ios', 'installation_public_key': key + role,
+            'application_id': app['id'], 'platform': 'ios', 'installation_tag': key + role,
             'registration_grant': grant['grant']}, key=key + role + '-register')
         devices[role] = {'application_id': app['id'], **device}
     for role in ('target', 'third'):
@@ -281,7 +281,7 @@ def fixture(client, admin):
                            {'application_id': app['id'], 'expires_in_seconds': 1200}, key + '-first-grant')
     devices['first_registration'] = {
         'application_id': app['id'], 'registration_grant': grant['grant'],
-        'installation_public_key': key + '-first-installation', 'idempotency_key': key + '-first-register'}
+        'installation_tag': key + '-first-installation', 'idempotency_key': key + '-first-register'}
     return devices
 
 

@@ -45,7 +45,6 @@ pub struct IdentityScope {
 pub struct StoredIdentity {
     pub device_id: String,
     pub device_credential: SecretString,
-    pub expires_at: String,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -149,7 +148,6 @@ mod tests {
         StoredIdentity {
             device_id: "id".into(),
             device_credential: SecretString::new("secret".into()),
-            expires_at: "later".into(),
         }
     }
     fn scope() -> IdentityScope {

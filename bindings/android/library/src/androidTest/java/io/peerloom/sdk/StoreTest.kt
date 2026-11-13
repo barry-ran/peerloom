@@ -25,8 +25,7 @@ internal fun storageRequest(app: String, operation: String, revision: Long = 0):
             "identity",
             JSONObject()
                 .put("device_id", "11111111-1111-4111-8111-111111111111")
-                .put("device_credential", "dev_" + "a".repeat(43))
-                .put("expires_at", "2030-01-01T00:00:00Z"),
+                .put("device_credential", "dev_" + "a".repeat(43)),
         )
 
 @RunWith(AndroidJUnit4::class)
@@ -83,7 +82,8 @@ class StoreTest {
     fun keyLossAndCiphertextTamperingNeverCreateFreshIdentity() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val keys = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        for (loseKey in listOf(true, false)) {
+        for (failure in listOf("key", "ciphertext", "legacy")) {
+            val loseKey = failure == "key"
             val before = keys.aliases().toList().toSet()
             val store = IdentityStore(context)
             val app = UUID.randomUUID().toString()
@@ -101,7 +101,11 @@ class StoreTest {
                 keys.deleteEntry(alias)
             } else {
                 val bytes = file.readBytes()
-                bytes[bytes.lastIndex] = (bytes.last().toInt() xor 1).toByte()
+                if (failure == "legacy") {
+                    bytes[4] = 1 // Old encrypted format must fail, never appear absent.
+                } else {
+                    bytes[bytes.lastIndex] = (bytes.last().toInt() xor 1).toByte()
+                }
                 file.writeBytes(bytes)
             }
             try {
@@ -117,6 +121,14 @@ class StoreTest {
 
     @Test
     fun atomicCasTombstoneAndNoPlaintext() {
+        val legacyStore = IdentityStore(ApplicationProvider.getApplicationContext())
+        val legacy = storageRequest(UUID.randomUUID().toString(), "save")
+        legacy.getJSONObject("identity").put("expires_at", "2030-01-01T00:00:00Z")
+        try {
+            legacyStore.execute(legacy)
+            fail("legacy identity accepted")
+        } catch (_: IllegalArgumentException) {}
+
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val store = IdentityStore(context)
         val app = UUID.randomUUID().toString()

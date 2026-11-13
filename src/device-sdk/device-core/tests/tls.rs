@@ -43,7 +43,7 @@ async fn http_rejects_untrusted_certificate() {
     let request = RegistrationRequest {
         application_id: uuid::Uuid::new_v4().to_string(),
         platform: Platform::Linux,
-        installation_public_key: "test".into(),
+        installation_tag: "test".into(),
         registration_grant: SecretString::new("reg_test".into()),
         sdk_version: "test".into(),
         metadata: Default::default(),

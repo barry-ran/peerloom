@@ -28,7 +28,7 @@ static uint32_t checked(uint32_t status, uint64_t value, uint64_t *out) {
     return status;
 }
 static void callback(uint64_t context, const dp_event *event) {
-    require(sink != NULL && event != NULL && event->abi_version == 1);
+    require(sink != NULL && event != NULL && event->abi_version == 2);
     require(event->struct_size >= sizeof(dp_event));
     require(event->payload_len <= 65536 && (event->payload_len == 0 || event->payload != NULL));
     require(atomic_load(&shutdown_seen) == 0);
@@ -44,7 +44,7 @@ static void callback(uint64_t context, const dp_event *event) {
 uint32_t capacity_create(const uint8_t *json, size_t len, capacity_sink collector,
                          uint64_t context, uint64_t *out) {
     require(sink == NULL && collector != NULL);
-    require(dp_abi_version() == 1 && (dp_capabilities() & DP_CAP_RELIABLE_STREAM) != 0);
+    require(dp_abi_version() == 2 && (dp_capabilities() & DP_CAP_RELIABLE_STREAM) != 0);
     sink = collector;
     uint64_t value = UINT64_MAX;
     uint32_t status = dp_sdk_create(json, len, callback, context, &value);

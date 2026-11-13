@@ -122,12 +122,12 @@ WHERE tenant_id=$1 AND application_id=$2 AND secret_hash=$3 FOR UPDATE`, tenant,
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 	var deviceID string
-	err = tx.QueryRow(ctx, `INSERT INTO devices(tenant_id,application_id,installation_key_hash,platform,sdk_version,metadata)
-VALUES($1,$2,$3,$4,$5,$6) RETURNING id::text`, tenant, input.ApplicationID, digest(input.InstallationPublicKey), input.Platform, input.SDKVersion, metadataJSON).Scan(&deviceID)
+	err = tx.QueryRow(ctx, `INSERT INTO devices(tenant_id,application_id,installation_tag_hash,platform,sdk_version,metadata)
+VALUES($1,$2,$3,$4,$5,$6) RETURNING id::text`, tenant, input.ApplicationID, digest(input.InstallationTag), input.Platform, input.SDKVersion, metadataJSON).Scan(&deviceID)
 	if err != nil {
 		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
 	}
-	result, err = s.issue(ctx, tx, tenant, deviceID, now)
+	result, err = s.issue(ctx, tx, tenant, deviceID)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -147,16 +147,15 @@ VALUES($1,$2,$3,$4,$5,$6) RETURNING id::text`, tenant, input.ApplicationID, dige
 	return result, nil
 }
 
-func (s *Store) issue(ctx context.Context, tx pgx.Tx, tenant, deviceID string, now time.Time) (Credential, error) {
+func (s *Store) issue(ctx context.Context, tx pgx.Tx, tenant, deviceID string) (Credential, error) {
 	token, err := randomToken("dev_")
 	if err != nil {
 		return Credential{}, Fail("INTERNAL_ERROR", 500)
 	}
-	expires := now.Add(s.settings.CredentialTTL)
-	if _, err = tx.Exec(ctx, `INSERT INTO device_credentials(tenant_id,device_id,credential_hash,expires_at) VALUES($1,$2,$3,$4)`, tenant, deviceID, digest(token), expires); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO device_credentials(tenant_id,device_id,credential_hash) VALUES($1,$2,$3)`, tenant, deviceID, digest(token)); err != nil {
 		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
 	}
-	return Credential{DeviceID: deviceID, DeviceCredential: token, ExpiresAt: expires.UTC().Format(time.RFC3339Nano)}, nil
+	return Credential{DeviceID: deviceID, DeviceCredential: token}, nil
 }
 
 type queryer interface {
@@ -168,94 +167,22 @@ func authenticate(ctx context.Context, db queryer, token string) (Device, error)
 		return Device{}, Fail("AUTH_INVALID", 401)
 	}
 	var result Device
-	var expires time.Time
-	err := db.QueryRow(ctx, `SELECT d.id::text,d.tenant_id::text,d.application_id::text,d.platform,d.metadata,c.expires_at
+	err := db.QueryRow(ctx, `SELECT d.id::text,d.tenant_id::text,d.application_id::text,d.platform,d.metadata
 FROM device_credentials c JOIN devices d ON d.id=c.device_id AND d.tenant_id=c.tenant_id
 JOIN applications a ON a.id=d.application_id AND a.tenant_id=d.tenant_id JOIN tenants t ON t.id=d.tenant_id
-WHERE c.credential_hash=$1 AND c.revoked_at IS NULL AND c.expires_at>clock_timestamp()
-AND d.status='active' AND a.enabled AND t.status='active'`, digest(token)).Scan(&result.ID, &result.TenantID, &result.ApplicationID, &result.Platform, &result.Metadata, &expires)
+WHERE c.credential_hash=$1 AND c.revoked_at IS NULL
+AND d.status='active' AND a.enabled AND t.status='active'`, digest(token)).Scan(&result.ID, &result.TenantID, &result.ApplicationID, &result.Platform, &result.Metadata)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Device{}, Fail("AUTH_INVALID", 401)
 	}
 	if err != nil {
 		return Device{}, Fail("DATABASE_UNAVAILABLE", 503)
 	}
-	result.CredentialExpiresAt = expires.UTC().Format(time.RFC3339Nano)
 	return result, nil
 }
 
 func (s *Store) Authenticate(ctx context.Context, token string) (Device, error) {
 	return authenticate(ctx, s.pool, token)
-}
-
-func (s *Store) Refresh(ctx context.Context, token, idempotencyKey string) (Credential, error) {
-	if !validIdempotency(idempotencyKey) {
-		return Credential{}, Fail("IDEMPOTENCY_KEY_REQUIRED", 422)
-	}
-	device, err := s.Authenticate(ctx, token)
-	if err != nil {
-		return Credential{}, err
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
-	}
-	defer rollback(tx)
-	// Match registration's lock order: application/tenant, device, credential.
-	// Configuration changes and credential revocation cannot race the final check.
-	var enabled bool
-	if err = tx.QueryRow(ctx, `SELECT a.enabled AND t.status='active' FROM applications a
-JOIN tenants t ON t.id=a.tenant_id WHERE a.id=$1 AND a.tenant_id=$2 FOR SHARE OF a,t`, device.ApplicationID, device.TenantID).Scan(&enabled); err != nil {
-		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
-	}
-	if !enabled {
-		return Credential{}, Fail("AUTH_INVALID", 401)
-	}
-	var status string
-	if err = tx.QueryRow(ctx, "SELECT status FROM devices WHERE id=$1 AND tenant_id=$2 FOR UPDATE", device.ID, device.TenantID).Scan(&status); err != nil {
-		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
-	}
-	if status != "active" {
-		return Credential{}, Fail("AUTH_INVALID", 401)
-	}
-	var credentialID string
-	var rotated *time.Time
-	if err = tx.QueryRow(ctx, "SELECT id::text,rotated_at FROM device_credentials WHERE tenant_id=$1 AND credential_hash=$2 FOR UPDATE", device.TenantID, digest(token)).Scan(&credentialID, &rotated); err != nil {
-		return Credential{}, Fail("AUTH_INVALID", 401)
-	}
-	if _, err = authenticate(ctx, tx, token); err != nil {
-		return Credential{}, err
-	}
-	scope := device.ID + ":" + hex.EncodeToString(digest(token))
-	keyHash, requestHash := digest(idempotencyKey), digest("refresh:"+token)
-	result, found, err := s.loadReplay(ctx, tx, device.TenantID, "refresh", scope, keyHash, requestHash)
-	if err != nil {
-		return Credential{}, err
-	}
-	if found {
-		return result, nil
-	}
-	if rotated != nil {
-		return Credential{}, Fail("CREDENTIAL_ALREADY_ROTATED", 409)
-	}
-	var now time.Time
-	if err = tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
-		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
-	}
-	result, err = s.issue(ctx, tx, device.TenantID, device.ID, now)
-	if err != nil {
-		return Credential{}, err
-	}
-	if _, err = tx.Exec(ctx, "UPDATE device_credentials SET expires_at=LEAST(expires_at,$1),rotated_at=$2 WHERE id=$3", now.Add(s.settings.RotationOverlap), now, credentialID); err != nil {
-		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
-	}
-	if err = s.saveReplay(ctx, tx, device.TenantID, "refresh", scope, keyHash, requestHash, result, now.Add(min(s.settings.RotationOverlap, s.settings.ReplayTTL))); err != nil {
-		return Credential{}, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return Credential{}, Fail("COMMIT_UNCERTAIN_RETRY_SAME_KEY", 503)
-	}
-	return result, nil
 }
 
 func (s *Store) loadReplay(ctx context.Context, tx pgx.Tx, tenant, operation, scope string, keyHash, requestHash []byte) (Credential, bool, error) {
@@ -286,7 +213,7 @@ WHERE tenant_id=$1 AND operation=$2 AND principal_scope=$3 AND key_hash=$4`, ten
 	if err = json.Unmarshal(plain, &result); err != nil {
 		return Credential{}, false, Fail("REPLAY_UNAVAILABLE", 503)
 	}
-	// A replay must never resurrect a revoked/expired device credential.
+	// A replay must never resurrect a revoked device credential.
 	device, err := authenticate(ctx, tx, result.DeviceCredential)
 	if err != nil {
 		return Credential{}, false, err
@@ -294,13 +221,6 @@ WHERE tenant_id=$1 AND operation=$2 AND principal_scope=$3 AND key_hash=$4`, ten
 	if device.TenantID != tenant || device.ID != result.DeviceID {
 		return Credential{}, false, Fail("REPLAY_UNAVAILABLE", 503)
 	}
-	// Rotation can shorten a previously issued credential's lifetime. Preserve
-	// identity/token idempotency but never advertise the stale original expiry.
-	var effectiveExpiry time.Time
-	if err = tx.QueryRow(ctx, "SELECT expires_at FROM device_credentials WHERE tenant_id=$1 AND credential_hash=$2", tenant, digest(result.DeviceCredential)).Scan(&effectiveExpiry); err != nil {
-		return Credential{}, false, Fail("REPLAY_UNAVAILABLE", 503)
-	}
-	result.ExpiresAt = effectiveExpiry.UTC().Format(time.RFC3339Nano)
 	return result, true, nil
 }
 

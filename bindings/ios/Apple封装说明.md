@@ -116,8 +116,14 @@ Linux 可运行 `python3 bindings/ios/scripts/test-static.py`，只覆盖打包�
 
 `ffiResourceBudgetBytes` 编码为 `ffi_resource_budget_bytes`，默认 128 MiB、最小 2 MiB。native 与 Swift 分别管理自己的预算，不是整个进程 RSS 的总上限。关键区保留 `R=max(256 KiB, B/8)`，数据不能借用；每个 reservation 另计 256 字节元数据。C 回调在复制 `Data` 前申请额度，completion 使用原 admission ticket，直到等待调用者恢复才释放；每 stream 一个 READ。关闭事件消费前保留生命周期计数，缩容不撤销旧 ticket。并发 close 共享一个关闭任务，不设置固定 32 个等待者上限。
 
-未请求的 push 事件超出宿主预算时明确报资源溢出并停止，不静默丢可靠数据；ABI1 void callback 没有消费 ACK，不将此机制描述为跨 native/宿主的端到端反压。调用者取得或消费后的数据及其后续自建队列属于调用者内存。
+未请求的 push 事件超出宿主预算时明确报资源溢出并停止，不静默丢可靠数据；ABI2 void callback 没有消费 ACK，不将此机制描述为跨 native/宿主的端到端反压。调用者取得或消费后的数据及其后续自建队列属于调用者内存。
 
 关键分区 R 内再分为管理操作/存储回复与生命周期通知各半；每个登记对象预留一个 Closed ticket，不能耗用管理操作计数或管理字节。最终空 payload shutdown 通知有独立保证路径，不因缩容或旧宿主票据未消费而丢失；存储回调预算失败会明确回复失败，不把未回复 CAS 当作完成或回滚。
 
 RESET 另有唯一 pending 紧急槽，不受旧 CLOSE completion 仍占用且 C/S 已缩小的 M 计数阻断，但仍受管理字节预算限制。只在对应 native 终态到达或受理失败时释放该槽；旧结果字节仍归原 ticket，直到宿主消费才释放，旧清理不能清除较新的 reset 槽。native 可以抑制已经失效的 Ready/OPEN birth 后仍送 Closed；未向宿主发布的句柄终态使用有界生命周期备用预算，不凭空创建连接/流，也不因此停止其他兄弟连接。
+
+## ABI 2 长期安装身份
+
+安装凭据不含到期字段，不进行日常刷新。注册参数为 `installationTag`（JSON `installation_tag`），它只是幂等安装标记，不是安全公钥。`StoredIdentity` 仅包含 Device ID 和安装凭据；撤销仍由服务端执行，其他 grant/session/TURN 的短期租约不变。
+
+Keychain 使用原来的 service/account 定位，但记录 format 为 2；旧格式、旧 `expires_at` 或未知身份字段均明确失败，不视为空安装，不自动删除或迁移。CAS、tombstone、设备本地不可同步存储与工作线程边界保持不变。本 ABI 需要配套原生库；旧版实机验收记录不代表 ABI 2 已经过平台验收。

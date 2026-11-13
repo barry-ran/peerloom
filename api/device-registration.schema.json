@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "设备注册输入",
-  "description": "支持 grant 注册与应用显式启用的 direct 注册。grant 请求提供非空 registration_grant；direct 省略该字段，HTTP Idempotency-Key 必须是 CSPRNG 32字节的canonical base64url无padding（43字符），该恢复秘密不得日志记录。非空无效grant不会降级direct。schema只验证body，不能证明随机性或跨body/header及应用当前配置；runtime另行实施。metadata仅有限标量字段，入口原始body限16 KiB；公开installation_public_key只作为非认证安装标签哈希。",
+  "description": "支持 grant 注册与应用显式启用的 direct 注册。grant 请求提供非空 registration_grant；direct 省略该字段，HTTP Idempotency-Key 必须是 CSPRNG 32字节的canonical base64url无padding（43字符），该恢复秘密不得日志记录。非空无效grant不会降级direct。schema只验证body，不能证明随机性或跨body/header及应用当前配置；runtime另行实施。metadata仅有限标量字段，入口原始body限16 KiB；公开installation_tag只作为非认证安装标签哈希。",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "application_id",
     "platform",
-    "installation_public_key"
+    "installation_tag"
   ],
   "properties": {
     "application_id": {
@@ -24,7 +24,7 @@
         "web"
       ]
     },
-    "installation_public_key": {
+    "installation_tag": {
       "type": "string",
       "minLength": 1,
       "maxLength": 4096

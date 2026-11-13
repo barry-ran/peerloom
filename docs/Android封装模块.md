@@ -1,5 +1,7 @@
 # Android 封装模块
 
+ABI 2 的安装身份只有 `device_id` 与 `device_credential`，无到期字段。平台存储 schema/密文格式版本为 2，保留原作用域定位；旧格式、损坏、丢密钥明确失败，不自动清空或注册。CAS、tombstone、安全存储和线程边界不变；历史原生测试不能替代新提交验收。
+
 本模块位于 `bindings/android`，复用唯一 C ABI 和 Rust `DeviceSdk`。Android 原生构建以及 4KB、16KB emulator 门禁已取得实际通过证据；本地静态检查不替代它们。发布仍要求最终默认配置的精确 SHA 通过全部必需平台门禁，不能把单个平台成功等同整体已发布。
 
 ## 架构与边界
@@ -39,7 +41,6 @@ flowchart LR
 | `start()` | 读取已有持久身份并自查 |
 | `register(registration, key)` | grant 注册；调用方保留原 body/key 处理不确定结果 |
 | `connect(target)` / `respond(session, accept)` | 请求或确认服务端授权；CONNECT completion 不等于 Ready |
-| `refreshCredentials()` | 轮换、CAS 保存、新 token 重新认证 WSS |
 | `Connection.send(bytes)` | 单条可靠消息，本地接受不代表业务远端确认 |
 | `Connection.sameConnection(other)` | 比较同一 SDK 实例内的连接身份，失效后仍可关联事件；不代表有效性或授权 |
 | `Connection.close()` | 不可逆地禁止新增收发，然后异步资源清理 |
@@ -60,8 +61,8 @@ flowchart LR
 - 进程内锁和同 scope 的 OS file lock 串行化 CAS；不同实例/进程比较同一 revision。文件/锁名只含长度分隔 scope 的 SHA-256，不含凭证。
 - 密文和锁文件要求普通文件、同 UID、0600、单 link，目录 0700；锁使用 NOFOLLOW。OS 锁竞争有明确等待上界，不阻塞 UI。已有临时文件失败关闭，不跟随软链接；rename/sync 失败不得回报 CAS 成功。
 - 密钥缺失但密文存在，或已生成密钥但密文缺失，都失败关闭，不能静默重新生成身份。Keystore 锁定/损坏/不可用也无明文后备。
-- 崩溃遗留 `.enc.new` 时，旧完整快照仍可读，但后续写入失败关闭；不自动删除不确定事务文件。须停止写入、核对服务端注册/轮换结果后显式恢复。当前未提供自动恢复工具，也未完成两个 fsync/rename 切点的强杀验收。
-- 外部存储调用超时或取消不能撤回可能已完整提交的宿主操作。当前没有跨进程崩溃的完整注册/轮换日志，遵守 C ABI 的 OutcomeUnknown 边界。
+- 崩溃遗留 `.enc.new` 时，旧完整快照仍可读，但后续写入失败关闭；不自动删除不确定事务文件。须停止写入、核对服务端注册结果后显式恢复。当前未提供自动恢复工具，也未完成两个 fsync/rename 切点的强杀验收。
+- 外部存储调用超时或取消不能撤回可能已完整提交的宿主操作。当前没有跨进程崩溃的完整注册日志，遵守 C ABI 的 OutcomeUnknown 边界。
 - 不声称所有设备都有硬件安全模块；emulator 的 Keystore 结果不证明真机硬件保护、卸载行为或厂商后台策略。
 
 ## 固定构建输入
@@ -126,7 +127,7 @@ CI 只对本次 Compose 项目的 gateway 短暂停止/重启，形成真实 WSS
 
 JNI 在创建 Java 字节数组前向宿主申请预算，completion 使用受理时已预留的 ticket，不在回调重新争抢额度。每条 stream 只有一个未消费 READ；READ 预算保持到应用 executor 实际执行并重新检查 gate，普通 `Operation.completion` 在 future 完成时将 payload 所有权交给调用者，调用者后续保留或异步排队不属于 SDK 可观测内存。事件保留到 listener 返回，存储请求保留到异步回复结束。
 
-ABI1 的 void callback 没有消费 ACK：未请求的 push 消息超过宿主资源预算会产生可观察资源失败并停止实例，不能默默丢可靠数据，也不声称提供跨 native/宿主的端到端消费反压。字节长度、每 stream 单 READ、queued cancel / running READ Busy、WRITE 未知结果和 reset fence 语义不变。
+ABI2 的 void callback 没有消费 ACK：未请求的 push 消息超过宿主资源预算会产生可观察资源失败并停止实例，不能默默丢可靠数据，也不声称提供跨 native/宿主的端到端消费反压。字节长度、每 stream 单 READ、queued cancel / running READ Busy、WRITE 未知结果和 reset fence 语义不变。
 
 关键分区 R 内再分为管理操作/存储回复与生命周期通知各半；每个登记对象预留一个 Closed ticket，不能耗用管理操作计数或管理字节。最终空 payload shutdown 通知有独立保证路径，不因缩容或旧宿主票据未消费而丢失；存储回调预算失败会明确回复失败，不把未回复 CAS 当作完成或回滚。
 

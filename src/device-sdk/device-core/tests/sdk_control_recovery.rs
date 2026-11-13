@@ -11,7 +11,6 @@ struct Device {
     application_id: String,
     device_id: String,
     device_credential: String,
-    expires_at: String,
 }
 #[derive(Deserialize)]
 struct Fixture {
@@ -31,7 +30,6 @@ async fn sdk(origin: &str, device: Device) -> DeviceSdk {
             StoredIdentity {
                 device_id: device.device_id,
                 device_credential: SecretString::new(device.device_credential),
-                expires_at: device.expires_at,
             },
         )
         .await

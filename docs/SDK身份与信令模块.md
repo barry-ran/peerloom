@@ -1,5 +1,7 @@
 # SDK 身份与信令模块
 
+本文引用的旧提交/CI结果只证明对应历史版本，不代表当前 ABI 2 长期身份契约已经通过平台实测。当前身份不再提供刷新/轮换 API；新版本须重新执行注册、持久化重启、跨旧24小时边界认证及撤销门禁。
+
 本模块位于 `src/device-sdk/device-core` 与 `device-storage`。`DeviceSdk`/`Connection` 已把身份、原生 WSS、目标确认、授权期限与真实 WebRTC 组合为可调用的 Rust facade；也保留低层组件供专门集成。当前 Rust facade 支持**单身份、单 WSS 下多会话，每会话可热开可靠消息、低延迟消息和可靠字节流**，不是最终多连接多通道 SDK，不包含五端安全存储；Linux 的 C ABI 子集见 [C 语言接口模块](C语言接口模块.md)，不代表五端 ABI 已验收。
 
 ```mermaid
@@ -57,7 +59,7 @@ flowchart LR
 - 托管响应只接受匹配会话、匹配本次协商的 `negotiation_generation`（1..9007199254740991，JSON 安全整数边界）、最多4个单URL TURN条目、未来整秒RFC3339 expiry、有限用户名与密码。过期/异常超长TTL拒绝；客户端允许的未来上限为11分钟（服务端最大10分钟，留有限时钟偏差），不是延长实际TURN认证期限。准备创建transport前再次检查expiry及SDK授权gate。
 - RelayOnly在DataChannel就绪后还读取实际选中候选，要求本地候选为Relay，才向应用发Ready。对端可以采用其他合法策略，不错误要求混合策略双方都必须配置RelayOnly。
 - 需要人工配置 `transport.ice_servers` 的集成方必须显式设置 `managed_relays=false`。托管Auto/RelayOnly与非空人工ICE配置互斥，避免隐式混合不同来源的凭据。旧的人工配置代码需要明确选择此兼容模式。
-- Close/租约到期可取消尚未完成的HTTP获取；迟到响应无法恢复已关闭gate。HTTP token只作敏感字符串快照，不写日志；身份轮换与原有存储CAS逻辑不受此路径改变。
+- Close/租约到期可取消尚未完成的HTTP获取；迟到响应无法恢复已关闭gate。HTTP token只作敏感字符串快照，不写日志；安装身份与原有存储CAS逻辑不受此路径改变。
 
 初次协商及同会话的新代恢复均重新获取当前代配置；恢复采用重建 PeerConnection/Channel，而非原地 ICE restart，不实现持续原地 TURN 凭据替换。凭据REST到期不等于既有allocation立即失效，不能将TURN expiry当成P2P撤销计时器；连接仍由独立SDK授权租约限制。新的授权连接会重新获取配置，不把上一会话的TURN凭据当作通用客户端缓存。TURN服务器范围、既有allocation Refresh的实际边界见[中继服务模块](中继服务模块.md)。
 
@@ -70,19 +72,18 @@ flowchart LR
 | `connect` / `connect_with_request` | 提交目标设备连接请求；后者返回稳定 request_id。成功仅表示本地准入与发送，不等于获授权或数据连通 |
 | `accept` / `reject` | 回应 `IncomingConnection`，由服务端决定权威状态 |
 | `next_event` | 接收 Online/Offline、连接请求、ConnectionReady、ConnectionClosed、Stopped 等事件 |
-| `refresh_credentials` | 串行轮换或恢复待定轮换，以新凭证重建 WSS；不因更换连接而延长旧数据授权 |
 | `Connection::send` / `receive` | 有界可靠消息收发；不暴露可绕过授权守卫的 raw transport |
 | `Connection::close` / `DeviceSdk::close` | 先禁止新收发，再有界等待资源清理；正常 SDK 退出允许正在执行的有界凭证变更结束 |
 
 `max_connections` 与 `max_channels_per_connection` 默认 0（不设人工数量上限），正数启用显式配额；pending、待授权、协商、Ready、恢复的会话计入活动配额；本地关闭 gate 并完成有界 worker 收束后即释放活动配额，不等待服务端确认。关闭后尚未确认的轻量记录独立保留，仅供补发终止与阻止旧会话复活，不占活动配额、不设置额外累计数量上限；服务端终态/明确不存在或整个安装停止/reset 后才移除，不能按旧本地 deadline 猜测清除。活动通道计数包含默认可靠消息通道及正在创建/握手的通道；只有活动与累计创建预算都为正数时才要求 active≤creation。数量不限不按配置预分配，仍可能因硬件/操作系统资源、SCTP stream-ID 或独立队列背压失败。[C ABI](C语言接口模块.md)、[Kotlin](Android封装模块.md)与[Swift](../bindings/ios/Apple封装说明.md)已暴露多连接及三类型 typed 通道，保留默认可靠消息通道的兼容入口；各平台真实验收独立于 Rust 测试，不能据配置上限推断长期并发或所有系统版本已通过。每会话初始仍创建默认可靠消息通道以保持旧 `send/receive`；Ready 前检查 label 为 `peerloom.reliable`、protocol 为空，并且有序、没有有限重传次数或期限，不能把低延迟或字节流通道伪装为可靠消息。
 
-连接请求被拒时发出同样的 `ConnectionRequestFailed`（reason 为拒绝错误），不会释放其他目标的 pending，也不会关闭已获准的兄弟会话。未知或旧代响应不作用于当前代。服务端已分配会话后的事件继续以 session_id 关联。ABI1 保持事件布局与编号不变：请求失败映射既有 CONNECTION_CLOSED（connection_id=0、session_id 为空），JSON 追加 request_id 和 target_device_id；旧客户端可忽略新增字段。
+连接请求被拒时发出同样的 `ConnectionRequestFailed`（reason 为拒绝错误），不会释放其他目标的 pending，也不会关闭已获准的兄弟会话。未知或旧代响应不作用于当前代。服务端已分配会话后的事件继续以 session_id 关联。ABI2 保持事件布局与编号不变：请求失败映射既有 CONNECTION_CLOSED（connection_id=0、session_id 为空），JSON 追加 request_id 和 target_device_id；ABI 2 客户端按该字段关联请求。
 
 当前源码不设每实例累计1024个会话的工程上限，同时保留关闭后不复活的授权边界：未知 incoming 先取得关联 request_id 的服务端最新快照，验证参与者、代次与双端租约后才交应用或建立 transport；本地关闭立即关闭旧 gate，终止确认前保留待收束状态并补发 terminate。终态释放后，迟到通知必须再次核验服务端，不能凭旧 snapshot 重新建立连接。固定32项仅作为同步在途窗口，不作为连接总数或累计生命周期配额。验证范围与交付门禁见[开发与验收](开发与验收.md)。
 
 通过会话、参与者及全部期限字段校验的较旧 live 快照不会回退状态/代次，也不能自行延长授权；迟到的本端续租确认必须匹配仍待处理的请求且代次高于发起时记录，兑现期限同时受该确认与最新已验证快照的较严格上界约束。终止、已过期授权及重复确认均不能恢复或延长旧句柄。
 
-每个会话独立持有租约、generation、恢复退避、同步状态和有界请求路由；身份轮换只重建一次 WSS，并逐会话同步，不重放业务消息。reset/撤销停止时先同步关闭全部 gate，再等待有界子任务退出。单个会话故障/主动关闭不替换其他会话。重连的 ConnectionClosed 可先于服务端最终终止到达，表示旧 handle 永久失效，不代表服务端会话已经释放。
+每个会话独立持有租约、generation、恢复退避、同步状态和有界请求路由；WSS 恢复逐会话同步，不重放业务消息。reset/撤销停止时先同步关闭全部 gate，再等待有界子任务退出。单个会话故障/主动关闭不替换其他会话。重连的 ConnectionClosed 可先于服务端最终终止到达，表示旧 handle 永久失效，不代表服务端会话已经释放。
 
 SDK 命令队列 32，事件和内部通知队列各固定 256，与连接数量配置解耦，不按不限配置预分配；连接收发队列各 32，消息至多 64 KiB，待发送消息 TTL 为 30 秒。满队列明确拒绝或关闭，不能无限缓冲；这些数值不是整个进程内存上限。消息发送完成只代表本地传输受理，不代表对端业务已消费。传输协商在子任务中执行，身份变更也不阻塞授权计时。
 
@@ -92,7 +93,6 @@ stateDiagram-v2
     信令连接中 --> 在线: hello校验成功
     在线 --> 退避: 临时网络断开
     退避 --> 信令连接中: 1至30秒指数退避加抖动
-    在线 --> 同步中: 凭证轮换后重建WSS
     信令连接中 --> 同步中: 已有会话需要恢复快照
     同步中 --> 在线: 权威sync通过
     在线 --> 停止: 主动关闭或永久认证策略错误
@@ -110,15 +110,17 @@ stateDiagram-v2
 
 ## 身份与 HTTP 边界
 
-- `IdentityClient` 使用锁定版本 reqwest，提供注册、`device-self` 和凭证刷新；租户、设备及授权结果以服务端认证结果为准。
+安装凭据采用 `until_revoked`，身份对象仅含 `device_id` 与 `device_credential`。没有 refresh API、定时轮换或凭据到期字段；保留注册收据、授权 grant、会话租约和 TURN TTL。首次注册未知结果仍需原键/请求，不因长期凭据而自动恢复任意崩溃点。
+
+- `IdentityClient` 使用锁定版本 reqwest，提供注册与 `device-self`，安装凭据无时间到期；租户、设备及授权结果以服务端认证结果为准。
 - 默认只接受 HTTPS 根 origin。只有显式开启开发选项时，允许 IP 字面量回环地址上的 HTTP；普通域名、`localhost`、非回环 HTTP 都不能借此放行。WSS 地址由同一 origin 派生。
 - URL 不接受用户名、密码、查询参数、片段或非根路径。禁止重定向、环境代理和 HTTP 自动重试；凭证只放 Authorization 请求头，不放 URL。
 - HTTP 超时必须大于零且不超过 60 秒；响应按 Content-Length 和实际流式累计双重限制为 64 KiB。注册请求本体限制为 16 KiB，平台必填，元数据数量及键值长度受限。
-- 注册的 installation_public_key 目前是安装标识输入，不证明私钥持有，也不是无凭证找回身份的凭据。
+- 注册的 installation_tag 目前是安装标识输入，不证明私钥持有，也不是无凭证找回身份的凭据。
 - 变更调用必须持有 `IdempotencyKey`。不确定结果重试必须保留原键、原请求与原凭证，不得换新键假装前一次未执行；服务端回放窗口有限。
 - 错误保留稳定机器码，敏感字符串的 Debug 隐藏内容，包装器释放时清理其持有内存。不能据此声称 HTTP 库内部副本、操作系统缓冲区或所有进程内存都已清零。
 
-## 存储、轮换与取消恢复
+## 存储与注册取消恢复
 
 `IdentityStore` 是可注入异步接口，按规范化服务端 origin 与应用 UUID 隔离身份。`save` 和 `delete` 必须原子比较 revision 后更新；删除也递增 revision，防止旧写入在删除后重新生效。
 
@@ -129,15 +131,15 @@ stateDiagram-v2
     [*] --> 可用
     可用 --> 请求待定: 保存原参数与幂等键后发送
     请求待定 --> 请求待定: 网络失败或调用被取消
-    请求待定 --> 待保存: 收到新凭证
+    请求待定 --> 待保存: 收到首次注册凭据
     待保存 --> 待保存: 存储失败或取消
     待保存 --> 可用: CAS成功或读回确认自己的完整提交
 ```
 
 - `IdentitySession` 的单个可变所有者串行处理变更；不同所有者由存储 CAS 检出竞争，不自动覆盖另一个写入者。
 - `retry_pending()` 重用原始变更参数。仅取消调用 future 不丢弃 session 中的待重试状态；销毁整个 session 会丢失这些内存恢复信息，尚无崩溃恢复日志。
-- 网络已经返回新凭证后，即使保存失败，也不回退到旧凭证。`needs_persistence()` 表示仍需 `retry_persist()`。
-- 若存储其实已提交，但保存 future 在返回前被取消，重试可读回并核对更高 revision、设备 ID、凭证与到期时间，确认自己的完整结果；不匹配则返回冲突而不是覆盖。
+- 网络已经返回首次注册凭据后，即使保存失败，也不创建第二个安装。`needs_persistence()` 表示仍需 `retry_persist()`。成功 SAVE 后也经公共 LOAD 精确读回 revision、设备 ID 和凭据；读回失败保留 dirty。此前 pending 恢复成功后仅发一次 `IdentityPersisted`，不以普通 host LOAD 推断 SDK 已确认自己的提交。
+- 若存储其实已提交，但保存 future 在返回前被取消，重试可读回并核对更高 revision、设备 ID 与凭证，确认自己的完整结果；不匹配则返回冲突而不是覆盖。
 - 同一应用 UUID 的大小写输入规范化为同一存储作用域；设备自查还校验返回应用与当前作用域一致。
 
 ## 原生 WSS 客户端
@@ -193,12 +195,12 @@ cd src/device-sdk
 cargo test --locked -p device-core -p device-storage
 ```
 
-`identity_service.rs`、`authorized_pair.rs` 与 `sdk_service.rs` 是显式集成目标，需要一次性测试 fixture 和真实 Go 服务，不会因普通测试默认跳过而算作通过。已本地真实验证 HTTP 注册/同键重放/自查/轮换、授权 WSS 路由接入 WebRTC 双向消息，以及断信令后租约内继续传输、到期由编排调用方关闭和拒绝之后发送；授权双设备测试约 60 秒。独立传输集成也已验证真实 TURN 双端所选候选为 Relay/Relay，以及错误密码拒绝。
+`identity_service.rs`、`authorized_pair.rs` 与 `sdk_service.rs` 是显式集成目标，需要一次性测试 fixture 和真实 Go 服务，不会因普通测试默认跳过而算作通过。历史轮换版本已本地真实验证 HTTP 注册/同键重放/自查/轮换、授权 WSS 路由接入 WebRTC 双向消息，以及断信令后租约内继续传输、到期由编排调用方关闭和拒绝之后发送；授权双设备测试约 60 秒。独立传输集成也已验证真实 TURN 双端所选候选为 Relay/Relay，以及错误密码拒绝。
 
-`sdk_service.rs` 的应用代码只调用 facade，不复制 SDP/lease 编排，覆盖同租户跨应用请求、显式接受、真实双向消息、凭证轮换后 WSS 重建、P2P保留与主动关闭。批准等待超时为30秒，**批准后的默认授权租约为60秒**，两者不能混用。短暂数据/轮换测试不证明越过租约；托管RelayOnly专项从同租户只读管理查询捕获数据库持久化的双端deadline与`lease_generation`，等到两个实际捕获deadline都过去后，再断言代次与双端deadline增长、仍未到期并实际双向收发。该私有service credential仅用于测试观测，不传入生产SDK；发布仍以精确提交CI和实际运行证据为准。 默认60秒租约的服务端负测不缩短TTL、不修改deadline：停止目标续租，源端在捕获的目标deadline前5秒仍正常续租，跨过该数据库实际deadline后源端续租被拒绝且会话信令关闭。它证明服务端双端失效关闭，不冒称宿主阻塞回调或SDK整机休眠验收。
+`sdk_service.rs` 的应用代码只调用 facade，不复制 SDP/lease 编排，覆盖同租户跨应用请求、显式接受、真实双向消息、WSS 断开后重建、P2P保留与主动关闭。批准等待超时为30秒，**批准后的默认授权租约为60秒**，两者不能混用。短暂数据测试不证明越过租约；托管RelayOnly专项从同租户只读管理查询捕获数据库持久化的双端deadline与`lease_generation`，等到两个实际捕获deadline都过去后，再断言代次与双端deadline增长、仍未到期并实际双向收发。该私有service credential仅用于测试观测，不传入生产SDK；发布仍以精确提交CI和实际运行证据为准。 默认60秒租约的服务端负测不缩短TTL、不修改deadline：停止目标续租，源端在捕获的目标deadline前5秒仍正常续租，跨过该数据库实际deadline后源端续租被拒绝且会话信令关闭。它证明服务端双端失效关闭，不冒称宿主阻塞回调或SDK整机休眠验收。
 
 ```sh
-# 仅使用新建的临时开发fixture；该测试会真实轮换source凭证。
+# 仅使用新建的临时开发 fixture，不操作现场安装身份。
 TEST_IDENTITY_BASE_URL=http://127.0.0.1:18080 \
 TEST_SIGNAL_FIXTURE_FILE=/absolute/path/to/fresh-pair.json \
 cargo test --locked -p device-core --test sdk_service -- --ignored --nocapture
@@ -208,7 +210,7 @@ fixture 必须是 0600 私有文件；不把凭证放入命令行参数、日志
 
 当前已实现 Rust/C/Kotlin/Swift 的多连接与三类型通道、显式身份 reset，以及 Linux Secret Service、Windows DPAPI、Android Keystore 和 Apple Keychain 存储。原生 C 前缀兼容和有界生命周期已有独立测试，但不据此宣称 ABI 永久稳定或正式发布。Auto 遇不可达 TURN 时的有界候选快照回退已有真实黑洞/Host-Host/DTLS 数据与授权 C 链路验收，详见[原生传输模块](原生传输模块.md)；不是任意 NAT、动态切路或移动网络切换保证。
 
-仍待专项验收的是网络切换/系统休眠、24小时级凭证生命周期与长期续租/多连接多通道压力，以及平台生产签名、真机权限与长期后台行为。Android 已有4K/16K模拟器真实通道、有限后台、控制面短断与真实授权撤销用例；Windows 已有原生 Go/DPAPI/双端通信、实际租约期限与进程重启用例；Apple 的测试 Keychain、Simulator 与生产签名 DP Keychain/真机必须区分。参见[平台存储](存储模块.md)、[Windows原生验收](Windows原生验收.md)和各封装模块；新提交是否通过必须查同一 SHA 的实际完整门禁，不能由历史或 Rust 单测替代。
+仍待专项验收的是网络切换/系统休眠、长期身份撤销边界与长期续租/多连接多通道压力，以及平台生产签名、真机权限与长期后台行为。Android 已有4K/16K模拟器真实通道、有限后台、控制面短断与真实授权撤销用例；Windows 已有原生 Go/DPAPI/双端通信、实际租约期限与进程重启用例；Apple 的测试 Keychain、Simulator 与生产签名 DP Keychain/真机必须区分。参见[平台存储](存储模块.md)、[Windows原生验收](Windows原生验收.md)和各封装模块；新提交是否通过必须查同一 SHA 的实际完整门禁，不能由历史或 Rust 单测替代。
 
 托管中继的真实验收使用新的一对设备夹具（权限0600，经过目标批准的定向grant），服务端已配置批准的coturn REST节点：
 
@@ -219,4 +221,4 @@ TEST_SIGNAL_FIXTURE_FILE=/private/fresh-pair.json \
   cargo test -p device-core --test sdk_service --locked -- --ignored --nocapture
 ```
 
-该模式不向SDK传入静态TURN用户名或密码；双方只有平台注册凭据，从已授权会话接口获取配置，按RelayOnly连接并检查本地实际Relay候选后才Ready。测试覆盖双向二进制消息、设备凭据轮换/WSS重建、主动租约续期与关闭；会旋转source凭据，不可复用旧夹具。无该环境变量时仍跑DirectOnly回归，两种验证不可相互替代。初次取得TURN配置的实际成功不代表网络切换/ICE restart或任意长度的稳定性验收。
+该模式不向SDK传入静态TURN用户名或密码；双方只有平台注册凭据，从已授权会话接口获取配置，按RelayOnly连接并检查本地实际Relay候选后才Ready。测试覆盖双向二进制消息、WSS恢复、主动租约续期与关闭；使用独立新夹具。无该环境变量时仍跑DirectOnly回归，两种验证不可相互替代。初次取得TURN配置的实际成功不代表网络切换/ICE restart或任意长度的稳定性验收。

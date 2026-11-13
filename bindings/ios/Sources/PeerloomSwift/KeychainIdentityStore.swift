@@ -53,7 +53,7 @@ public final class KeychainIdentityStore: IdentityStore, @unchecked Sendable {
             guard let expected = request.expectedRevision else { throw StoreError.invalidRecord }
             guard expected < UInt64.max else { throw StoreError.revisionOverflow }
             guard (current?.revision ?? 0) == expected else { throw StoreError.conflict }
-            let record = Record(format: 1, scope: request.scope, revision: expected + 1, identity: request.identity)
+            let record = Record(format: 2, scope: request.scope, revision: expected + 1, identity: request.identity)
             let data = try encodeJSON(record)
             guard data.count <= 16384 else { throw StoreError.invalidRecord }
             let status: OSStatus
@@ -114,7 +114,7 @@ public final class KeychainIdentityStore: IdentityStore, @unchecked Sendable {
               data.count <= 16384, let revision = attributes[kSecAttrGeneric as String] as? Data
         else { throw StoreError.invalidRecord }
         let record = try JSONDecoder().decode(Record.self, from: data)
-        guard record.format == 1, record.scope == scope, record.revision > 0,
+        guard record.format == 2, record.scope == scope, record.revision > 0,
               revision == revisionData(record.revision) else { throw StoreError.invalidRecord }
         try record.identity?.validate()
         return record

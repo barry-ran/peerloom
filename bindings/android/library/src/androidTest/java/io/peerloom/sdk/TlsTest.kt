@@ -120,8 +120,7 @@ class TlsTest {
                         "identity",
                         JSONObject()
                             .put("device_id", device)
-                            .put("device_credential", "dev_" + "b".repeat(43))
-                            .put("expires_at", "2030-01-01T00:00:00Z"),
+                            .put("device_credential", "dev_" + "b".repeat(43)),
                     )
             )
     }

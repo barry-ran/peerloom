@@ -125,7 +125,7 @@ func (s *Store) RegisterDirect(ctx context.Context, input Registration, key, rem
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 	var deviceID string
-	err = tx.QueryRow(ctx, `INSERT INTO devices(tenant_id,application_id,installation_key_hash,platform,sdk_version,metadata) VALUES($1,$2,$3,$4,$5,$6) RETURNING id::text`, tenant, input.ApplicationID, digest(input.InstallationPublicKey), input.Platform, input.SDKVersion, metadataJSON).Scan(&deviceID)
+	err = tx.QueryRow(ctx, `INSERT INTO devices(tenant_id,application_id,installation_tag_hash,platform,sdk_version,metadata) VALUES($1,$2,$3,$4,$5,$6) RETURNING id::text`, tenant, input.ApplicationID, digest(input.InstallationTag), input.Platform, input.SDKVersion, metadataJSON).Scan(&deviceID)
 	if err != nil {
 		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
 	}
@@ -133,7 +133,7 @@ func (s *Store) RegisterDirect(ctx context.Context, input Registration, key, rem
 	if err = tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
 		return Credential{}, Fail("DATABASE_UNAVAILABLE", 503)
 	}
-	result, err := s.issue(ctx, tx, tenant, deviceID, now)
+	result, err := s.issue(ctx, tx, tenant, deviceID)
 	if err != nil {
 		return Credential{}, err
 	}

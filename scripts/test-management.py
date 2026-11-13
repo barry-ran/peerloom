@@ -128,7 +128,7 @@ def exercise(client, admin, foreign=None, reader=None):
         replay = call('POST', '/v1/registration-grants', 201, admin, body, key('reg-' + label))
         require(grant['grant'] == replay['grant'], 'registration grant replay changed secret')
         registration = {'application_id': application, 'platform': 'linux',
-                        'installation_public_key': 'http-public-label-' + uuid.uuid4().hex,
+                        'installation_tag': 'http-public-label-' + uuid.uuid4().hex,
                         'registration_grant': grant['grant']}
         device = call('POST', '/v1/device-registrations', 201, body=registration, key=key('device-' + label))
         return {'application_id': application, **device}

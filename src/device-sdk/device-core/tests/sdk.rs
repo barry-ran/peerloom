@@ -32,7 +32,6 @@ async fn setup() -> (TcpListener, SdkConfig, Arc<MemoryIdentityStore>) {
             StoredIdentity {
                 device_id: DEVICE.into(),
                 device_credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
-                expires_at: "2027-01-01T00:00:00Z".into(),
             },
         )
         .await
@@ -283,7 +282,8 @@ async fn registration_persistence_failure_keeps_usable_sdk_identity() {
         let mut bytes = [0u8; 8192];
         let n = socket.read(&mut bytes).await.unwrap();
         assert!(String::from_utf8_lossy(&bytes[..n]).starts_with("POST /v1/device-registrations"));
-        let body=json!({"device_id":DEVICE,"device_credential":format!("dev_{}","a".repeat(43)),"expires_at":"2027-01-01T00:00:00Z"}).to_string();
+        let body = json!({"device_id":DEVICE,"device_credential":format!("dev_{}","a".repeat(43))})
+            .to_string();
         socket.write_all(format!("HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
         drop(socket);
         let mut socket = handshake(&listener, 1).await;
@@ -292,7 +292,7 @@ async fn registration_persistence_failure_keeps_usable_sdk_identity() {
     let request = device_core::identity::RegistrationRequest {
         application_id: APP.into(),
         platform: device_core::identity::Platform::Linux,
-        installation_public_key: "test".into(),
+        installation_tag: "test".into(),
         registration_grant: SecretString::new("reg_test".into()),
         sdk_version: "test".into(),
         metadata: Default::default(),
@@ -337,7 +337,6 @@ async fn reset_stops_actor_and_preserves_tombstone_without_automatic_registratio
     sdk.reset(DEVICE).await.unwrap();
     assert!(sdk.is_resetting());
     assert_eq!(sdk.connect(APP).await, Err(SdkError::Closed));
-    assert_eq!(sdk.refresh_credentials().await, Err(SdkError::Closed));
     assert!(sdk.next_event().await.is_none());
     let snapshot = store.load(&scope).await.unwrap();
     assert_eq!(snapshot.revision, 2);

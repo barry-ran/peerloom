@@ -11,12 +11,12 @@ import (
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type Registration struct {
-	ApplicationID         string         `json:"application_id"`
-	Platform              string         `json:"platform"`
-	InstallationPublicKey string         `json:"installation_public_key"`
-	RegistrationGrant     string         `json:"registration_grant"`
-	SDKVersion            string         `json:"sdk_version,omitempty"`
-	Metadata              map[string]any `json:"metadata,omitempty"`
+	ApplicationID     string         `json:"application_id"`
+	Platform          string         `json:"platform"`
+	InstallationTag   string         `json:"installation_tag"`
+	RegistrationGrant string         `json:"registration_grant"`
+	SDKVersion        string         `json:"sdk_version,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
 }
 
 func (r Registration) Validate() error { return r.validate(false) }
@@ -30,7 +30,7 @@ func (r Registration) validate(direct bool) error {
 	default:
 		return Fail("INVALID_INPUT", 422)
 	}
-	if n := utf8.RuneCountInString(r.InstallationPublicKey); n < 1 || n > 4096 {
+	if n := utf8.RuneCountInString(r.InstallationTag); n < 1 || n > 4096 {
 		return Fail("INVALID_INPUT", 422)
 	}
 	if n := len(r.RegistrationGrant); (!direct && n < 1) || n > 512 || (direct && n != 0) {
@@ -67,16 +67,14 @@ func (r Registration) validate(direct bool) error {
 type Credential struct {
 	DeviceID         string `json:"device_id"`
 	DeviceCredential string `json:"device_credential"`
-	ExpiresAt        string `json:"expires_at"`
 }
 
 type Device struct {
-	ID                  string          `json:"device_id"`
-	TenantID            string          `json:"tenant_id"`
-	ApplicationID       string          `json:"application_id"`
-	Platform            string          `json:"platform"`
-	Metadata            json.RawMessage `json:"metadata"`
-	CredentialExpiresAt string          `json:"credential_expires_at"`
+	ID            string          `json:"device_id"`
+	TenantID      string          `json:"tenant_id"`
+	ApplicationID string          `json:"application_id"`
+	Platform      string          `json:"platform"`
+	Metadata      json.RawMessage `json:"metadata"`
 }
 
 type Error struct {

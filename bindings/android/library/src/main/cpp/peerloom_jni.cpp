@@ -108,7 +108,7 @@ void callback(uint64_t context, const dp_event *event) noexcept {
         }
         Attachment attachment;
         JNIEnv *env = attachment.env;
-        if (!env || !event || event->abi_version != 1 || event->struct_size < sizeof(dp_event) ||
+        if (!env || !event || event->abi_version != 2 || event->struct_size < sizeof(dp_event) ||
             event->payload_len > 65536 || (event->payload_len && !event->payload)) {
             if (env) {
                 env->CallVoidMethod(client->receiver, client->failed);
