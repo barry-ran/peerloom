@@ -221,6 +221,7 @@ int main(void) {
     pthread_mutex_lock(&mutex);assert(hosts[0].flood_completions);pthread_mutex_unlock(&mutex);
     complete(&hosts[0],submit(&hosts[0],DP_OP_SEND,hosts[0].connection,message,sizeof(message)));wait_count(&hosts[1].messages,2);
     if (reset_mode) {
+        pthread_mutex_lock(&mutex); const unsigned online_before_reset=hosts[0].online; pthread_mutex_unlock(&mutex);
         char reset[160];
         snprintf(reset,sizeof(reset),"{\"expected_device_id\":\"%s\",\"retry\":false}",target);
         assert(dp_sdk_submit(hosts[0].sdk,DP_OP_RESET_IDENTITY,0,(const uint8_t *)reset,strlen(reset),&ignored)==DP_INVALID_ARGUMENT && !ignored);
@@ -238,7 +239,7 @@ int main(void) {
         complete(&hosts[0],submit(&hosts[0],DP_OP_RESET_IDENTITY,0,reset,strlen(reset)));
         pthread_mutex_lock(&mutex); assert(hosts[0].deletions==1 && strstr(hosts[0].snapshot,"\"identity\":null")); pthread_mutex_unlock(&mutex);
         complete(&hosts[0],submit(&hosts[0],DP_OP_START,0,fresh_start,strlen(fresh_start)));
-        wait_count(&hosts[0].online,3);
+        wait_count(&hosts[0].online,online_before_reset+1);
         pthread_mutex_lock(&mutex); assert(hosts[0].deletions==1 && !strstr(hosts[0].snapshot,old_device)); pthread_mutex_unlock(&mutex);
         puts("C ABI reset: explicit confirmation, live gate, non-cancellable mutation, committed-delete reply loss/readback, new direct DeviceID PASS");
     } else {

@@ -281,9 +281,9 @@ async fn native_secure_identity_survives_process_restart() {
         .load(&scope(&pair.source.application_id))
         .await
         .unwrap();
-    assert!(snapshot.revision > 1);
-    assert!(snapshot.identity.unwrap().device_credential.expose() != pair.source.device_credential);
-    // No fixture token import: new process loads the rotated credential through DPAPI.
+    assert_eq!(snapshot.revision, 1);
+    assert!(snapshot.identity.unwrap().device_credential.expose() == pair.source.device_credential);
+    // No fixture token import: new process loads the unchanged long-lived credential through DPAPI.
     let source = session(&pair.source.application_id, "source").await;
     assert_eq!(
         source.device_self().await.unwrap().device_id,

@@ -165,9 +165,15 @@ def start_snapshot(db):
     db.query(f"SELECT pg_advisory_xact_lock_shared({MIGRATION_LOCK});")
 
 
+# Logical column positions survive pg_dump/restore; physical attnum retains holes
+# after DROP COLUMN, whereas restore compacts them. Keep column order and all
+# names/types/defaults/constraints in the evidence, not obsolete catalog holes.
 SCHEMA_SQL = """
 SELECT jsonb_build_object(
- 'columns',(SELECT jsonb_agg(jsonb_build_array(c.relname,a.attnum,a.attname,format_type(a.atttypid,a.atttypmod),
+ 'columns',(SELECT jsonb_agg(jsonb_build_array(c.relname,
+ (SELECT count(*) FROM pg_attribute visible WHERE visible.attrelid=c.oid
+  AND visible.attnum>0 AND visible.attnum<=a.attnum AND NOT visible.attisdropped),
+ a.attname,format_type(a.atttypid,a.atttypmod),
  a.attnotnull,a.attidentity,a.attgenerated,pg_get_expr(d.adbin,d.adrelid)) ORDER BY c.relname,a.attnum)
  FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
  LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum

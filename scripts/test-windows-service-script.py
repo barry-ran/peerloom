@@ -18,6 +18,29 @@ service = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(service)
 
 
+class NativeTestSelectionTest(unittest.TestCase):
+    def test_missing_selector_never_runs_phase(self):
+        with patch.object(service, 'run', return_value=b'0 tests, 0 benchmarks\n') as run:
+            with self.assertRaisesRegex(RuntimeError, 'exactly one'):
+                service.run_native_test(Path('/fixture'), 'renamed_test', {})
+            self.assertEqual(run.call_count, 1)
+
+    def test_exact_selector_runs_once_in_new_process(self):
+        with patch.object(service, 'run', side_effect=[b'phase: test\n\n1 test, 0 benchmarks\n', None]) as run:
+            service.run_native_test(Path('/fixture'), 'phase', {})
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0][-1], '--list')
+            self.assertEqual(run.call_args_list[1].args[0][-1], '--nocapture')
+
+    def test_windows_phase_names_exist_in_rust(self):
+        source = (ROOT.parent / 'src/device-sdk/device-core/tests/windows_service.rs').read_text()
+        supervisor = (ROOT / 'windows-service.py').read_text()
+        for name in ('native_registration_pair_stable_identity_and_close',
+                     'native_secure_identity_survives_process_restart'):
+            self.assertIn('async fn ' + name + '()', source)
+            self.assertIn("'" + name + "'", supervisor)
+
+
 class PostgresStartWaitTest(unittest.TestCase):
     def test_actual_descendant_output_does_not_block_parent_wait(self):
         import subprocess

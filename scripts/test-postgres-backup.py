@@ -323,6 +323,8 @@ class BackupTests(unittest.TestCase):
     def test_schema_and_identity_digest_bounds(self):
         class EvidenceDB:
             def query(inner, sql):
+                if sql == m.SCHEMA_SQL:
+                    return '{"columns":[],"constraints":[],"indexes":[],"extensions":[],"functions":[],"triggers":[]}'
                 if "FROM pg_sequences" in sql:
                     return "[]"
                 if "count(*)" in sql:
@@ -331,8 +333,6 @@ class BackupTests(unittest.TestCase):
                     return '["devices"]'
                 if "coalesce(jsonb_agg(jsonb_build_object" in sql:
                     return json.dumps(self.ledger)
-                if sql == m.SCHEMA_SQL:
-                    return '{"columns":[],"constraints":[],"indexes":[],"extensions":[],"functions":[],"triggers":[]}'
                 return "\n".join(["a" * 64, "b" * 64])
         with mock.patch.object(m, "MAX_ROWS", 1), self.assertRaisesRegex(m.Failure, "ROW_LIMIT"):
             m.evidence(EvidenceDB(), self.ledger)
@@ -382,6 +382,12 @@ CREATE TRIGGER peerloom_backup_guard AFTER INSERT ON public.audit_events FOR EAC
                 if has_webhook:
                     db.query("""INSERT INTO webhook_endpoints(tenant_id,url,secret_ref) VALUES('00000000-0000-4000-8000-000000000001','https://synthetic.invalid/webhook','fixture-unused');
 INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id) VALUES('00000000-0000-4000-8000-000000000001','operator','device.revoke','device','00000000-0000-4000-8000-000000000004');""")
+            # A dropped column leaves a physical attnum hole that pg_restore
+            # compacts. This must not hide a real reorder/type/default change.
+            with m.SQL(source_env) as db:
+                db.query("ALTER TABLE devices ADD COLUMN backup_removed text; "
+                         "ALTER TABLE devices ADD COLUMN backup_retained text DEFAULT 'kept'; "
+                         "ALTER TABLE devices DROP COLUMN backup_removed;")
             with tempfile.TemporaryDirectory() as root:
                 bundle = Path(root) / "backup"
                 real_run = m.run

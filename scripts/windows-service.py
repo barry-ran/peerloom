@@ -231,6 +231,19 @@ def run(argv, *, env=None, cwd=None, timeout=180, stdout=subprocess.PIPE, import
     return output
 
 
+
+def run_native_test(root, test, env):
+    command = ['cargo', '+1.99.1', 'test', '--manifest-path', str(root / 'src/device-sdk/Cargo.toml'),
+               '-p', 'device-core', '--test', 'windows_service', '--target', 'x86_64-pc-windows-msvc',
+               '--locked', test, '--', '--ignored', '--exact']
+    # Cargo succeeds even when an --exact selector matches zero tests. Require
+    # discovery before a phase can produce evidence or unlock the next process.
+    listing = run(command + ['--list'], env=env, timeout=300)
+    if listing.decode('utf-8', errors='strict').splitlines().count(test + ': test') != 1:
+        raise RuntimeError('native test selector did not match exactly one test')
+    run(command + ['--nocapture'], env=env, timeout=300, stdout=None)
+
+
 def start_private_postgres(directory, port, env, known_secrets, timeout=180):
     """Wait for owned pg_ctl, not EOF on handles inherited by its server."""
     if type(port) is not int or not 1 <= port <= 65535:
@@ -536,19 +549,16 @@ def main():
                    TEST_REGISTRATION_FIXTURE_FILE=str(directory / 'registration.json'),
                    TEST_SIGNAL_FIXTURE_FILE=str(directory / 'pair.json'),
                    TEST_NATIVE_STORE_ROOT=str(stores), TEST_IDENTITY_BASE_URL=origin)
-        STAGE = 'native-sdk-dpapi-registration-authorized-pair-rotation'
-        for test in ('native_registration_pair_rotation_and_close', 'native_secure_identity_survives_process_restart'):
+        STAGE = 'native-sdk-dpapi-registration-authorized-pair-stable-identity'
+        for test in ('native_registration_pair_stable_identity_and_close', 'native_secure_identity_survives_process_restart'):
             STAGE = test
             # Each command creates a NEW native Windows test process; never WSL/Wine.
-            run(['cargo', '+1.99.1', 'test', '--manifest-path', str(root / 'src/device-sdk/Cargo.toml'),
-                 '-p', 'device-core', '--test', 'windows_service', '--target', 'x86_64-pc-windows-msvc',
-                 '--locked', test, '--', '--ignored', '--exact', '--nocapture'], env=env, timeout=300,
-                stdout=None)
+            run_native_test(root, test, env)
         evidence = root / 'dist/validation/windows-service.txt'
         evidence.parent.mkdir(parents=True, exist_ok=True)
         evidence_payload = ('Windows native Go + SDK + CurrentUser DPAPI: PASS\n'
                             'PostgreSQL 18.6 native Windows; Redis 8.10.3 in task-owned WSL1\n'
-                            'Registration, approval, DTLS binary echo, credential rotation, persisted generation and both actual initial lease deadlines crossed and renewed, close gate, new-process reload: PASS\n')
+                            'Registration, approval, DTLS binary echo, stable long-lived credential, persisted generation and both actual initial lease deadlines crossed and renewed, close gate, new-process reload: PASS\n')
     finally:
         cleanup_failed = False
         for process in reversed(children):
