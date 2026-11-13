@@ -33,8 +33,8 @@ class NativeTestSelectionTest(unittest.TestCase):
             self.assertEqual(run.call_args_list[1].args[0][-1], '--nocapture')
 
     def test_windows_phase_names_exist_in_rust(self):
-        source = (ROOT.parent / 'src/device-sdk/device-core/tests/windows_service.rs').read_text()
-        supervisor = (ROOT / 'windows-service.py').read_text()
+        source = (ROOT.parent / 'src/device-sdk/device-core/tests/windows_service.rs').read_text(encoding='utf-8')
+        supervisor = (ROOT / 'windows-service.py').read_text(encoding='utf-8')
         for name in ('native_registration_pair_stable_identity_and_close',
                      'native_secure_identity_survives_process_restart'):
             self.assertIn('async fn ' + name + '()', source)
