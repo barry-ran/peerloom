@@ -567,3 +567,39 @@ async fn mixed_frame_sizes_keep_partial_reads_empty_reads_and_fin_exact() {
     source.close().await.unwrap();
     target.close().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn owned_stream_slices_survive_close_and_mix_with_borrowed_reads() {
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        ..TransportConfig::default()
+    };
+    let source = PeerTransport::new(config.clone()).await.unwrap();
+    let target = PeerTransport::new(config).await.unwrap();
+    let mut outgoing = source.create_stream("owned-bytes").await.unwrap();
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    let mut incoming = target.accept_stream().await.unwrap();
+    let (a, b) = tokio::join!(outgoing.wait_open(), incoming.wait_open());
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(outgoing.write(b"abcdef").await.unwrap(), 6);
+    outgoing.shutdown_write().await.unwrap();
+    let first = incoming.read_owned(2).await.unwrap();
+    assert_eq!(first.as_slice(), b"ab");
+    let mut middle = [0; 2];
+    assert_eq!(incoming.read(&mut middle).await.unwrap(), 2);
+    assert_eq!(&middle, b"cd");
+    let last = incoming.read_owned(65536).await.unwrap();
+    assert_eq!(last.as_slice(), b"ef");
+    assert!(incoming.read_owned(65536).await.unwrap().is_empty());
+    assert!(first.allocation_capacity() <= 65536);
+    incoming.close().await.unwrap();
+    assert_eq!(first.as_slice(), b"ab");
+    assert_eq!(last.as_slice(), b"ef");
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}

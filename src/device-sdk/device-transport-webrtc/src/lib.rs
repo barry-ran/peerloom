@@ -890,8 +890,12 @@ impl MessageChannel {
     }
 
     pub async fn receive(&mut self) -> Result<Vec<u8>, TransportError> {
+        Ok(self.receive_owned().await?.to_vec())
+    }
+
+    pub async fn receive_owned(&mut self) -> Result<bytes::BytesMut, TransportError> {
         if let Some(message) = self.pending.take() {
-            return Ok(message);
+            return Ok(bytes::BytesMut::from(message.as_slice()));
         }
         tokio::time::timeout(self.timeout, async {
             while let Some(event) = self.poll_event().await {
@@ -904,7 +908,7 @@ impl MessageChannel {
                             let _ = self.channel.close().await;
                             return Err(TransportError::MessageTooLarge);
                         }
-                        return Ok(message.data.to_vec());
+                        return Ok(message.data);
                     }
                     DataChannelEvent::OnClose | DataChannelEvent::OnError => {
                         return Err(TransportError::Closed);

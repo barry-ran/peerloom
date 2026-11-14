@@ -35,6 +35,7 @@ extern "C" {
 #define DP_CHANNEL_WRITE UINT32_C(3)
 #define DP_CHANNEL_FINISH_WRITE UINT32_C(4)
 #define DP_CHANNEL_CLOSE UINT32_C(5)
+#define DP_CHANNEL_READ_OWNED UINT32_C(6)
 #define DP_EVENT_COMPLETE UINT32_C(1)
 #define DP_EVENT_ONLINE UINT32_C(2)
 #define DP_EVENT_OFFLINE UINT32_C(3)
@@ -60,6 +61,7 @@ extern "C" {
 #define DP_CAP_RELIABLE_STREAM UINT64_C(64)
 #define DP_CAP_LOW_LATENCY_MESSAGE UINT64_C(128)
 #define DP_CAP_LONG_LIVED_IDENTITY UINT64_C(256)
+#define DP_CAP_OWNED_READ UINT64_C(512)
 
 typedef struct dp_event {
     uint32_t abi_version;
@@ -72,8 +74,12 @@ typedef struct dp_event {
     size_t payload_len;
     /* Optional appended ABI-v2 field; check struct_size before reading. */
     uint64_t channel;
+    /* READ_OWNED success only: payload survives callback until buffer release. */
+    uint64_t buffer_handle;
+    uint64_t buffer_capacity;
 } dp_event;
-/* Payload/event pointers are borrowed ONLY during this callback. Copy if retained.
+/* Event pointer is borrowed ONLY during this callback.
+ * Payload is borrowed unless READ_OWNED returns a nonzero buffer_handle.
  * One dedicated serial callback thread per SDK; host dispatches to its own UI.
  * Verify abi_version and struct_size before reading fields; future minor additions append.
  * context is an opaque integer chosen by host, not an owned pointer.
@@ -215,6 +221,16 @@ uint32_t dp_sdk_state(uint64_t sdk);
  * Read-only: no renewal, no transport exposure. Running callbacks cannot be recalled. */
 uint32_t dp_connection_is_valid(uint64_t sdk, uint64_t connection);
 uint32_t dp_sdk_release(uint64_t sdk);
+/* READ_OWNED uses the same JSON/max_bytes and shared outstanding-read fence as READ.
+ * On nonempty OK, buffer_handle transfers one ownership reference to the host.
+ * payload/len stay valid until dp_buffer_release; buffer_capacity is the entire
+ * retained allocation charge (<=65536), possibly larger than len. Reserve 65536
+ * bytes before admission, even for smaller max_bytes. EOF/error have handle=0.
+ * Release exactly once, from any thread, including after SDK release. Keep this
+ * SDK library loaded until all buffers are released. Duplicate release is INVALID_HANDLE.
+ * A revoked/late host delivery must release the buffer without consuming its bytes.
+ */
+uint32_t dp_buffer_release(uint64_t buffer_handle);
 #ifdef __cplusplus
 }
 #endif

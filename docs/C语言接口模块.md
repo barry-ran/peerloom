@@ -184,3 +184,21 @@ fixture 必须为 0600；runner 自动生成并删除 0600 临时 C 输入，不
 ABI 2 身份 JSON 只有 `device_id` 与 `device_credential`，`DP_CAP_LONG_LIVED_IDENTITY` 声明长期可撤销身份能力。旧 ABI 配置拒绝创建，操作编号 5 不再提供 refresh；不重排其他操作编号。
 
 `DP_EVENT_IDENTITY_PERSISTED`（15，status 为 `DP_OK`，payload 为空）仅在此前持久化待定状态恢复成功后发送。SDK 先完成 CAS 或确认自己的未知提交，再通过公共 storage LOAD 精确核验 revision、ID 和凭据，随后解除 dirty 状态。普通 host LOAD 不能替代该确认；消费者还须保留实例关闭、STOPPED、撤销及会话租约栅栏。重复成功不重复发送，读回失败仍保持 pending。
+
+
+## 拥有所有权的流读取
+
+`DP_CAP_OWNED_READ` 表示支持 `DP_CHANNEL_READ_OWNED`。输入与 READ 相同，且两种读取共享每通道一个未完成请求的限制。成功的非空完成事件追加 `buffer_handle` 和 `buffer_capacity`；调用方拥有一次释放责任，`payload` 在 `dp_buffer_release(handle)` 前保持有效。事件结构本身仍只在回调内借用。EOF 与失败不产生 handle。
+
+每次提交前应预留 65536 字节 retained capacity，而不是仅按请求长度预留；分片可能保留整个底层分配。SDK 在接纳前保留独立额度，直到 handle 释放才退还。容量超过 65536 的底层分配会安全压紧。跨线程释放不依赖 SDK 实例，SDK 可以先释放，但宿主必须保持动态库加载直到所有块释放。旧代次、取消或关闭后的迟到块必须释放且不得继续消费；回调前及宿主交付时仍须复核授权。
+
+```mermaid
+flowchart LR
+  A[有界流读请求] --> B[不可变拥有所有权块]
+  B --> C[回调交接 handle / pointer / length / capacity]
+  C --> D[宿主共享 RAII 块]
+  D --> E[任意线程显式释放]
+  E --> F[退还独立分配额度]
+```
+
+原 READ 仍提供回调内借用的数据。拥有所有权读取不改变线上帧协议、可靠有序、部分写入、FIN 或关闭语义；不能把它描述为 SCTP 到解码器全链路零复制。

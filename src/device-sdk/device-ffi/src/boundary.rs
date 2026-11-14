@@ -19,6 +19,8 @@ pub struct DpEvent {
     pub payload: *const u8,
     pub payload_len: usize,
     pub channel: u64,
+    pub buffer_handle: u64,
+    pub buffer_capacity: u64,
 }
 fn guarded(f: impl FnOnce() -> Result<(), u32>) -> u32 {
     catch_unwind(AssertUnwindSafe(f))
@@ -68,7 +70,7 @@ pub extern "C" fn dp_abi_version() -> u32 {
 /// Capability bits are additive; ABI2 prefix remains stable.
 #[unsafe(no_mangle)]
 pub extern "C" fn dp_capabilities() -> u64 {
-    1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256
+    1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512
 }
 
 /// # Safety
@@ -161,11 +163,21 @@ pub unsafe extern "C" fn dp_sdk_create(
                             && !callback_instance.shutting.load(Ordering::Acquire)
                     });
                     if !deliver && event.kind == COMPLETE {
+                        drop(event.owned.take());
                         event.payload.fill(0);
                         event.payload.clear();
                         event.status = CLOSED;
                     }
                     if deliver || event.kind == COMPLETE {
+                        let owned = event.owned.take().map(crate::owned::transfer);
+                        let (buffer_handle, owned_pointer, owned_len, capacity) = match owned {
+                            Some(Ok(value)) => value,
+                            Some(Err(status)) => {
+                                event.status = status;
+                                (0, std::ptr::null(), 0, 0)
+                            }
+                            None => (0, std::ptr::null(), 0, 0),
+                        };
                         let view = DpEvent {
                             abi_version: 2,
                             kind: event.kind,
@@ -173,13 +185,21 @@ pub unsafe extern "C" fn dp_sdk_create(
                             connection: event.connection,
                             status: event.status,
                             struct_size: std::mem::size_of::<DpEvent>() as u32,
-                            payload: if event.payload.is_empty() {
+                            payload: if buffer_handle != 0 {
+                                owned_pointer
+                            } else if event.payload.is_empty() {
                                 std::ptr::null()
                             } else {
                                 event.payload.as_ptr()
                             },
-                            payload_len: event.payload.len(),
+                            payload_len: if buffer_handle != 0 {
+                                owned_len
+                            } else {
+                                event.payload.len()
+                            },
                             channel: event.channel,
+                            buffer_handle,
+                            buffer_capacity: capacity as u64,
                         };
                         callback(context, &view);
                     }
@@ -422,6 +442,17 @@ pub extern "C" fn dp_test_ffi_resource_bytes(sdk: u64, field: u32) -> u64 {
             }
         })
         .unwrap_or(u64::MAX)
+}
+
+/// Release an owned read allocation independently of its SDK instance.
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_buffer_release(handle: u64) -> u32 {
+    std::panic::catch_unwind(|| {
+        crate::owned::release(handle)
+            .map(|_| OK)
+            .unwrap_or_else(|e| e)
+    })
+    .unwrap_or(INTERNAL)
 }
 
 #[cfg(test)]

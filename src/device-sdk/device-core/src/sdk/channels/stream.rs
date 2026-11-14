@@ -1,6 +1,6 @@
 use super::*;
 use crate::outbound::{GlobalPermit, OutboundBudget};
-use device_transport_webrtc::stream::{ByteStream, StreamError};
+use device_transport_webrtc::stream::{ByteStream, OwnedChunk, StreamError};
 
 const CHUNK: usize = 16 * 1024;
 struct WriteRequest {
@@ -12,9 +12,8 @@ struct WriteRequest {
 }
 pub struct SdkStreamReader {
     scope: Scope,
-    received: mpsc::Receiver<Vec<u8>>,
-    pending: Vec<u8>,
-    offset: usize,
+    received: mpsc::Receiver<OwnedChunk>,
+    pending: OwnedChunk,
     eof: bool,
 }
 pub struct SdkStreamWriter {
@@ -74,11 +73,16 @@ impl SdkByteStream {
 impl SdkStreamReader {
     scope_methods!();
     pub async fn read(&mut self, output: &mut [u8]) -> Result<usize, SdkError> {
+        let chunk = self.read_owned(output.len()).await?;
+        output[..chunk.len()].copy_from_slice(chunk.as_slice());
+        Ok(chunk.len())
+    }
+    pub async fn read_owned(&mut self, maximum: usize) -> Result<OwnedChunk, SdkError> {
         self.scope.gate.check()?;
-        if output.is_empty() {
-            return Ok(0);
+        if maximum == 0 {
+            return Ok(OwnedChunk::default());
         }
-        if self.offset == self.pending.len() && !self.eof {
+        if self.pending.is_empty() && !self.eof {
             let chunk = tokio::select! {
                 biased;
                 _ = self.scope.gate.invalidated() => return Err(SdkError::Closed),
@@ -87,15 +91,8 @@ impl SdkStreamReader {
             self.scope.gate.check()?;
             self.eof = chunk.is_empty();
             self.pending = chunk;
-            self.offset = 0;
         }
-        if self.eof {
-            return Ok(0);
-        }
-        let n = output.len().min(self.pending.len() - self.offset);
-        output[..n].copy_from_slice(&self.pending[self.offset..self.offset + n]);
-        self.offset += n;
-        Ok(n)
+        Ok(self.pending.split_to(maximum.min(self.pending.len())))
     }
     pub async fn close(self) -> Result<(), SdkError> {
         self.scope.gate.close_and_wait().await
@@ -199,8 +196,7 @@ pub(super) fn wrap(scope: Scope, budget: OutboundBudget) -> (SdkByteStream, Stre
         reader: SdkStreamReader {
             scope: scope.clone(),
             received: reads,
-            pending: Vec::new(),
-            offset: 0,
+            pending: OwnedChunk::default(),
             eof: false,
         },
         writer: SdkStreamWriter {
@@ -221,7 +217,7 @@ pub(super) fn wrap(scope: Scope, budget: OutboundBudget) -> (SdkByteStream, Stre
 pub(super) struct StreamWorker {
     scope: Scope,
     writes: mpsc::Receiver<WriteRequest>,
-    received: mpsc::Sender<Vec<u8>>,
+    received: mpsc::Sender<OwnedChunk>,
 }
 fn error(error: StreamError) -> SdkError {
     match error {
@@ -238,7 +234,6 @@ impl StreamWorker {
     ) -> Result<(), SdkError> {
         let operation = async {
             let mut eof = false;
-            let mut buffer = vec![0; CHUNK];
             loop {
                 self.scope.gate.check()?;
                 // Reserve delivery capacity BEFORE reading. No consumed stream bytes
@@ -285,17 +280,17 @@ impl StreamWorker {
                             raw.wait_closed_after_fin().await?;
                             Err(StreamError::Closed)
                         } else {
-                            raw.read(&mut buffer).await
+                            raw.read_owned(CHUNK).await
                         }
                     }, if eof || read_permit.is_some() => {
-                        let n = match result {
-                            Ok(n) => n,
+                        let chunk = match result {
+                            Ok(chunk) => chunk,
                             Err(StreamError::Transport(TransportError::Timeout)) => continue,
                             Err(value) => return Err(error(value)),
                         };
                         self.scope.gate.check()?;
-                        read_permit.expect("reserved stream capacity").send(buffer[..n].to_vec());
-                        eof = n == 0;
+                        eof = chunk.is_empty();
+                        read_permit.expect("reserved stream capacity").send(chunk);
                     },
                     // Bounded backpressure retry, never busy-spin on a full receiver.
                     _ = tokio::time::sleep(Duration::from_millis(5)), if !eof && read_permit.is_none() => {},
@@ -335,6 +330,20 @@ mod tests {
     include!("stream_performance_tests.rs");
     use super::*;
     use futures_util::{pin_mut, poll};
+    #[tokio::test]
+    async fn owned_read_keeps_partial_bytes_and_checks_revocation() {
+        let (mut stream, worker, _budget, parent) = fixture();
+        worker.received.try_send(b"abcdef".to_vec().into()).unwrap();
+        let first = stream.reader.read_owned(2).await.unwrap();
+        let mut middle = [0; 2];
+        assert_eq!(stream.read(&mut middle).await.unwrap(), 2);
+        assert_eq!(&middle, b"cd");
+        assert_eq!(first.as_slice(), b"ab");
+        parent.close();
+        assert!(stream.reader.read_owned(2).await.is_err());
+        assert_eq!(first.as_slice(), b"ab");
+    }
+
     fn fixture() -> (SdkByteStream, StreamWorker, OutboundBudget, Arc<Gate>) {
         let parent = Arc::new(Gate::default());
         parent.update(Some(Instant::now() + Duration::from_secs(60)));
@@ -444,7 +453,7 @@ mod tests {
         test_continuous_grant(&parent, move || {
             Ok(Duration::from_secs(reading.load(Ordering::SeqCst)))
         });
-        worker.received.try_send(b"old".to_vec()).unwrap();
+        worker.received.try_send(b"old".to_vec().into()).unwrap();
         let mut output = [0; 1];
         assert_eq!(stream.read(&mut output).await, Ok(1));
         assert_eq!(output, [b'o']);
@@ -471,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn continuous_expiry_is_rechecked_after_select_dequeues_stream_chunk() {
         let (mut stream, worker, _budget, parent) = fixture();
-        worker.received.try_send(b"old".to_vec()).unwrap();
+        worker.received.try_send(b"old".to_vec().into()).unwrap();
         let reads = std::sync::atomic::AtomicUsize::new(0);
         test_continuous_grant(&parent, move || {
             let read = reads.fetch_add(1, Ordering::SeqCst);

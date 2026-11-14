@@ -203,7 +203,7 @@ pub async fn run(
             _ = instance.stop.notified() => break,
             command = commands.recv() => {
                 let Some(operation) = command else { break };
-                if matches!(operation.kind, 4 | 6 | 8 | 64..=68) {
+                if matches!(operation.kind, 4 | 6 | 8 | 64..=69) {
                     if let Some((_, task)) = connections.get(&operation.connection) { task.route(&instance, operation); }
                     else { instance.finish(operation, CLOSED, Vec::new()); }
                     continue;

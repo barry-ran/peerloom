@@ -15,6 +15,58 @@ const DATA: u8 = 1;
 const FIN: u8 = 2;
 const SETTINGS: u8 = 3;
 
+/// Immutable owned receive bytes. Slices retain the original allocation charge.
+#[derive(Clone, Debug, Default)]
+pub struct OwnedChunk {
+    bytes: bytes::Bytes,
+    capacity: usize,
+}
+impl OwnedChunk {
+    pub fn from_buffer(mut buffer: bytes::BytesMut) -> Self {
+        // Bound retained backing storage, not just the visible payload.
+        if buffer.capacity() > 65536 {
+            buffer = bytes::BytesMut::from(buffer.as_ref());
+        }
+        let capacity = buffer.capacity();
+        Self {
+            bytes: buffer.freeze(),
+            capacity,
+        }
+    }
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+    pub fn allocation_capacity(&self) -> usize {
+        self.capacity
+    }
+    pub fn split_to(&mut self, count: usize) -> Self {
+        let bytes = self.bytes.split_to(count);
+        let capacity = self.capacity;
+        if self.bytes.is_empty() {
+            *self = Self::default();
+        }
+        Self { bytes, capacity }
+    }
+    fn advance(&mut self, count: usize) {
+        self.bytes = self.bytes.slice(count..);
+    }
+}
+impl From<Vec<u8>> for OwnedChunk {
+    fn from(value: Vec<u8>) -> Self {
+        let capacity = value.capacity();
+        Self {
+            bytes: value.into(),
+            capacity,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamError {
     Transport(TransportError),
@@ -47,8 +99,7 @@ pub struct ByteStream {
     write_closed: bool,
     read_closed: bool,
     failed: bool,
-    pending: Vec<u8>,
-    offset: usize,
+    pending: OwnedChunk,
 }
 
 impl PeerTransport {
@@ -113,8 +164,7 @@ impl ByteStream {
             write_closed: false,
             read_closed: false,
             failed: false,
-            pending: Vec::new(),
-            offset: 0,
+            pending: OwnedChunk::default(),
         }
     }
 
@@ -219,50 +269,46 @@ impl ByteStream {
 
     /// 消费字节而非消息；只有显式 FIN（或空输出缓冲）返回 0。
     pub async fn read(&mut self, output: &mut [u8]) -> Result<usize, StreamError> {
+        let chunk = self.read_owned(output.len()).await?;
+        output[..chunk.len()].copy_from_slice(chunk.as_slice());
+        Ok(chunk.len())
+    }
+
+    /// Transfers a bounded immutable slice without copying its payload.
+    pub async fn read_owned(&mut self, maximum: usize) -> Result<OwnedChunk, StreamError> {
         self.ensure_valid()?;
         if !self.initialized {
             return Err(TransportError::NotReady.into());
         }
-        if output.is_empty() {
-            return Ok(0);
+        if maximum == 0 || self.read_closed {
+            return Ok(OwnedChunk::default());
         }
-        if self.offset < self.pending.len() {
-            return Ok(self.copy_pending(output));
+        if !self.pending.is_empty() {
+            return Ok(self.pending.split_to(maximum.min(self.pending.len())));
         }
-        if self.read_closed {
-            return Ok(0);
-        }
-        let frame = match self.channel.receive().await {
+        let frame = match self.channel.receive_owned().await {
             Ok(frame) => frame,
-            // receive returns complete SCTP messages atomically. A timeout while
-            // awaiting the next event consumed no frame and advances no sequence.
             Err(TransportError::Timeout) => return Err(TransportError::Timeout.into()),
             Err(error) => {
                 self.failed = true;
                 return Err(error.into());
             }
         };
-        let parsed = decode_frame(&frame, self.rx_seq, self.receive_limit);
-        let (kind, payload) = match parsed {
-            Ok(parsed) => parsed,
-            Err(error) => {
+        let kind = match decode_frame(&frame, self.rx_seq, self.receive_limit) {
+            Ok((kind, _)) if kind != SETTINGS => kind,
+            _ => {
                 self.failed = true;
-                return Err(error);
+                return Err(StreamError::Protocol);
             }
         };
-        if kind == SETTINGS {
-            self.failed = true;
-            return Err(StreamError::Protocol);
-        }
         self.rx_seq = self.rx_seq.checked_add(1).ok_or(StreamError::Protocol)?;
         if kind == FIN {
             self.read_closed = true;
-            return Ok(0);
+            return Ok(OwnedChunk::default());
         }
-        self.pending.clear();
-        self.pending.extend_from_slice(payload);
-        self.offset = 0;
-        Ok(self.copy_pending(output))
+        self.pending = OwnedChunk::from_buffer(frame);
+        self.pending.advance(HEADER);
+        Ok(self.pending.split_to(maximum.min(self.pending.len())))
     }
 
     /// 已收到 FIN 后继续等待底层完全关闭；FIN 本身不关闭反向写入。
@@ -291,21 +337,10 @@ impl ByteStream {
         }
     }
 
-    fn copy_pending(&mut self, output: &mut [u8]) -> usize {
-        let n = output.len().min(self.pending.len() - self.offset);
-        output[..n].copy_from_slice(&self.pending[self.offset..self.offset + n]);
-        self.offset += n;
-        if self.offset == self.pending.len() {
-            self.pending.clear();
-            self.offset = 0;
-        }
-        n
-    }
-
     /// 双向中止，不承诺尚未消费的数据送达；无 Drop 后台任务。
     pub async fn close(&mut self) -> Result<(), StreamError> {
         self.failed = true;
-        self.pending.clear();
+        self.pending = OwnedChunk::default();
         self.channel.close().await.map_err(Into::into)
     }
 }
@@ -347,6 +382,80 @@ fn decode_frame(frame: &[u8], sequence: u64, max_chunk: usize) -> Result<(u8, &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owned_slices_keep_storage_alive_and_charge_full_capacity() {
+        let mut buffer = bytes::BytesMut::with_capacity(4096);
+        buffer.extend_from_slice(b"abcdef");
+        let original = buffer.as_ptr();
+        let mut chunk = OwnedChunk::from_buffer(buffer);
+        let first = chunk.split_to(2);
+        let rest = chunk.split_to(4);
+        assert_eq!(first.as_slice().as_ptr(), original);
+        assert_eq!(first.as_slice(), b"ab");
+        assert_eq!(rest.as_slice(), b"cdef");
+        assert_eq!(first.allocation_capacity(), 4096);
+        assert_eq!(rest.allocation_capacity(), 4096);
+        assert_eq!(chunk.allocation_capacity(), 0);
+        drop(chunk);
+        drop(first);
+        assert_eq!(rest.as_slice(), b"cdef");
+    }
+
+    #[test]
+    fn oversized_backing_allocation_is_compacted() {
+        let mut buffer = bytes::BytesMut::with_capacity(131072);
+        buffer.extend_from_slice(b"small");
+        let chunk = OwnedChunk::from_buffer(buffer);
+        assert_eq!(chunk.as_slice(), b"small");
+        assert!(chunk.allocation_capacity() <= 65536);
+    }
+
+    // Reproducible in-process copy microbenchmark, not network throughput.
+    #[test]
+    #[ignore = "manual release-mode copy baseline"]
+    fn receive_copy_microbenchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let frame = encode_frame(DATA, 0, &vec![0x5a; MAX_CHUNK]);
+        let start = Instant::now();
+        let mut checksum = 0u64;
+        for _ in 0..100_000 {
+            let (_, payload) = decode_frame(black_box(&frame), 0, MAX_CHUNK).unwrap();
+            let pending = payload.to_vec();
+            let mut scratch = vec![0u8; MAX_CHUNK];
+            scratch.copy_from_slice(&pending);
+            let queued = scratch.to_vec();
+            let mut ffi = vec![0u8; MAX_CHUNK];
+            ffi.copy_from_slice(&queued);
+            checksum += black_box(ffi)[0] as u64;
+        }
+        eprintln!(
+            "baseline_receive_copy bytes={} elapsed_us={} checksum={}",
+            100_000 * MAX_CHUNK,
+            start.elapsed().as_micros(),
+            checksum
+        );
+        assert_eq!(checksum, 9_000_000);
+        let owned_frame = OwnedChunk::from_buffer(bytes::BytesMut::from(frame.as_slice()));
+        let start = Instant::now();
+        let mut checksum = 0u64;
+        for _ in 0..100_000 {
+            let mut pending = black_box(owned_frame.clone());
+            decode_frame(pending.as_slice(), 0, MAX_CHUNK).unwrap();
+            pending.advance(HEADER);
+            let queued = pending.split_to(MAX_CHUNK);
+            let ffi = black_box(queued);
+            checksum += ffi.as_slice()[0] as u64;
+        }
+        eprintln!(
+            "owned_receive_slices bytes={} elapsed_us={} checksum={}",
+            100_000 * MAX_CHUNK,
+            start.elapsed().as_micros(),
+            checksum
+        );
+        assert_eq!(checksum, 9_000_000);
+    }
+
     #[test]
     fn frames_validate_sequence_size_type_and_fin() {
         let frame = encode_frame(DATA, 3, b"abc");

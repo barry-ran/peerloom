@@ -79,6 +79,7 @@ pub struct Operation {
     pub channel: u64,
     pub input: Vec<u8>,
     pub read_buffer: Option<Vec<u8>>,
+    pub owned_charge: Option<budget::Permit>,
     pub deadline: Option<std::time::Instant>,
     pub phase: Arc<AtomicUsize>,
 }
@@ -89,6 +90,7 @@ pub struct Event {
     pub channel: u64,
     pub status: u32,
     pub payload: Vec<u8>,
+    pub owned: Option<crate::owned::Payload>,
     pub validity: Option<ScopedValidity<Authority>>,
     pub class: u8,
     pub bytes: Option<budget::Permit>,
@@ -103,6 +105,7 @@ impl Event {
             channel: 0,
             status,
             payload,
+            owned: None,
             validity: None,
             class: 0,
             bytes: None,
@@ -438,7 +441,7 @@ impl Instance {
         channel: u64,
         input: impl AsRef<[u8]>,
     ) -> Result<u64, u32> {
-        if !(1..=5).contains(&kind) {
+        if !(1..=6).contains(&kind) {
             return Err(UNSUPPORTED);
         }
         self.submit_scoped(63 + kind, connection, channel, input.as_ref())
@@ -453,7 +456,7 @@ impl Instance {
         if self.shutting.load(Ordering::Acquire) {
             return Err(CLOSED);
         }
-        if !(1..=8).contains(&kind) && !(64..=68).contains(&kind) {
+        if !(1..=8).contains(&kind) && !(64..=69).contains(&kind) {
             return Err(UNSUPPORTED);
         }
         let mut ops = self.operations.lock().map_err(|_| INTERNAL)?;
@@ -502,7 +505,7 @@ impl Instance {
                 .channel_kind(connection, channel)
                 .map_err(handle_error)?;
             let stream = mode == ChannelKind::ReliableStream;
-            if (kind == 64 && stream) || (matches!(kind, 65..=67) && !stream) {
+            if (kind == 64 && stream) || (matches!(kind, 65..=67 | 69) && !stream) {
                 return Err(UNSUPPORTED);
             }
             if matches!(kind, 66 | 67) {
@@ -510,14 +513,14 @@ impl Instance {
                     .check_writable(connection, channel)
                     .map_err(handle_error)?;
             }
-            if kind == 65 {
+            if matches!(kind, 65 | 69) {
                 #[derive(serde::Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct Read {
                     max_bytes: usize,
                 }
                 let read: Read = serde_json::from_slice(input).map_err(|_| INVALID)?;
-                reply_bytes = read.max_bytes;
+                reply_bytes = if kind == 69 { 0 } else { read.max_bytes };
                 // Terminal reads retain their byte credit through the callback borrow, but
                 // no longer own the read-admission fence. A callback may submit the next read.
                 if ops.values().any(|op| {
@@ -583,6 +586,11 @@ impl Instance {
             )?;
             None
         };
+        let owned_charge = if kind == 69 {
+            Some(self.budget.reserve(65536 + budget::OP_METADATA, false)?)
+        } else {
+            None
+        };
         let id = next_id()?;
         // All memory and terminal space precede irreversible fence changes.
         if kind == 7 {
@@ -617,7 +625,7 @@ impl Instance {
             Tracked {
                 phase: phase.clone(),
                 critical,
-                read: (kind == 65).then_some((connection, channel)),
+                read: matches!(kind, 65 | 69).then_some((connection, channel)),
                 terminal: Some(terminal),
                 _bytes: bytes,
             },
@@ -629,6 +637,7 @@ impl Instance {
             channel,
             input: copied,
             read_buffer,
+            owned_charge,
             deadline,
             phase: phase.clone(),
         };
@@ -697,6 +706,29 @@ impl CompletionGuard {
         );
         event.channel = operation.channel;
         event.validity = validity;
+        self.instance.emit(event);
+    }
+    pub fn finish_owned(
+        mut self,
+        chunk: device_transport_webrtc::stream::OwnedChunk,
+        validity: ScopedValidity<Authority>,
+    ) {
+        let mut operation = self.operation.take().expect("live owned read");
+        let charge = operation
+            .owned_charge
+            .take()
+            .expect("owned read admission charge");
+        drop(std::mem::take(&mut operation.input));
+        operation.phase.store(3, Ordering::Release);
+        let mut event = Event::new(COMPLETE, operation.id, operation.connection, OK, Vec::new());
+        event.channel = operation.channel;
+        event.validity = Some(validity);
+        if !chunk.is_empty() {
+            event.owned = Some(crate::owned::Payload {
+                chunk,
+                _charge: charge,
+            });
+        }
         self.instance.emit(event);
     }
     pub fn opened(mut self, channel: u64, payload: Vec<u8>, validity: ScopedValidity<Authority>) {
@@ -940,6 +972,56 @@ mod reset_tests {
         drop(instance);
         assert_eq!(budget.snapshot(), (total, 0, 0));
     }
+    #[test]
+    fn owned_and_borrowed_reads_share_fence_and_lease_survives_sdk_drop() {
+        let (instance, commands, callbacks) = setup();
+        let instance = Arc::new(instance);
+        let budget = instance.budget.clone();
+        let (connection, channel, gate) = {
+            let mut handles = instance.handles.lock().unwrap();
+            let allocate = || next_id().map_err(|_| HandleError::Allocator);
+            let connection = handles.add_connection(Authority::Test, allocate).unwrap();
+            let channel = handles
+                .add_channel(
+                    connection,
+                    ChannelKind::ReliableStream,
+                    Authority::Test,
+                    allocate,
+                )
+                .unwrap();
+            (
+                connection,
+                channel,
+                handles.channel(connection, channel).unwrap(),
+            )
+        };
+        instance
+            .submit_channel(6, connection, channel, br#"{"max_bytes":2}"#)
+            .unwrap();
+        assert_eq!(
+            instance.submit_channel(2, connection, channel, br#"{"max_bytes":2}"#),
+            Err(BUSY)
+        );
+        assert_eq!(
+            instance.submit_channel(6, connection, channel, br#"{"max_bytes":2}"#),
+            Err(BUSY)
+        );
+        let operation = commands.try_recv().unwrap();
+        CompletionGuard::start(instance.clone(), operation)
+            .unwrap()
+            .finish_owned(vec![1, 2].into(), gate);
+        let mut event = callbacks.try_recv().unwrap();
+        let (handle, _, size, _) = crate::owned::transfer(event.owned.take().unwrap()).unwrap();
+        assert_eq!(size, 2);
+        instance.release_credit(event);
+        drop(commands);
+        drop(callbacks);
+        drop(instance);
+        assert_eq!(budget.snapshot().1, 65536 + budget::OP_METADATA);
+        crate::owned::release(handle).unwrap();
+        assert_eq!(budget.snapshot().1, 0);
+    }
+
     #[test]
     fn terminal_read_allows_reentry_without_releasing_borrowed_credit() {
         for status in [OK, CANCELLED, UNKNOWN] {

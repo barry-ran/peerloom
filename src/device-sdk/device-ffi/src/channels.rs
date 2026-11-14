@@ -404,12 +404,12 @@ impl Drop for ReadScope {
 }
 async fn stream_read(
     reader: &mut device_core::sdk::SdkStreamReader,
-    pending: &mut Option<(Vec<u8>, ReadScope, CompletionGuard)>,
-) -> Result<usize, device_core::sdk::SdkError> {
+    pending: &mut Option<(usize, ReadScope, CompletionGuard)>,
+) -> Result<device_transport_webrtc::stream::OwnedChunk, device_core::sdk::SdkError> {
     match pending {
-        Some((buffer, scope, _)) => {
+        Some((maximum, scope, _)) => {
             scope.enter();
-            reader.read(buffer).await
+            reader.read_owned(*maximum).await
         }
         None => std::future::pending().await,
     }
@@ -494,33 +494,37 @@ async fn stream_worker(
                 }
                 let Some(guard) = CompletionGuard::start(instance.clone(), queued.take()) else { continue };
                 match guard.operation().kind {
-                    65 if reading.is_none() => {
-                        let mut guard = guard;
-                        let buffer = guard.take_read_buffer();
+                    65 | 69 if reading.is_none() => {
+                        let maximum = serde_json::from_slice::<serde_json::Value>(&guard.operation().input)
+                            .expect("validated read")["max_bytes"].as_u64().expect("validated maximum") as usize;
                         // Buffer precedes guard so abort drops memory before its
                         // UNKNOWN terminal can return the byte reservation.
-                        reading = Some((buffer, ReadScope::new(instance.clone()), guard));
+                        reading = Some((maximum, ReadScope::new(instance.clone()), guard));
                     }
-                    65 => guard.finish(BUSY, Vec::new(), None),
+                    65 | 69 => guard.finish(BUSY, Vec::new(), None),
                     68 => { close = Some(guard); break; }
                     _ => guard.finish(UNSUPPORTED, Vec::new(), None),
                 }
             },
             received = stream_read(&mut reader, &mut reading) => {
-                let (mut buffer, scope, guard) = reading.take().expect("only enabled for active read");
+                let (_, scope, mut guard) = reading.take().expect("only enabled for active read");
                 drop(scope);
                 match received {
-                    Ok(bytes) => { buffer.truncate(bytes); guard.finish(OK, buffer, Some(gate.clone())); },
-                    Err(reason) => { drop(buffer); guard.finish(error(reason), Vec::new(), None); },
+                    Ok(chunk) if guard.operation().kind == 69 => guard.finish_owned(chunk, gate.clone()),
+                    Ok(chunk) => {
+                        let mut buffer = guard.take_read_buffer();
+                        buffer[..chunk.len()].copy_from_slice(chunk.as_slice());
+                        buffer.truncate(chunk.len());
+                        guard.finish(OK, buffer, Some(gate.clone()));
+                    },
+                    Err(reason) => guard.finish(error(reason), Vec::new(), None),
                 }
             }
         }
     }
     let pending = drain(&instance, &mut commands);
-    if let Some((mut buffer, scope, guard)) = reading.take() {
+    if let Some((_, scope, guard)) = reading.take() {
         drop(scope);
-        buffer.fill(0);
-        drop(buffer);
         guard.finish(CLOSED, Vec::new(), None);
     }
     drop(write_tx);
