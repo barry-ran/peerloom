@@ -202,3 +202,7 @@ flowchart LR
 ```
 
 原 READ 仍提供回调内借用的数据。拥有所有权读取不改变线上帧协议、可靠有序、部分写入、FIN 或关闭语义；不能把它描述为 SCTP 到解码器全链路零复制。
+
+### 有界发送帧复用
+
+每个已准入 ByteStream 只保留一个 16401 字节（17 字节帧头 + 16 KiB 负载）编码 scratch；闲置容量也算该通道固定内存，受现有最大通道数约束，显式 close 释放。DATA、SETTINGS、FIN 共用该缓冲，原有 tx_pending 取消写失败关闭逻辑不变。MessageChannel::send 在 await 前复制到独立 BytesMut，故只消除逐帧 Vec 分配，未消除该次发送拷贝，也不是全链路零拷贝或全局池。

@@ -96,6 +96,9 @@ pub struct ByteStream {
     tx_seq: u64,
     rx_seq: u64,
     tx_pending: bool,
+    // One fixed-capacity frame per admitted stream, including idle retention.
+    // Never shared with the backend: MessageChannel::send copies before await.
+    tx_frame: Vec<u8>,
     write_closed: bool,
     read_closed: bool,
     failed: bool,
@@ -161,6 +164,7 @@ impl ByteStream {
             tx_seq: 0,
             rx_seq: 0,
             tx_pending: false,
+            tx_frame: Vec::with_capacity(HEADER + MAX_CHUNK),
             write_closed: false,
             read_closed: false,
             failed: false,
@@ -236,9 +240,9 @@ impl ByteStream {
 
     async fn send_frame(&mut self, kind: u8, payload: &[u8]) -> Result<(), StreamError> {
         let next = self.tx_seq.checked_add(1).ok_or(StreamError::Protocol)?;
-        let frame = encode_frame(kind, self.tx_seq, payload);
+        encode_frame_into(&mut self.tx_frame, kind, self.tx_seq, payload);
         self.tx_pending = true;
-        let outcome = self.channel.send(&frame).await;
+        let outcome = self.channel.send(&self.tx_frame).await;
         self.tx_pending = false;
         match outcome {
             Ok(()) => {
@@ -341,17 +345,24 @@ impl ByteStream {
     pub async fn close(&mut self) -> Result<(), StreamError> {
         self.failed = true;
         self.pending = OwnedChunk::default();
+        self.tx_frame = Vec::new();
         self.channel.close().await.map_err(Into::into)
     }
 }
 
-fn encode_frame(kind: u8, sequence: u64, payload: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(HEADER + payload.len());
+fn encode_frame_into(frame: &mut Vec<u8>, kind: u8, sequence: u64, payload: &[u8]) {
+    assert!(payload.len() <= MAX_CHUNK);
+    frame.clear();
     frame.extend_from_slice(MAGIC);
     frame.push(kind);
     frame.extend_from_slice(&sequence.to_be_bytes());
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     frame.extend_from_slice(payload);
+}
+#[cfg(test)]
+fn encode_frame(kind: u8, sequence: u64, payload: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(HEADER + payload.len());
+    encode_frame_into(&mut frame, kind, sequence, payload);
     frame
 }
 fn decode_frame(frame: &[u8], sequence: u64, max_chunk: usize) -> Result<(u8, &[u8]), StreamError> {
@@ -382,6 +393,31 @@ fn decode_frame(frame: &[u8], sequence: u64, max_chunk: usize) -> Result<(u8, &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frame_scratch_reuses_one_bounded_allocation_for_data_settings_and_fin() {
+        let mut frame = Vec::with_capacity(HEADER + MAX_CHUNK);
+        let pointer = frame.as_ptr();
+        let capacity = frame.capacity();
+        for sequence in 0..1000 {
+            let payload = [42; MAX_CHUNK];
+            encode_frame_into(&mut frame, DATA, sequence, &payload);
+            assert_eq!(
+                decode_frame(&frame, sequence, MAX_CHUNK).unwrap(),
+                (DATA, payload.as_slice())
+            );
+            assert_eq!(frame.as_ptr(), pointer);
+            assert_eq!(frame.capacity(), capacity);
+            encode_frame_into(&mut frame, FIN, sequence, &[]);
+            assert_eq!(
+                decode_frame(&frame, sequence, MAX_CHUNK).unwrap(),
+                (FIN, &[][..])
+            );
+            encode_frame_into(&mut frame, SETTINGS, sequence, &4u32.to_be_bytes());
+            assert_eq!(frame.as_ptr(), pointer);
+            assert_eq!(frame.capacity(), HEADER + MAX_CHUNK);
+        }
+    }
+
     #[test]
     fn owned_slices_keep_storage_alive_and_charge_full_capacity() {
         let mut buffer = bytes::BytesMut::with_capacity(4096);

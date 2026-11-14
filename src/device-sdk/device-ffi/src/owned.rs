@@ -41,6 +41,34 @@ pub fn release(handle: u64) -> Result<(), u32> {
 mod tests {
     use super::*;
     #[test]
+    fn undelivered_owned_payload_returns_all_charge() {
+        let budget = budget::Budget::new(budget::DEFAULT_BYTES).unwrap();
+        let payload = Payload {
+            chunk: vec![4, 5].into(),
+            _charge: budget.reserve(65536, false).unwrap(),
+        };
+        assert_eq!(budget.snapshot().1, 65536);
+        // Same ownership path as a suppressed/invalidated queued event.
+        drop(payload);
+        assert_eq!(budget.snapshot().1, 0);
+    }
+
+    #[test]
+    fn synchronous_host_release_via_public_abi_does_not_need_sdk_or_event_loop() {
+        let budget = budget::Budget::new(budget::DEFAULT_BYTES).unwrap();
+        let (handle, pointer, length, _) = transfer(Payload {
+            chunk: vec![9].into(),
+            _charge: budget.reserve(65536, false).unwrap(),
+        })
+        .unwrap();
+        assert!(!pointer.is_null());
+        assert_eq!(length, 1);
+        assert_eq!(crate::boundary::dp_buffer_release(handle), 0);
+        assert_eq!(budget.snapshot().1, 0);
+        assert_eq!(crate::boundary::dp_buffer_release(handle), HANDLE);
+    }
+
+    #[test]
     fn lease_outlives_owner_and_double_release_is_rejected() {
         let budget = budget::Budget::new(budget::DEFAULT_BYTES).unwrap();
         let payload = Payload {
@@ -50,10 +78,13 @@ mod tests {
         let (handle, _, length, _) = transfer(payload).unwrap();
         assert_eq!(length, 3);
         assert_eq!(budget.snapshot().1, 65536);
+        let weak = std::sync::Arc::downgrade(&budget);
+        drop(budget);
+        assert!(weak.upgrade().is_some());
         std::thread::spawn(move || release(handle).unwrap())
             .join()
             .unwrap();
-        assert_eq!(budget.snapshot().1, 0);
+        assert!(weak.upgrade().is_none());
         assert_eq!(release(handle), Err(HANDLE));
     }
 }
