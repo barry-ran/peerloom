@@ -4,32 +4,32 @@
   "approved": true,
   "administration_sha": "event",
   "operation": "release",
-  "release_sha": "9e67778e0f404b4370e8d568a01c421cc3ca67b1",
+  "release_sha": "32c16f09f45f3c75c29bfc405860217f89527c55",
   "tag_sha": "event",
-  "tag": "v0.2.0",
+  "tag": "v0.2.1",
   "prerelease": false,
   "final_scope_accepted": true,
   "artifacts": {
     "linux-x86_64": {
-      "id": 14042626484,
-      "sha256": "93dd18b7cc87a8050b4e2d4c254c6fd37acb56cd34d7f326dafbdd2cc0fbb6e6"
+      "id": 14102810201,
+      "sha256": "3010c1b4d7eb666d1bc832caf0616ad8264d4aa237c3f7703d4af127d79de67e"
     },
     "server-linux-amd64": {
-      "id": 14041947049,
-      "sha256": "167be2ded9c95c160518c4860199858538b67d8fb8c3856fec8c725bd7035d02"
+      "id": 14102014357,
+      "sha256": "d4ff13fed119c4c4eb41087d159733554bf1db6fe47a35dca6bffe36535413bb"
     },
     "windows-x86_64": {
-      "id": 14041690150,
-      "sha256": "7dbc98b3c46dccc1e4e98442e79020c891830be16ffa32bc91dc41386d5b8e99"
+      "id": 14102469223,
+      "sha256": "e449e4663175101353461b9b67a596d9850aacb9d0a3f62566f81fc1704ae355"
     },
     "apple": {
-      "id": 14043669005,
-      "sha256": "588be44a1d68494336b99f598223863e3bccb98f595c43b66df21dbfadb29d78"
+      "id": 14103954731,
+      "sha256": "d8ddfa783d98e3c4caf3f693f6f7e48a73cffeeb55e1bcf590df17493c4752da"
     },
     "android": {
-      "id": 14040103104,
-      "sha256": "c15ef202d750aebb821dd92aa3b5804b2999fbaca4e5ffc9b4d27f1136dbb46b"
+      "id": 14101353731,
+      "sha256": "337cb467aa2cd18f9f5125c9037dffb3f2322881a1c4b3682e859c53bdeb1e42"
     }
   },
-  "notes": "# Peerloom v0.2.0\n\n## 长期安装身份与破坏性接口变化\n\n- 安装身份改为长期可撤销的 device_id / device_credential；移除安装凭据到期字段、每日自动刷新与显式 refresh API。连接 grant、会话租约、TURN 及注册 grant 的有限有效期不变。\n- installation_tag 替代误名 installation_public_key，仅作为不透明安装标签，不构成身份认证。\n- C ABI 升级到 2，新增长期身份能力与 IdentityPersisted（15）事件；SDK 持久化恢复经 SAVE 与权威 LOAD 读回后才解除未知结果栅栏。保留 CAS、撤销、取消和排空边界。\n- Rust、C、Android、Apple 与原生安全存储采用一致契约。ABI 1 和旧到期身份记录明确拒绝，不静默转换、不自动删除或重注册。\n- 数据库迁移新增 000011，完整发布包含11对SQL。已有 device_credentials 时迁移拒绝执行，必须先制定经批准的数据迁移/重新登记方案；本次发布不操作任何生产数据库或部署服务器。\n\n## 验证与构建来源\n\n真实构建及验证源码为 `9e67778e0f404b4370e8d568a01c421cc3ca67b1`。发布管理提交只修改此计划，标签指向该管理提交，不冒称重新编译产品。\n\n- [Linux 与 500 并发容量](https://github.com/barry-ran/peerloom/actions/runs/43431183643)：包括长期身份、C 身份重置、PostgreSQL 全迁移备份恢复、TLS/WSS、三类传输及服务交付包验收。\n- [Windows 与 Apple 原生](https://github.com/barry-ran/peerloom/actions/runs/43431183604)：Windows DPAPI/ACL、进程重启、MSVC DLL/static；Apple 五 slice、Keychain、TLS、模拟器及真实 Go 服务夹具。\n- [Android 双 ABI 与 4K/16K 模拟器](https://github.com/barry-ran/peerloom/actions/runs/43431183617)：真实构建、ELF/APK 对齐、CheckJNI、持久化重启及控制面通信。\n- 管理端 PostgreSQL + Chromium 标准门禁通过。发布继续强制全部四条标准工作流、八个必要 job 与五份精确 SHA 产物，不使用历史版本编译豁免。\n\n## 下载与边界\n\n提供 Linux、Windows、Apple、Android SDK 和 Linux amd64 服务端五个独立 ZIP；由发布管理器复核包内版本、源码、摘要、许可证据后发布。不覆盖历史标签或资产。\n\nAndroid 为 arm64-v8a/x86_64，不含 ARM32；Apple 包含未签名设备构建。模拟器与隔离服务测试不等于物理手机、公网长期负载或生产签名验收。第三方材料仍按包内逐项证据和已知缺项声明，不代表法律清关。本发布不包含 QM 的业务绑定数据库或业务 UI，也不改进程内媒体 TCP 桥。\n"
+  "notes": "# Peerloom v0.2.1\n\n## SDK owned-buffer 接口与内存复用\n\n- C ABI 保持 2，新增能力位 DP_CAP_OWNED_READ（512）、DP_CHANNEL_READ_OWNED（6）、事件尾部 buffer_handle/buffer_capacity 及 dp_buffer_release。原 borrowed READ 不变。\n- owned 接收块跨 FFI 转移生命周期，减少 transport、core 与 FFI 的重复复制；显式释放可在任意消费线程进行，SDK 实例释放后仍可释放已交付块。宿主必须保持动态库加载到最后一个块释放。\n- retained capacity 每块最多 65536 字节，部分读取仍按实际保留分配计费；保留单读栅栏、部分写入、FIN、取消、授权复核与资源额度。\n- 每条发送流复用固定上限的帧 scratch；这不是全局接收池，不声明全链路零复制。不丢弃可靠有序的视频或控制数据，不改变业务协议、服务端协议或数据库。\n\n## 精确构建与验收\n\n正式构建源码为 `32c16f09f45f3c75c29bfc405860217f89527c55`，版本元数据为 0.2.1。标签指向仅更新本发布计划的管理提交；制品仍来自该精确源码，不重贴旧 0.2.0 制品。\n\n- [Linux 与 500 并发门禁](https://github.com/barry-ran/peerloom/actions/runs/43564273872)：成功。\n- [Windows 与 Apple 原生门禁](https://github.com/barry-ran/peerloom/actions/runs/43564273929)：最终成功。保留前序失败记录：Windows 取消事务回读曾返回 Unavailable，本机原测试 101 次及全部 6 项通过后一次诊断重试成功，未认定唯一根因；Apple 曾发生诊断 watchdog 与模拟器测试进程启动超时，原限时及断言未放宽，最终全部门禁成功。\n- [Android 双 ABI、4K/16K 模拟器](https://github.com/barry-ran/peerloom/actions/runs/43564273909)：成功。\n- [PostgreSQL 与 Chromium 管理安全门禁](https://github.com/barry-ran/peerloom/actions/runs/43564273882)：成功。\n\n## 发布边界\n\n发布 Linux、Windows、Apple、Android SDK 及 Linux amd64 服务交付 ZIP，保持既有五角色制品校验。服务端二进制随统一交付打包，未进行服务部署或数据库变更。Android 支持 arm64-v8a/x86_64，不含 ARM32。Apple 包含未签名设备构建与模拟器验收，不代表 iOS 真机验证。内存微基准不是端到端吞吐或 UI 帧率承诺。"
 }
