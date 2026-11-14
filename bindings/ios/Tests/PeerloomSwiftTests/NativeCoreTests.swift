@@ -49,7 +49,8 @@ final class MockNative: NativeAPI, @unchecked Sendable {
         data.withUnsafeBytes { bytes in
             var event = dp_event(abi_version: 2, kind: kind, request_id: request, connection: connection,
                 status: status, struct_size: UInt32(MemoryLayout<dp_event>.size),
-                payload: bytes.bindMemory(to: UInt8.self).baseAddress, payload_len: numericCast(data.count), channel: channel)
+                payload: bytes.bindMemory(to: UInt8.self).baseAddress, payload_len: numericCast(data.count), channel: channel,
+                buffer_handle: 0, buffer_capacity: 0)
             withUnsafePointer(to: &event) { callback?(context, $0) }
         }
     }
