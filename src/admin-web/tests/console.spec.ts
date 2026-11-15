@@ -143,7 +143,10 @@ for (const language of ['zh', 'en'] as const) {
   await page.getByRole('button', {name:labels.save,exact:true}).click();
   await expect(page.getByLabel(labels.key,{exact:true})).toHaveCount(0);
   expect(await page.getByRole('dialog').textContent()).not.toContain(secret);
+  const createdResponse = page.waitForResponse(response =>
+   response.request().method() === 'POST' && new URL(response.url()).pathname === '/admin/api/v1/relay-nodes');
   await page.getByRole('button', {name:labels.save,exact:true}).click();
+  expect((await createdResponse).status(), 'Managed relay creation HTTP status').toBe(201);
   const row = page.getByRole('row').filter({has:page.getByRole('cell',{name,exact:true})});
   await expect(row).toHaveCount(1);
   await row.getByRole('button',{name:labels.details,exact:true}).click();
