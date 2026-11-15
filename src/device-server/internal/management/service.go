@@ -83,9 +83,9 @@ func (s *Service) Authenticate(ctx context.Context, credential string) (Principa
 		return Principal{}, fail("SERVICE_AUTH_INVALID", 401)
 	}
 	var p Principal
-	err := s.pool.QueryRow(ctx, `SELECT c.id::text,c.tenant_id::text,c.scope FROM tenant_service_credentials c
+	err := s.pool.QueryRow(ctx, `SELECT c.id::text,c.tenant_id::text,c.scope,c.subject_id::text FROM tenant_service_credentials c JOIN service_subjects ss ON ss.id=c.subject_id AND ss.tenant_id=c.tenant_id AND ss.scope=c.scope
 JOIN tenants t ON t.id=c.tenant_id WHERE c.credential_hash=$1 AND c.revoked_at IS NULL
-AND c.expires_at>clock_timestamp() AND t.status='active'`, hash(credential)).Scan(&p.credentialID, &p.tenantID, &p.scope)
+AND c.expires_at>clock_timestamp() AND (c.accept_until IS NULL OR c.accept_until>clock_timestamp()) AND ss.revoked_at IS NULL AND t.status='active'`, hash(credential)).Scan(&p.credentialID, &p.tenantID, &p.scope, &p.subjectID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Principal{}, fail("SERVICE_AUTH_INVALID", 401)
 	}
@@ -96,6 +96,9 @@ AND c.expires_at>clock_timestamp() AND t.status='active'`, hash(credential)).Sca
 }
 
 func (s *Service) begin(ctx context.Context, p Principal, admin bool) (pgx.Tx, error) {
+	return s.beginAuthority(ctx, p, admin, false)
+}
+func (s *Service) beginAuthority(ctx context.Context, p Principal, admin, subjectWrite bool) (pgx.Tx, error) {
 	if !uuidPattern.MatchString(p.tenantID) || !uuidPattern.MatchString(p.credentialID) {
 		return nil, fail("SERVICE_AUTH_INVALID", 401)
 	}
@@ -104,7 +107,7 @@ func (s *Service) begin(ctx context.Context, p Principal, admin bool) (pgx.Tx, e
 		return nil, fail("DATABASE_UNAVAILABLE", 503)
 	}
 	// Serialize tenant mutations before acquiring any business row lock.
-	if admin || p.browser != nil {
+	if admin || p.browser != nil || subjectWrite {
 		if err = authorization.LockTenant(ctx, tx, p.tenantID); err != nil {
 			rollback(tx)
 			return nil, fail("DATABASE_UNAVAILABLE", 503)
@@ -118,9 +121,16 @@ func (s *Service) begin(ctx context.Context, p Principal, admin bool) (pgx.Tx, e
 		}
 		scope, err = s.browser.RevalidateBrowser(ctx, tx, *p.browser)
 	} else {
-		err = tx.QueryRow(ctx, `SELECT c.scope FROM tenant_service_credentials c JOIN tenants t ON t.id=c.tenant_id
-WHERE c.id=$1 AND c.tenant_id=$2 AND c.revoked_at IS NULL AND c.expires_at>clock_timestamp()
-AND t.status='active' FOR SHARE OF c,t`, p.credentialID, p.tenantID).Scan(&scope)
+		lockMode := " FOR SHARE"
+		if subjectWrite {
+			lockMode = " FOR UPDATE"
+		}
+		err = tx.QueryRow(ctx, "SELECT scope FROM service_subjects WHERE id=$1 AND tenant_id=$2 AND revoked_at IS NULL"+lockMode, p.subjectID, p.tenantID).Scan(&scope)
+		if err == nil {
+			err = tx.QueryRow(ctx, `SELECT c.scope FROM tenant_service_credentials c JOIN tenants t ON t.id=c.tenant_id
+WHERE c.id=$1 AND c.tenant_id=$2 AND c.subject_id=$3 AND c.scope=$4 AND c.revoked_at IS NULL AND c.expires_at>clock_timestamp()
+AND (c.accept_until IS NULL OR c.accept_until>clock_timestamp()) AND t.status='active' FOR SHARE OF c,t`, p.credentialID, p.tenantID, p.subjectID, scope).Scan(&scope)
+		}
 	}
 	if err != nil {
 		rollback(tx)

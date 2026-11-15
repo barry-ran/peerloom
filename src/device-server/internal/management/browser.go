@@ -47,5 +47,5 @@ func (p Principal) replayTable() (string, string) {
 	if p.browser != nil {
 		return "admin_management_requests", "admin_user_id"
 	}
-	return "management_requests", "service_credential_id"
+	return "management_requests", "service_subject_id"
 }

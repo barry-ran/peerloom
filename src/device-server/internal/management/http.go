@@ -77,6 +77,29 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, authenticate fun
 		return
 	}
 	switch {
+	case r.URL.Path == "/v1/service-credentials/self":
+		if r.Method != http.MethodGet {
+			methodError(w, id, "GET")
+			return
+		}
+		result, err := h.service.ServiceKeySelf(ctx, p)
+		respond(w, id, result, err, 200)
+	case r.URL.Path == "/v1/service-credentials/renew":
+		if r.Method != http.MethodPost {
+			methodError(w, id, "POST")
+			return
+		}
+		var input struct{}
+		if err = decode(w, r, &input); err != nil {
+			writeError(w, id, err)
+			return
+		}
+		if len(r.Header.Values("Idempotency-Key")) != 1 {
+			writeError(w, id, fail("IDEMPOTENCY_KEY_REQUIRED", 422))
+			return
+		}
+		result, err := h.service.RenewServiceKey(ctx, p, r.Header.Get("Idempotency-Key"))
+		respond(w, id, result, err, 200)
 	case r.URL.Path == "/v1/applications":
 		switch r.Method {
 		case http.MethodPost:

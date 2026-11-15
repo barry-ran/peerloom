@@ -29,7 +29,7 @@ func aad(p Principal, operation string, keyHash, requestHash []byte) []byte {
 	if p.browser != nil {
 		domain = "peerloom-browser-management-replay-v1"
 	}
-	value, _ := json.Marshal([]any{domain, p.tenantID, p.credentialID, operation, keyHash, requestHash})
+	value, _ := json.Marshal([]any{domain, p.tenantID, p.replayID(), operation, keyHash, requestHash})
 	return value
 }
 
@@ -52,7 +52,7 @@ func (s *Service) prepareReplay(ctx context.Context, tx pgx.Tx, p Principal, ope
 	var expired bool
 	table, column := p.replayTable()
 	err = tx.QueryRow(ctx, `SELECT request_hash,response_nonce,response_ciphertext,response_expires_at<=clock_timestamp()
-FROM `+table+` WHERE tenant_id=$1 AND `+column+`=$2 AND operation=$3 AND key_hash=$4`, p.tenantID, p.credentialID, operation, keyHash).Scan(&storedHash, &nonce, &ciphertext, &expired)
+FROM `+table+` WHERE tenant_id=$1 AND `+column+`=$2 AND operation=$3 AND key_hash=$4`, p.tenantID, p.replayID(), operation, keyHash).Scan(&storedHash, &nonce, &ciphertext, &expired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, keyHash, requestHash, nil
 	}
@@ -98,7 +98,7 @@ func (s *Service) saveReplay(ctx context.Context, tx pgx.Tx, p Principal, operat
 	ciphertext := s.aead.Seal(nil, nonce, plain, aad(p, operation, keyHash, requestHash))
 	table, column := p.replayTable()
 	_, err = tx.Exec(ctx, `INSERT INTO `+table+`(tenant_id,`+column+`,operation,key_hash,request_hash,status_code,resource_id,response_nonce,response_ciphertext,response_expires_at,expires_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, p.tenantID, p.credentialID, operation, keyHash, requestHash, status, resourceID, nonce, ciphertext, responseUntil, at.Add(s.settings.ReceiptTTL))
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, p.tenantID, p.replayID(), operation, keyHash, requestHash, status, resourceID, nonce, ciphertext, responseUntil, at.Add(s.settings.ReceiptTTL))
 	if err != nil {
 		return fail("DATABASE_UNAVAILABLE", 503)
 	}
@@ -117,6 +117,9 @@ func (s *Service) PurgeExpired(ctx context.Context) error {
 		return fail("DATABASE_UNAVAILABLE", 503)
 	}
 	if _, err = tx.Exec(ctx, "DELETE FROM management_requests WHERE expires_at<=clock_timestamp()"); err != nil {
+		return fail("DATABASE_UNAVAILABLE", 503)
+	}
+	if _, err = tx.Exec(ctx, "UPDATE service_key_renewals SET response_nonce=NULL,response_ciphertext=NULL WHERE replay_until<=clock_timestamp() AND response_ciphertext IS NOT NULL"); err != nil {
 		return fail("DATABASE_UNAVAILABLE", 503)
 	}
 	return commit(ctx, tx)

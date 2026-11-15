@@ -93,7 +93,7 @@ func InspectKey(ctx context.Context, pool *pgxpool.Pool, tenant, id string) (Key
 		return KeyStatus{}, fail("INVALID_INPUT", 422)
 	}
 	r := KeyStatus{TenantID: tenant, CredentialID: id}
-	err := pool.QueryRow(ctx, `SELECT c.scope,c.expires_at,c.revoked_at,c.expires_at<=clock_timestamp(),t.status='active' FROM tenant_service_credentials c JOIN tenants t ON t.id=c.tenant_id WHERE c.tenant_id=$1 AND c.id=$2`, tenant, id).Scan(&r.Scope, &r.ExpiresAt, &r.RevokedAt, &r.Expired, &r.TenantActive)
+	err := pool.QueryRow(ctx, `SELECT c.scope,c.expires_at,c.revoked_at,LEAST(c.expires_at,COALESCE(c.accept_until,c.expires_at))<=clock_timestamp(),(ss.revoked_at IS NULL AND t.status='active') FROM tenant_service_credentials c JOIN service_subjects ss ON ss.id=c.subject_id JOIN tenants t ON t.id=c.tenant_id WHERE c.tenant_id=$1 AND c.id=$2`, tenant, id).Scan(&r.Scope, &r.ExpiresAt, &r.RevokedAt, &r.Expired, &r.TenantActive)
 	return r, err
 }
 

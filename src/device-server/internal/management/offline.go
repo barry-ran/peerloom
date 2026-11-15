@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/barry-ran/peerloom/src/device-server/internal/authorization"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -99,8 +100,14 @@ func issueKey(ctx context.Context, tx pgx.Tx, tenant string, scope Scope, ttl ti
 	}
 	var result KeyResult
 	result.TenantID, result.Scope = tenant, scope
-	err = tx.QueryRow(ctx, `INSERT INTO tenant_service_credentials(tenant_id,credential_hash,scope,label,expires_at)
-VALUES($1,$2,$3,$4,clock_timestamp()+$5::bigint*interval '1 second') RETURNING id::text,expires_at`, tenant, hash(secret), scope, label, int64(ttl/time.Second)).Scan(&result.CredentialID, &result.ExpiresAt)
+	if err = tx.QueryRow(ctx, "SELECT gen_random_uuid()::text").Scan(&result.SubjectID); err != nil {
+		return KeyResult{}, err
+	}
+	if _, err = tx.Exec(ctx, "INSERT INTO service_subjects(id,tenant_id,scope,current_credential_id) VALUES($1,$2,$3,$1)", result.SubjectID, tenant, scope); err != nil {
+		return KeyResult{}, err
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO tenant_service_credentials(id,subject_id,tenant_id,credential_hash,scope,label,expires_at)
+VALUES($6,$6,$1,$2,$3,$4,clock_timestamp()+$5::bigint*interval '1 second') RETURNING id::text,expires_at`, tenant, hash(secret), scope, label, int64(ttl/time.Second), result.SubjectID).Scan(&result.CredentialID, &result.ExpiresAt)
 	if err != nil {
 		return KeyResult{}, fail("DATABASE_UNAVAILABLE", 503)
 	}
@@ -124,6 +131,18 @@ func RevokeKey(ctx context.Context, pool *pgxpool.Pool, tenant, id string) error
 		return fail("DATABASE_UNAVAILABLE", 503)
 	}
 	defer rollback(tx)
+	if err = authorization.LockTenant(ctx, tx, tenant); err != nil {
+		return err
+	}
+	var subject string
+	if err = tx.QueryRow(ctx, "SELECT subject_id::text FROM tenant_service_credentials WHERE id=$1 AND tenant_id=$2", id, tenant).Scan(&subject); errors.Is(err, pgx.ErrNoRows) {
+		return fail("SERVICE_KEY_NOT_FOUND", 404)
+	} else if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, "SELECT id FROM service_subjects WHERE id=$1 FOR UPDATE", subject); err != nil {
+		return err
+	}
 	var revoked *time.Time
 	err = tx.QueryRow(ctx, "SELECT revoked_at FROM tenant_service_credentials WHERE tenant_id=$1 AND id=$2 FOR UPDATE", tenant, id).Scan(&revoked)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -143,6 +162,37 @@ func RevokeKey(ctx context.Context, pool *pgxpool.Pool, tenant, id string) error
 		return fail("DATABASE_UNAVAILABLE", 503)
 	}
 	if err = recordAudit(ctx, tx, tenant, "offline_operator", operator, "service_key.revoke", "service_credential", id, map[string]any{}); err != nil {
+		return err
+	}
+	return commit(ctx, tx)
+}
+
+// RevokeSubject invalidates the complete renewal chain. Key-only revocation
+// deliberately does not revoke successors; use this command after compromise.
+func RevokeSubject(ctx context.Context, pool *pgxpool.Pool, tenant, subject string) error {
+	if !uuidPattern.MatchString(tenant) || !uuidPattern.MatchString(subject) {
+		return fail("INVALID_INPUT", 422)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	if err = authorization.LockTenant(ctx, tx, tenant); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, "UPDATE service_subjects SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE id=$1 AND tenant_id=$2", subject, tenant)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fail("SERVICE_SUBJECT_NOT_FOUND", 404)
+	}
+	var operator string
+	if err = tx.QueryRow(ctx, "SELECT current_user").Scan(&operator); err != nil {
+		return err
+	}
+	if err = recordAudit(ctx, tx, tenant, "offline_operator", operator, "service_subject.revoke", "service_subject", subject, map[string]any{}); err != nil {
 		return err
 	}
 	return commit(ctx, tx)

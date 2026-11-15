@@ -18,11 +18,18 @@ const (
 // Principal has no public fields: HTTP payloads cannot construct authority.
 // Mutation transactions still revalidate current database permissions.
 type Principal struct {
-	tenantID, credentialID string
-	scope                  Scope
-	browser                *BrowserIdentity
+	tenantID, credentialID, subjectID string
+	scope                             Scope
+	browser                           *BrowserIdentity
 }
 
+func (p Principal) SubjectID() string { return p.subjectID }
+func (p Principal) replayID() string {
+	if p.browser != nil {
+		return p.credentialID
+	}
+	return p.subjectID
+}
 func (p Principal) TenantID() string     { return p.tenantID }
 func (p Principal) CredentialID() string { return p.credentialID }
 func (p Principal) Scope() Scope         { return p.scope }
@@ -50,6 +57,7 @@ func fail(code string, status int) error { return &Error{Code: code, Status: sta
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type KeyResult struct {
+	SubjectID         string    `json:"subject_id"`
 	TenantID          string    `json:"tenant_id"`
 	CredentialID      string    `json:"credential_id"`
 	ServiceCredential string    `json:"service_credential"`
