@@ -311,12 +311,20 @@ class ContractTests(unittest.TestCase):
 
     def test_relay_typed_node_and_credentials(self):
         create = self.management_validator('ManagementRelayNodeCreate')
-        value = {'name': '中继', 'endpoint': 'turn:relay.example.com:3478?transport=udp', 'secret_ref': 'tenant-v1'}
+        value = {'name': 'relay', 'endpoint': 'turn:relay.example.com:3478?transport=udp', 'secret': 's' * 32}
         create.validate(value)
+        create.validate(dict(value, secret='s' * 256))
         self.assertFalse(create.is_valid(dict(value, tenant_id=UUID)))
-        self.assertFalse(create.is_valid(dict(value, secret='not-accepted')))
+        self.assertFalse(create.is_valid(dict(value, secret_ref='tenant-v1')))
+        self.assertFalse(create.is_valid({k: v for k, v in value.items() if k != 'secret'}))
         patch = self.management_validator('ManagementRelayNodePatch')
         patch.validate({'enabled': False})
+        patch.validate({'secret': 's' * 32})
+        patch.validate({'secret': 's' * 256})
+        for secret in ('', 's' * 31, 's' * 257, ' ' * 32, '\n' * 32, '\u4e2d' * 32, None):
+            self.assertFalse(create.is_valid(dict(value, secret=secret)))
+            self.assertFalse(patch.is_valid({'secret': secret}))
+        self.assertFalse(patch.is_valid({'secret_ref': 'tenant-v1'}))
         self.assertFalse(patch.is_valid({}))
         self.assertFalse(patch.is_valid({'enabled': None}))
         response = self.management_validator('SessionICEServers')
