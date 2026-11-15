@@ -60,6 +60,10 @@ flowchart LR
 
 该入口不是公网一键部署：域名、可信 TLS 证书及公网/TURN 策略仍由运营者提供，按后面的 HTTPS/WSS 流程配置。更换服务凭据仍需显式运维操作，不能把过期检查当作自动续期。
 
+Credential issuance runs in the Linux deployment container and requires an operator-owned private parent directory. Durable setup/issue output is not supported on non-Linux hosts outside that container.
+
+Recovery boundary: retries are automatic only when retained state is complete and validates. If `init-private.py` is interrupted while generating `.secrets`, the next `up` rejects the partial directory and preserves it for operator review; it never fills missing secrets, deletes files, or regenerates passwords. If the setup output exists but database commit was uncertain, `setup-verify` must succeed before proceeding. Marker file contents and their parent directory are fsynced; a sync error retains the file and reports failure, not readiness.
+
 ## 首次启动：仅本机 HTTP
 
 ```sh

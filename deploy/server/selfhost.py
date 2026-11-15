@@ -60,6 +60,13 @@ def create_json(path, value):
         stream.write('\n')
         stream.flush()
         os.fsync(stream.fileno())
+    # Persist the directory entry too, not only the file contents. Leave the file
+    # in place on an fsync failure; a subsequent run must validate retained state.
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def compose(package, project):

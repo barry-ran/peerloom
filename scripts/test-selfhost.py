@@ -146,6 +146,22 @@ class DeploymentTests(unittest.TestCase):
             self.up()
         self.assertEqual(self.init.calls, 1)
 
+    def test_initializer_interruption_requires_manual_review(self):
+        def interrupted(root):
+            self.init.calls += 1
+            (root / '.secrets').mkdir()
+            (root / '.secrets/postgres_password').write_text('test-only')
+            raise RuntimeError('simulated interruption during secret generation')
+        with patch.object(self.init, 'generate', side_effect=interrupted):
+            with self.assertRaises(RuntimeError):
+                self.up()
+        retained = (self.root / '.secrets/postgres_password').read_bytes()
+        with self.assertRaises(ValueError):
+            self.up()
+        self.assertEqual(self.init.calls, 1)
+        self.assertEqual((self.root / '.secrets/postgres_password').read_bytes(), retained)
+        self.assertFalse(any('setup' in command for command in self.calls))
+
     def test_expired_revoked_disabled_not_success(self):
         for delta in ({'expired': True}, {'revoked_at': 'test-date'}, {'tenant_active': False}):
             with self.subTest(delta=delta):
@@ -194,6 +210,35 @@ class FileSafetyTests(unittest.TestCase):
             os.link(p, link)
             with self.assertRaises(ValueError):
                 m.validate_file(p, 0o600)
+
+    def test_json_creation_syncs_file_then_parent(self):
+        with tempfile.TemporaryDirectory() as raw:
+            p = Path(raw) / 'state'
+            synced = []
+            real_fsync = os.fsync
+            def record(fd):
+                import stat
+                synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+                real_fsync(fd)
+            with patch.object(m.os, 'fsync', side_effect=record):
+                m.create_json(p, {'value': 1})
+            self.assertEqual(synced, [False, True])
+
+    def test_parent_sync_failure_keeps_file_for_validation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            p = Path(raw) / 'state'
+            real_fsync = os.fsync
+            def fail_directory(fd):
+                import stat
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise OSError('simulated directory fsync failure')
+                real_fsync(fd)
+            with patch.object(m.os, 'fsync', side_effect=fail_directory):
+                with self.assertRaises(OSError):
+                    m.create_json(p, {'value': 1})
+            self.assertEqual(m.load_json(p), {'value': 1})
+            with self.assertRaises(FileExistsError):
+                m.create_json(p, {'value': 2})
 
     def test_json_creation_is_exclusive(self):
         with tempfile.TemporaryDirectory() as raw:
