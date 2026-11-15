@@ -3,7 +3,6 @@ package management
 import (
 	"context"
 	"errors"
-	"regexp"
 	"strings"
 	"time"
 
@@ -12,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NewWithRelay binds the immutable operator registry before HTTP handlers exist.
+// NewWithRelay binds the deployment encryption key before HTTP handlers exist.
 func NewWithRelay(pool *pgxpool.Pool, key []byte, settings Settings, presence Presence, issuer *relay.Issuer) (*Service, error) {
 	service, err := New(pool, key, settings, presence)
 	if err != nil {
@@ -23,23 +22,27 @@ func NewWithRelay(pool *pgxpool.Pool, key []byte, settings Settings, presence Pr
 }
 
 type RelayNode struct {
-	ID        string    `json:"id"`
-	TenantID  string    `json:"tenant_id"`
-	Name      string    `json:"name"`
-	Region    string    `json:"region"`
-	Endpoint  string    `json:"endpoint"`
-	SecretRef string    `json:"secret_ref"`
-	Enabled   bool      `json:"enabled"`
-	Revision  int64     `json:"revision"`
-	CreatedAt time.Time `json:"created_at"`
+	SecretVersion int64     `json:"secret_version"`
+	HasSecret     bool      `json:"has_secret"`
+	ID            string    `json:"id"`
+	TenantID      string    `json:"tenant_id"`
+	Name          string    `json:"name"`
+	Region        string    `json:"region"`
+	Endpoint      string    `json:"endpoint"`
+	SecretRef     string    `json:"secret_ref"`
+	Enabled       bool      `json:"enabled"`
+	Revision      int64     `json:"revision"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 type RelayNodeInput struct {
+	Secret    string `json:"secret"`
 	Name      string `json:"name"`
 	Region    string `json:"region"`
 	Endpoint  string `json:"endpoint"`
 	SecretRef string `json:"secret_ref"`
 }
 type RelayNodeUpdate struct {
+	Secret    *string `json:"secret"`
 	Name      *string `json:"name"`
 	Region    *string `json:"region"`
 	Endpoint  *string `json:"endpoint"`
@@ -51,13 +54,17 @@ type RelayNodePage struct {
 	NextCursor string      `json:"next_cursor,omitempty"`
 }
 
-var relayReferencePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+func (RelayNodeInput) String() string    { return "[REDACTED relay input]" }
+func (RelayNodeInput) GoString() string  { return "[REDACTED relay input]" }
+func (RelayNodeUpdate) String() string   { return "[REDACTED relay patch]" }
+func (RelayNodeUpdate) GoString() string { return "[REDACTED relay patch]" }
 
-const relayColumns = "id::text,tenant_id::text,name,coalesce(region,''),endpoint,coalesce(secret_ref,''),enabled,revision,created_at"
+const relayColumns = "id::text,tenant_id::text,name,coalesce(region,''),endpoint,coalesce(secret_ref,''),enabled,revision,created_at,secret_version"
 
 func scanRelay(row scanner) (RelayNode, error) {
 	var value RelayNode
-	err := row.Scan(&value.ID, &value.TenantID, &value.Name, &value.Region, &value.Endpoint, &value.SecretRef, &value.Enabled, &value.Revision, &value.CreatedAt)
+	err := row.Scan(&value.ID, &value.TenantID, &value.Name, &value.Region, &value.Endpoint, &value.SecretRef, &value.Enabled, &value.Revision, &value.CreatedAt, &value.SecretVersion)
+	value.HasSecret = value.SecretVersion > 0
 	return value, err
 }
 func (s *Service) validateRelay(tenant string, input RelayNodeInput) error {
@@ -67,9 +74,11 @@ func (s *Service) validateRelay(tenant string, input RelayNodeInput) error {
 	if s.relayIssuer == nil {
 		return fail("RELAY_CONFIGURATION_UNAVAILABLE", 503)
 	}
-	node := relay.Node{TenantID: tenant, SecretRef: input.SecretRef, URLs: []string{input.Endpoint}}
-	if err := s.relayIssuer.ValidateNode(tenant, node); err != nil {
-		return fail("RELAY_BINDING_NOT_APPROVED", 422)
+	if input.SecretRef != "" {
+		return fail("LEGACY_RELAY_REFERENCE_UNSUPPORTED", 422)
+	}
+	if err := s.relayIssuer.ValidateConfiguration(input.Endpoint, input.Secret); err != nil {
+		return err
 	}
 	return nil
 }
@@ -82,6 +91,9 @@ func (s *Service) CreateRelayNode(ctx context.Context, p Principal, input RelayN
 		return RelayNode{}, err
 	}
 	defer rollback(tx)
+	if err = relay.LockConfiguration(ctx, tx); err != nil {
+		return RelayNode{}, err
+	}
 	var result RelayNode
 	found, keyHash, requestHash, err := s.prepareReplay(ctx, tx, p, "relay_node.create", key, input, &result)
 	if err != nil {
@@ -94,6 +106,14 @@ func (s *Service) CreateRelayNode(ctx context.Context, p Principal, input RelayN
 	if err != nil {
 		return RelayNode{}, fail("DATABASE_UNAVAILABLE", 503)
 	}
+	if err = s.relayIssuer.StoreSecret(ctx, tx, result.ID, p.tenantID, input.Secret, 1); err != nil {
+		return RelayNode{}, err
+	}
+	if _, err = tx.Exec(ctx, "UPDATE relay_nodes SET secret_version=1 WHERE id=$1 AND tenant_id=$2", result.ID, p.tenantID); err != nil {
+		return RelayNode{}, fail("DATABASE_UNAVAILABLE", 503)
+	}
+	result.SecretVersion = 1
+	result.HasSecret = true
 	if err = s.finishRelay(ctx, tx, p, "relay_node.create", result, keyHash, requestHash, 201); err != nil {
 		return RelayNode{}, err
 	}
@@ -109,7 +129,7 @@ func (s *Service) finishRelay(ctx context.Context, tx pgx.Tx, p Principal, opera
 	return commit(ctx, tx)
 }
 func (s *Service) UpdateRelayNode(ctx context.Context, p Principal, id string, input RelayNodeUpdate, key string) (RelayNode, error) {
-	if !uuidPattern.MatchString(id) || (input.Name == nil && input.Region == nil && input.Endpoint == nil && input.SecretRef == nil && input.Enabled == nil) {
+	if !uuidPattern.MatchString(id) || (input.Name == nil && input.Region == nil && input.Endpoint == nil && input.SecretRef == nil && input.Enabled == nil && input.Secret == nil) {
 		return RelayNode{}, fail("INVALID_RELAY_PATCH", 422)
 	}
 	tx, err := s.begin(ctx, p, true)
@@ -117,6 +137,9 @@ func (s *Service) UpdateRelayNode(ctx context.Context, p Principal, id string, i
 		return RelayNode{}, err
 	}
 	defer rollback(tx)
+	if err = relay.LockConfiguration(ctx, tx); err != nil {
+		return RelayNode{}, err
+	}
 	var result RelayNode
 	operation := "relay_node.update:" + strings.ToLower(id)
 	found, keyHash, requestHash, err := s.prepareReplay(ctx, tx, p, operation, key, input, &result)
@@ -143,20 +166,30 @@ func (s *Service) UpdateRelayNode(ctx context.Context, p Principal, id string, i
 		result.Endpoint = *input.Endpoint
 	}
 	if input.SecretRef != nil {
-		result.SecretRef = *input.SecretRef
+		return RelayNode{}, fail("LEGACY_RELAY_REFERENCE_UNSUPPORTED", 422)
 	}
 	if input.Enabled != nil {
 		result.Enabled = *input.Enabled
 	}
-	if !validText(result.Name, 128) || (result.Region != "" && !validText(result.Region, 64)) || !validText(result.Endpoint, 2048) || !relayReferencePattern.MatchString(result.SecretRef) {
+	if !validText(result.Name, 128) || (result.Region != "" && !validText(result.Region, 64)) {
 		return RelayNode{}, fail("INVALID_RELAY_NODE", 422)
 	}
-	if result.Enabled {
-		if err = s.validateRelay(p.tenantID, RelayNodeInput{Name: result.Name, Region: result.Region, Endpoint: result.Endpoint, SecretRef: result.SecretRef}); err != nil {
+	if err = s.relayIssuer.ValidateEndpoint(result.Endpoint); err != nil {
+		return RelayNode{}, err
+	}
+	if input.Secret != nil {
+		if err = s.relayIssuer.ValidateConfiguration(result.Endpoint, *input.Secret); err != nil {
+			return RelayNode{}, err
+		}
+		result.SecretVersion++
+		if err = s.relayIssuer.StoreSecret(ctx, tx, result.ID, p.tenantID, *input.Secret, result.SecretVersion); err != nil {
 			return RelayNode{}, err
 		}
 	}
-	result, err = scanRelay(tx.QueryRow(ctx, `UPDATE relay_nodes SET name=$3,region=$4,endpoint=$5,secret_ref=$6,enabled=$7,revision=revision+1 WHERE tenant_id=$1 AND id=$2 RETURNING `+relayColumns, p.tenantID, id, result.Name, result.Region, result.Endpoint, result.SecretRef, result.Enabled))
+	if result.Enabled && result.SecretVersion == 0 {
+		return RelayNode{}, fail("RELAY_CONFIGURATION_REQUIRED", 422)
+	}
+	result, err = scanRelay(tx.QueryRow(ctx, `UPDATE relay_nodes SET name=$3,region=$4,endpoint=$5,secret_ref=$6,enabled=$7,revision=revision+1,secret_version=$8 WHERE tenant_id=$1 AND id=$2 RETURNING `+relayColumns, p.tenantID, id, result.Name, result.Region, result.Endpoint, result.SecretRef, result.Enabled, result.SecretVersion))
 	if err != nil {
 		return RelayNode{}, fail("DATABASE_UNAVAILABLE", 503)
 	}

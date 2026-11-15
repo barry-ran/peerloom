@@ -17,7 +17,7 @@ import (
 func TestBrowserRelayAuditActorAndIsolation(t *testing.T) {
 	pool, auth, tenant, user := offlineFixture(t)
 	ctx := context.Background()
-	issuer, err := relay.New(map[string]relay.SecretBinding{"fixture": {TenantID: tenant, Secret: []byte(strings.Repeat("s", 32)), URLs: []string{"turn:relay.example.com:3478?transport=udp"}}}, 5*time.Minute, false)
+	issuer, err := relay.NewDatabaseIssuer([]byte(strings.Repeat("k", 32)), 5*time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestBrowserRelayAuditActorAndIsolation(t *testing.T) {
 		}
 		return node
 	}
-	body := `{"name":"audit fixture","endpoint":"turn:relay.example.com:3478?transport=udp","secret_ref":"fixture"}`
+	body := `{"name":"audit fixture","endpoint":"turn:relay.example.com:3478?transport=udp","secret":"ssssssssssssssssssssssssssssssss"}`
 	for _, tc := range []struct {
 		token, actorType, actorID string
 		browser                   bool

@@ -15,7 +15,7 @@ import (
 
 func setupRelay(t *testing.T, f fixture) *relay.Issuer {
 	t.Helper()
-	issuer, err := relay.New(map[string]relay.SecretBinding{"tenant-v1": {TenantID: f.principal.TenantID(), Secret: []byte(strings.Repeat("s", 32)), URLs: []string{"turn:relay.example.com:3478?transport=udp"}}, "shared-v1": {Secret: []byte(strings.Repeat("x", 32)), URLs: []string{"turn:shared.example.com:3478?transport=udp"}}}, 5*time.Minute, false)
+	issuer, err := relay.NewDatabaseIssuer([]byte(strings.Repeat("k", 32)), 5*time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func setupRelay(t *testing.T, f fixture) *relay.Issuer {
 	return issuer
 }
 func relayInput() RelayNodeInput {
-	return RelayNodeInput{Name: "测试中继", Region: "test", Endpoint: "turn:relay.example.com:3478?transport=udp", SecretRef: "tenant-v1"}
+	return RelayNodeInput{Name: "测试中继", Region: "test", Endpoint: "turn:relay.example.com:3478?transport=udp", Secret: strings.Repeat("s", 32)}
 }
 func TestRelayManagementApprovalIsolationAndRevision(t *testing.T) {
 	f := setup(t)
@@ -38,13 +38,13 @@ func TestRelayManagementApprovalIsolationAndRevision(t *testing.T) {
 		t.Fatalf("node replay: %v", err)
 	}
 	bad := input
-	bad.Endpoint = "turn:attacker.example.com:3478?transport=udp"
+	bad.Endpoint = "http://attacker.example.com"
 	_, err = f.service.CreateRelayNode(f.ctx, f.principal, bad, "bad-url")
-	requireCode(t, err, "RELAY_BINDING_NOT_APPROVED")
+	requireRelayCode(t, err, "INVALID_RELAY_NODE")
 	bad.Endpoint = "turn:shared.example.com:3478?transport=udp"
 	bad.SecretRef = "shared-v1"
 	_, err = f.service.CreateRelayNode(f.ctx, f.principal, bad, "shared-reference")
-	requireCode(t, err, "RELAY_BINDING_NOT_APPROVED")
+	requireCode(t, err, "LEGACY_RELAY_REFERENCE_UNSUPPORTED")
 	otherKey, err := BootstrapKey(f.ctx, f.pool, "other", ScopeAdmin, time.Hour, "other")
 	if err != nil {
 		t.Fatal(err)
@@ -81,10 +81,6 @@ func TestRelayDurableReuseLimitsAndRevocation(t *testing.T) {
 	service, err := relay.NewService(f.pool, issuer, pair.auth, counted)
 	if err != nil {
 		t.Fatal(err)
-	}
-	empty, err := service.IssueForSession(f.ctx, pair.actors[0], session.ID)
-	if err != nil || empty.ICEServers == nil || len(empty.ICEServers) != 0 {
-		t.Fatalf("unconfigured: %v", err)
 	}
 	node, err := f.service.CreateRelayNode(f.ctx, f.principal, relayInput(), "relay-create")
 	if err != nil {
@@ -138,6 +134,13 @@ func TestRelayDurableReuseLimitsAndRevocation(t *testing.T) {
 	}
 	_, err = f.service.UpdateRelayNode(f.ctx, f.principal, node.ID, RelayNodeUpdate{Name: ptr("new revision")}, "revision-change")
 	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged, stableErr := limited.IssueForSession(f.ctx, pair.actors[0], session.ID)
+	if stableErr != nil || unchanged.ICEServers[0].Username != results[0].ICEServers[0].Username {
+		t.Fatal("configuration edit changed existing session")
+	}
+	if _, err = f.pool.Exec(f.ctx, "UPDATE relay_issuances SET expires_at=clock_timestamp()+interval '5 seconds' WHERE session_id=$1", session.ID); err != nil {
 		t.Fatal(err)
 	}
 	_, err = limited.IssueForSession(f.ctx, pair.actors[0], session.ID)
@@ -227,7 +230,7 @@ func TestSharedRelayOperatorCannotAdoptTenantNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := relay.SharedNodeInput{ID: node.ID, Name: "shared", Endpoint: "turn:shared.example.com:3478?transport=udp", SecretRef: "shared-v1", Enabled: true}
+	input := relay.SharedNodeInput{ID: node.ID, Name: "shared", Endpoint: "turn:shared.example.com:3478?transport=udp", Secret: ptr(strings.Repeat("x", 32)), Enabled: true}
 	if err = relay.SetSharedNode(f.ctx, f.pool, issuer, input); err == nil {
 		t.Fatal("operator adopted existing tenant node")
 	}
@@ -256,8 +259,8 @@ func TestSharedRelayOperatorCannotAdoptTenantNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	response, err = service.IssueForSession(f.ctx, pair.actors[0], session.ID)
-	if err != nil || len(response.ICEServers) != 1 {
-		t.Fatalf("disabled shared node cache survived: %v", err)
+	if err != nil || len(response.ICEServers) != 2 {
+		t.Fatalf("shared edit changed existing snapshot: %v", err)
 	}
 }
 
@@ -380,5 +383,13 @@ func TestRelayUnlimitedDefaultsDoNotChargeQuotaWindows(t *testing.T) {
 	}
 	if windows != 0 || receipts != 1 {
 		t.Fatalf("quota disabled must retain issuance receipt: windows=%d receipts=%d", windows, receipts)
+	}
+}
+
+func requireRelayCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var e *relay.Error
+	if !errors.As(err, &e) || e.Code != code {
+		t.Fatalf("relay error code mismatch: %v", err)
 	}
 }

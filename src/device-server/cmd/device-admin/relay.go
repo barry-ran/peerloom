@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"time"
 
@@ -20,17 +21,17 @@ func runSharedRelay(args []string) error {
 	name := flags.String("name", "", "node display name")
 	region := flags.String("region", "", "nonsecret region label")
 	endpoint := flags.String("endpoint", "", "single operator-approved TURN URL")
-	reference := flags.String("secret-ref", "", "immutable reference in RELAY_REGISTRY_FILE, never a path")
+	secretFile := flags.String("secret-file", "", "private file containing exact printable coturn shared secret; omit to retain current version")
 	enabled := flags.Bool("enabled", true, "enable or disable shared relay")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if !*offline || flags.NArg() != 0 || *id == "" || *name == "" || *endpoint == "" || *reference == "" {
-		return errors.New("shared relay requires --offline --node-id --name --endpoint --secret-ref")
+	if !*offline || flags.NArg() != 0 || *id == "" || *name == "" || *endpoint == "" {
+		return errors.New("shared relay requires --offline --node-id --name --endpoint [--secret-file FILE]")
 	}
 	issuer, _, err := relay.LoadFromEnvironment(os.Getenv)
 	if err != nil {
-		return errors.New("cannot load approved relay registry")
+		return errors.New("cannot load relay encryption configuration")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -43,7 +44,27 @@ func runSharedRelay(args []string) error {
 		return err
 	}
 	defer pool.Close()
-	input := relay.SharedNodeInput{ID: *id, Name: *name, Region: *region, Endpoint: *endpoint, SecretRef: *reference, Enabled: *enabled}
+	var secret *string
+	if *secretFile != "" {
+		f, openErr := os.Open(*secretFile)
+		if openErr != nil {
+			return errors.New("cannot read shared secret file")
+		}
+		info, statErr := f.Stat()
+		if statErr != nil || !info.Mode().IsRegular() {
+			f.Close()
+			return errors.New("invalid shared secret file")
+		}
+		body, readErr := io.ReadAll(io.LimitReader(f, 257))
+		f.Close()
+		if readErr != nil || len(body) > 256 {
+			return errors.New("invalid shared secret file")
+		}
+		v := string(body)
+		secret = &v
+		defer clear(body)
+	}
+	input := relay.SharedNodeInput{ID: *id, Name: *name, Region: *region, Endpoint: *endpoint, Secret: secret, Enabled: *enabled}
 	if err = relay.SetSharedNode(ctx, pool, issuer, input); err != nil {
 		return err
 	}

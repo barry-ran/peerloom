@@ -105,7 +105,15 @@ func LoadFromEnvironment(getenv func(string) string) (*Issuer, Limits, error) {
 		}
 		development = parsed
 	}
-	issuer, err := LoadIssuer(getenv("RELAY_REGISTRY_FILE"), ttl, development)
+	if getenv("RELAY_REGISTRY_FILE") != "" {
+		return nil, Limits{}, ErrConfiguration
+	}
+	key, err := loadEncryptionKey(getenv("RELAY_ENCRYPTION_KEY_FILE"))
+	if err != nil {
+		return nil, Limits{}, err
+	}
+	defer clear(key)
+	issuer, err := NewDatabaseIssuer(key, ttl, development)
 	if err != nil {
 		return nil, Limits{}, err
 	}

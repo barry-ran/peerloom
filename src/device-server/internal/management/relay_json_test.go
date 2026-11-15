@@ -6,7 +6,7 @@ import (
 )
 
 func TestRelayPatchRejectsNullUnknownAndKeepsFalse(t *testing.T) {
-	for _, body := range []string{`null`, `{"enabled":null}`, `{"name":"ok","enabled":null}`, `{"secret":"forbidden"}`} {
+	for _, body := range []string{`null`, `{"enabled":null}`, `{"name":"ok","enabled":null}`, `{"secret":null}`, `{"unknown":"forbidden"}`} {
 		var input RelayNodeUpdate
 		if err := json.Unmarshal([]byte(body), &input); err == nil {
 			t.Fatal("invalid relay patch decoded")

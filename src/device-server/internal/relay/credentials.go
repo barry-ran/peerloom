@@ -6,6 +6,7 @@
 package relay
 
 import (
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1" // Required by coturn TURN REST authentication, not a password hash.
@@ -57,6 +58,8 @@ func (Credentials) String() string   { return "[REDACTED TURN credentials]" }
 func (Credentials) GoString() string { return "[REDACTED TURN credentials]" }
 
 type Issuer struct {
+	aead                cipher.AEAD
+	keyID               string
 	bindings            map[string]SecretBinding
 	ttl                 time.Duration
 	developmentLoopback bool

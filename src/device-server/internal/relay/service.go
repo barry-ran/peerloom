@@ -63,9 +63,12 @@ func (Response) String() string   { return "[REDACTED ICE response]" }
 func (Response) GoString() string { return "[REDACTED ICE response]" }
 
 type selectedNode struct {
-	ID       string
-	Revision int64
-	Node     Node
+	Endpoint      string
+	SecretVersion int64
+	Issuer        *Issuer
+	ID            string
+	Revision      int64
+	Node          Node
 }
 
 func rollback(tx pgx.Tx) {
@@ -108,34 +111,9 @@ func (s *Service) issueForSession(ctx context.Context, actor identity.Device, se
 	if err != nil {
 		return Response{}, bridgeError(err)
 	}
-	rows, err := tx.Query(ctx, `SELECT id::text,tenant_id::text,endpoint,secret_ref,revision FROM relay_nodes
-WHERE enabled AND (tenant_id=$1 OR tenant_id IS NULL)
-ORDER BY (tenant_id IS NULL),created_at,id LIMIT 4 FOR SHARE`, actor.TenantID)
+	nodes, err := s.snapshotNodes(ctx, tx, actor.TenantID, sessionID)
 	if err != nil {
-		return Response{}, failure("DATABASE_UNAVAILABLE", 503)
-	}
-	nodes := make([]selectedNode, 0, 4)
-	for rows.Next() {
-		var node selectedNode
-		var tenant, secretRef *string
-		var endpoint string
-		if err = rows.Scan(&node.ID, &tenant, &endpoint, &secretRef, &node.Revision); err != nil {
-			rows.Close()
-			return Response{}, failure("DATABASE_UNAVAILABLE", 503)
-		}
-		if tenant != nil {
-			node.Node.TenantID = *tenant
-		}
-		if secretRef != nil {
-			node.Node.SecretRef = *secretRef
-		}
-		node.Node.URLs = []string{endpoint}
-		nodes = append(nodes, node)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return Response{}, failure("DATABASE_UNAVAILABLE", 503)
+		return Response{}, err
 	}
 	if credential != "" {
 		if err = identity.AuthenticateCredentialInTx(ctx, tx, actor, credential); err != nil {
@@ -151,7 +129,7 @@ ORDER BY (tenant_id IS NULL),created_at,id LIMIT 4 FOR SHARE`, actor.TenantID)
 	}
 	result := Response{SessionID: sessionID, NegotiationGeneration: int(authorized.NegotiationGeneration), ICEServers: make([]Credentials, 0, len(nodes))}
 	for _, node := range nodes {
-		if err = s.issuer.ValidateNode(actor.TenantID, node.Node); err != nil {
+		if err = node.Issuer.ValidateNode(actor.TenantID, node.Node); err != nil {
 			return Response{}, failure("RELAY_CONFIGURATION_UNAVAILABLE", 503)
 		}
 		credential, err := s.issueNode(ctx, tx, actor, sessionID, authorized.NegotiationGeneration, node, now)
@@ -189,7 +167,7 @@ WHERE tenant_id=$1 AND device_id=$2 AND session_id=$3 AND node_id=$4 AND negotia
 		return Credentials{}, failure("DATABASE_UNAVAILABLE", 503)
 	}
 	if err == nil && revision == node.Revision && secretRef == node.Node.SecretRef && expires.After(now.Add(s.limits.RefreshMargin)) {
-		credential, deriveErr := s.issuer.Derive(actor.TenantID, node.Node, username, expires, now)
+		credential, deriveErr := node.Issuer.Derive(actor.TenantID, node.Node, username, expires, now)
 		if deriveErr != nil {
 			return Credentials{}, failure("RELAY_RECEIPT_UNAVAILABLE", 503)
 		}
@@ -198,7 +176,7 @@ WHERE tenant_id=$1 AND device_id=$2 AND session_id=$3 AND node_id=$4 AND negotia
 	if err = s.charge(ctx, tx, actor, sessionID, now); err != nil {
 		return Credentials{}, err
 	}
-	credential, err := s.issuer.Issue(actor.TenantID, actor.ID, sessionID, node.Node, now)
+	credential, err := node.Issuer.Issue(actor.TenantID, actor.ID, sessionID, node.Node, now)
 	if err != nil {
 		return Credentials{}, failure("RELAY_UNAVAILABLE", 503)
 	}
