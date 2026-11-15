@@ -95,7 +95,7 @@ class PackageTests(unittest.TestCase):
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_bytes(b'precompiled-test-'+name.encode()); file.chmod(0o755)
         for name in ('Dockerfile','Dockerfile.dockerignore','compose.yaml','compose.tls.yaml',
-                     'gateway/nginx.conf','gateway/nginx-tls.conf','init-private.py','README.md'):
+                     'gateway/nginx.conf','gateway/nginx-tls.conf','init-private.py','selfhost.py','README.md'):
             file=self.root/'deploy/server'/name
             file.parent.mkdir(parents=True,exist_ok=True)
             file.write_text('owned deployment fixture',encoding='utf-8')
@@ -119,8 +119,9 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(len([x for x in names if x.startswith('infra/migrations/')]),22)
             self.assertIn('deploy/Dockerfile.dockerignore',names)
             self.assertIn('deploy/README.md',names)
+            self.assertIn('deploy/selfhost.py',names)
             self.assertIn('docs/部署指南.md',names)
-            self.assertFalse(any(x.startswith(('sdk/','go-crossbuilds/','src/','.secrets/')) for x in names))
+            self.assertFalse(any(x.startswith(('sdk/','go-crossbuilds/','src/','.secrets/','.operator/')) for x in names))
             sums=archive.extractfile('SHA256SUMS').read().decode('utf-8').splitlines()
             self.assertEqual({x.split('  ',1)[1] for x in sums},names-{'SHA256SUMS'})
             for entry in sums:
