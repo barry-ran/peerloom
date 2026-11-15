@@ -41,3 +41,14 @@ func TestMissingDown(t *testing.T) {
 		t.Fatal("accepted missing rollback")
 	}
 }
+
+// Keep readiness expectations aligned with the migration set in every normal Go test run.
+func TestCurrentVersionMatchesRepository(t *testing.T) {
+	migrations, err := Load(filepath.Join("..", "..", "..", "..", "infra", "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) == 0 || migrations[len(migrations)-1].Version != CurrentVersion {
+		t.Fatalf("repository migration version does not match CurrentVersion=%d", CurrentVersion)
+	}
+}
