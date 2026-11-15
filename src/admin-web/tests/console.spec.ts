@@ -211,7 +211,11 @@ for (const language of ['zh', 'en'] as const) {
   await expect(page.getByLabel(labels.key,{exact:true})).toHaveValue('');
   expect(requests).toHaveLength(countBeforeCancel);
   await page.getByRole('button',{name:labels.close,exact:true}).click();
+  const logoutResponse = page.waitForResponse(response =>
+   response.request().method() === 'POST' && new URL(response.url()).pathname === '/admin/api/auth/logout');
   await page.getByRole('button',{name:language === 'zh' ? '退出登录' : 'Sign out',exact:true}).click();
+  expect((await logoutResponse).status(), 'Managed relay sign-out HTTP status').toBe(200);
+  await expect(page.getByRole('button',{name:language === 'zh' ? '安全登录' : 'Sign in securely',exact:true})).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const endedSession = await page.request.get('/admin/api/auth/session');
   expect(endedSession.status()).toBe(401);
