@@ -199,10 +199,11 @@ function editRelay(row?: Row): void {
   const [secretWrap, secret] = field(t('relaySecret'), 'password');
   secret.required = !row; secret.minLength = 32; secret.maxLength = 256;
   secret.pattern = '[\x21-\x7e]{32,256}'; secret.autocomplete = 'new-password';
-  secretWrap.append(el('small', 'muted', t(row ? 'relaySecretEdit' : 'relaySecretCreate')));
+  const secretHelp = el('small', 'muted', t(row ? 'relaySecretEdit' : 'relaySecretCreate'));
+  secretHelp.id = 'relay-secret-help'; secret.setAttribute('aria-describedby', secretHelp.id);
   view.dialog.addEventListener('close', () => { secret.value = ''; });
   const submit = el('button', 'button primary', t('save')); submit.type = 'submit';
-  form.append(secretWrap, submit); view.content.append(form);
+  form.append(secretWrap, secretHelp, submit); view.content.append(form);
   form.addEventListener('submit', event => {
     event.preventDefault(); if (busyMutation || !form.reportValidity()) return;
     const input: Row = {};

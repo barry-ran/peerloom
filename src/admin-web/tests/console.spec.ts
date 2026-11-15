@@ -117,7 +117,7 @@ for (const language of ['zh', 'en'] as const) {
   await login(page);
   if (language === 'en') await page.getByRole('button', {name:'English', exact:true}).click();
   const labels = language === 'zh' ? {relay:'中继节点',create:'创建中继节点',name:'名称',url:'TURN 地址',key:'coturn REST 共享密钥',save:'确认',close:'关闭',edit:'编辑',retry:'使用相同请求重试',details:'详情'} :
-    {relay:'Relay nodes',create:'Create relay node',name:'Name',url:'TURN URL',key:'coturn REST shared key',save:'Confirm',close:'Close',edit:'Edit',retry:'Retry same request',details:'Details'};
+    {relay:'Relay nodes',create:'Create relay node',name:'Name',url:'TURN URL',key:'coturn REST shared key',save:'Confirm',close:'Close',edit:'Edit',retry:'Retry the same request',details:'Details'};
   const secret = 'synthetic-rest-shared-key-for-browser-123456';
   const rotated = 'synthetic-rest-rotated-key-for-browser-654321';
   const name = `managed-relay-${language}`;
@@ -125,6 +125,8 @@ for (const language of ['zh', 'en'] as const) {
   await page.getByRole('button', {name:labels.create,exact:true}).click();
   const keyField = page.getByLabel(labels.key, {exact:true});
   await expect(keyField).toHaveAttribute('type','password');
+  await expect(keyField).toHaveAccessibleName(labels.key);
+  await expect(keyField).toHaveAccessibleDescription(/32/);
   await expect(keyField).toHaveValue('');
   await page.screenshot({path:`test-results/managed-relay-${language}.png`,fullPage:true});
   await keyField.fill(secret);
