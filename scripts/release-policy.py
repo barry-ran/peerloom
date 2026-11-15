@@ -32,7 +32,7 @@ ARTIFACT_PREFIX = {'linux-x86_64': 'peerloom-linux-release-', 'windows-x86_64': 
 SERVER_COMMANDS = frozenset(('device-server', 'device-migrate', 'device-bootstrap', 'device-admin', 'device-admin-user'))
 SERVER_DEPLOY = frozenset('deploy/' + name for name in (
     'Dockerfile', 'Dockerfile.dockerignore', 'compose.yaml', 'compose.tls.yaml',
-    'gateway/nginx.conf', 'gateway/nginx-tls.conf', 'init-private.py'))
+    'gateway/nginx.conf', 'gateway/nginx-tls.conf', 'init-private.py', 'selfhost.py'))
 SERVER_SQL = frozenset('infra/migrations/' + name + '.' + direction + '.sql'
                       for name in ('000001_initial', '000002_identity_replay', '000003_session_authorization',
                                    '000004_tenant_management', '000005_managed_relay', '000006_browser_administration',

@@ -247,5 +247,22 @@ class ControllerTests(unittest.TestCase):
         self.assertIn("signal.signal(signal.SIGTERM, signal.SIG_IGN)", source)
 
 
+class SelfhostReleasePolicyTests(unittest.TestCase):
+    def test_selfhost_is_required_without_accepting_unknown_scripts(self):
+        spec = importlib.util.spec_from_file_location(
+            'release_fixture', ROOT / 'scripts/test-release-admin.py')
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        verifier = fixture.ServerSplitPolicyTests()
+        self.assertIn('deploy/selfhost.py', fixture.P.SERVER_DEPLOY)
+        verifier.verify(fixture.installation_package()[0])
+        with self.assertRaisesRegex(fixture.P.Rejected, 'SERVER_DEPLOYMENT_FILE_MISSING'):
+            verifier.verify(fixture.installation_package(omit='deploy/selfhost.py')[0])
+        for name in ('deploy/unknown.py', 'deploy/selfhost.py.bak', 'deploy/private.env'):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    fixture.P.Rejected, 'UNEXPECTED_INSTALL_FILE'):
+                verifier.verify(fixture.installation_package(extra={name: b'unknown'})[0])
+
+
 if __name__ == '__main__':
     unittest.main()
