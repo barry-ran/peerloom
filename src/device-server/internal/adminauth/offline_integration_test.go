@@ -123,6 +123,12 @@ func TestLoginRateLimits(t *testing.T) {
 			pool := testPool(t)
 			auth := &Service{pool: pool}
 			ctx := context.Background()
+			// Test only: keep exact threshold assertions in one deterministic window.
+			// Each subtest owns its schema; production uses the database clock unchanged.
+			if _, err := pool.Exec(ctx, `CREATE FUNCTION fixture_login_window() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.window_start := '2000-01-01 00:00:00+00'::timestamptz; RETURN NEW; END $$;
+CREATE TRIGGER fixture_login_window BEFORE INSERT ON admin_login_windows FOR EACH ROW EXECUTE FUNCTION fixture_login_window()`); err != nil {
+				t.Fatal(err)
+			}
 			for i := 0; i <= tc.limit; i++ {
 				user, ip := "owner", "fixture-ip"
 				if tc.name != "user" {
@@ -138,9 +144,33 @@ func TestLoginRateLimits(t *testing.T) {
 					t.Fatalf("attempt %d: %v", i, err)
 				}
 			}
+			if _, err := pool.Exec(ctx, `CREATE OR REPLACE FUNCTION fixture_login_window() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.window_start := '2000-01-01 00:01:00+00'::timestamptz; RETURN NEW; END $$`); err != nil {
+				t.Fatal(err)
+			}
+			if err := auth.limit(ctx, "fixture-tenant", "owner", "fixture-ip"); err != nil {
+				t.Fatalf("new minute did not reset limit: %v", err)
+			}
 		})
 	}
 }
+
+// No clock trigger here: an actually expired database window must not block login.
+func TestLoginRateLimitIgnoresPriorDatabaseMinute(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO admin_login_windows(key_hash,window_start,attempts) VALUES($1,date_trunc('minute',clock_timestamp())-interval '1 minute',121)`, digest("global")); err != nil {
+		t.Fatal(err)
+	}
+	auth := &Service{pool: pool}
+	if err := auth.limit(ctx, "fixture-tenant", "owner", "fixture-ip"); err != nil {
+		t.Fatalf("previous minute incorrectly blocked current window: %v", err)
+	}
+	var count, newest int
+	if err := pool.QueryRow(ctx, `SELECT count(*), (SELECT attempts FROM admin_login_windows WHERE key_hash=$1 ORDER BY window_start DESC LIMIT 1) FROM admin_login_windows WHERE key_hash=$1`, digest("global")).Scan(&count, &newest); err != nil || count != 2 || newest != 1 {
+		t.Fatal("database minute boundary evidence mismatch")
+	}
+}
+
 func TestConcurrentOfflineResetAndDisable(t *testing.T) {
 	pool, auth, tenant, user := offlineFixture(t)
 	ctx := context.Background()
