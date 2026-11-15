@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """本地 coturn REST 到期/Refresh 真实协议回归，不模拟生产撤销语义。"""
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -100,10 +101,37 @@ class Allocation:
         # RFC long-term MESSAGE-INTEGRITY key, not a production password hash.
         self.key = hashlib.md5(self.credential['username'].encode() + b':' + self.realm +
                                b':' + self.credential['credential'].encode()).digest()
-        return self.request(0x0003, values, True)
+        response, attrs = self.request(0x0003, values, True)
+        if response == 0x0103:
+            encoded = attrs[0x0016][0]
+            if len(encoded) != 8 or encoded[:2] != b'\x00\x01':
+                raise RuntimeError('expected isolated IPv4 relay address')
+            self.relay_address = (socket.inet_ntoa(struct.pack('!I', struct.unpack('!I', encoded[4:])[0] ^ COOKIE)),
+                                  struct.unpack('!H', encoded[2:4])[0] ^ (COOKIE >> 16))
+        return response, attrs
 
     def refresh(self):
         return self.request(0x0004, [(0x000D, struct.pack('!I', 60))], True)
+
+    def exchange(self):
+        # Synthetic loopback peer only, enabled explicitly in this isolated coturn.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as peer:
+            peer.bind(('127.0.0.1', 0))
+            peer.settimeout(2)
+            address = b'\x00\x01' + struct.pack('!H', peer.getsockname()[1] ^ (COOKIE >> 16)) + struct.pack('!I', 0x7f000001 ^ COOKIE)
+            kind, _ = self.request(0x0008, [(0x0012, address)], True)
+            if kind != 0x0108:
+                raise RuntimeError('isolated TURN permission failed')
+            payload = secrets.token_bytes(32)
+            self.socket.sendto(packet(0x0016, secrets.token_bytes(12), [(0x0012, address), (0x0013, payload)]), self.address)
+            received, relayed = peer.recvfrom(256)
+            if received != payload or relayed != self.relay_address:
+                raise RuntimeError('isolated TURN outgoing payload mismatch')
+            peer.sendto(payload, self.relay_address)
+            received, sender = self.socket.recvfrom(8192)
+            kind, attrs = parse(received, received[8:20])
+            if sender != self.address or kind != 0x0017 or attrs.get(0x0013, (b'', 0))[0] != payload:
+                raise RuntimeError('isolated TURN incoming payload mismatch')
 
 
 def private_file(path, content):
@@ -132,10 +160,12 @@ def run(binary=None, image=None):
     with tempfile.TemporaryDirectory(prefix='peerloom-turn-refresh-') as directory:
         path = Path(directory)
         secret = secrets.token_hex(32)
+        successor_secret = secrets.token_hex(32)
         private_file(path / 'shared-secret', secret)
         config = ['listening-ip=127.0.0.1', 'relay-ip=127.0.0.1', 'listening-port=53478',
                   'min-port=55000', 'max-port=55031', 'use-auth-secret',
-                  'static-auth-secret=' + secret, 'realm=peerloom.test', 'fingerprint',
+                  'static-auth-secret=' + secret, 'static-auth-secret=' + successor_secret,
+                  'allow-loopback-peers', 'realm=peerloom.test', 'fingerprint',
                   'no-tcp', 'no-tls', 'no-dtls', 'no-tcp-relay', 'no-multicast-peers',
                   'cli=0', 'relay-threads=1', 'user-quota=4', 'total-quota=8',
                   'max-bps=1048576', 'stale-nonce=600', 'no-software-attribute',
@@ -199,6 +229,20 @@ def run(binary=None, image=None):
                 kind, attrs = positive.allocate()
                 if kind != 0x0103 or 0x0016 not in attrs:
                     raise RuntimeError('fresh control allocation failed after rejection')
+                successor_credential = dict(fresh)
+                successor_credential['username'] += '-successor'
+                successor_credential['credential'] = base64.b64encode(hmac.digest(successor_secret.encode(), successor_credential['username'].encode(), 'sha1')).decode()
+                successor = Allocation(('127.0.0.1', 53478), successor_credential)
+                clients.append(successor)
+                kind, attrs = successor.allocate()
+                if kind != 0x0103:
+                    raise RuntimeError('overlapping successor secret allocation failed')
+                kind, attrs = current.refresh()
+                if kind != 0x0104:
+                    raise RuntimeError('old allocation refresh failed during secret overlap')
+                current.exchange()
+                successor.exchange()
+                print('PASS: preconfigured overlapping coturn secrets accept successor allocation; old allocation Refresh and both bidirectional data paths preserved; not runtime coturn reconfiguration')
                 print('PASS: authenticated existing allocation Refresh after REST expiry; '
                       'same expired credential new 5-tuple rejected 401; fresh credential accepted')
             finally:
