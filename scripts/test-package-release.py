@@ -116,7 +116,7 @@ class PackageTests(unittest.TestCase):
         with tarfile.open(self.output/meta['installation_payload'],'r:gz') as archive:
             names=set(archive.getnames())
             self.assertTrue({f'bin/{x}' for x in m.SERVER_BINARIES} <= names)
-            self.assertEqual(len([x for x in names if x.startswith('infra/migrations/')]),22)
+            self.assertEqual(len([x for x in names if x.startswith('infra/migrations/')]),24)
             self.assertIn('deploy/Dockerfile.dockerignore',names)
             self.assertIn('deploy/README.md',names)
             self.assertIn('deploy/selfhost.py',names)
@@ -132,6 +132,12 @@ class PackageTests(unittest.TestCase):
         self.server_fixture()
         next((self.root/'infra/migrations').glob('*.up.sql')).unlink()
         with self.assertRaisesRegex(m.PackageError,'MIGRATION'):self.finish_server()
+
+    def test_server_missing_service_subject_migration_rejected(self):
+        self.server_fixture()
+        (self.root/'infra/migrations/000012_service_subjects.up.sql').unlink()
+        with self.assertRaisesRegex(m.PackageError, 'MIGRATION'):
+            self.finish_server()
 
     def test_server_missing_deployment_rejected(self):
         self.server_fixture();(self.root/'deploy/server/Dockerfile.dockerignore').unlink()
