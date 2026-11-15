@@ -66,7 +66,7 @@ func TestCiphertextCannotMoveBetweenPrincipals(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = f.pool.Exec(f.ctx, `UPDATE management_requests dst SET response_nonce=src.response_nonce,response_ciphertext=src.response_ciphertext
-FROM management_requests src WHERE src.service_credential_id=$1 AND dst.service_credential_id=$2
+FROM management_requests src WHERE src.service_subject_id=$1 AND dst.service_subject_id=$2
 AND src.operation='application.create' AND dst.operation=src.operation`, f.principal.CredentialID(), principal.CredentialID())
 	if err != nil {
 		t.Fatal(err)
