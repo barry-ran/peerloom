@@ -14,8 +14,11 @@ func TestExclusiveSecretOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = writeSecret(f, map[string]string{"service_credential": "test-only"}); err != nil {
+	if err = writeSecret(f, map[string]string{"service_credential": "test-only"}); err != nil && runtime.GOOS == "linux" {
 		t.Fatal(err)
+	}
+	if runtime.GOOS != "linux" && err == nil {
+		t.Fatal("unsupported durability silently accepted")
 	}
 	f.Close()
 	if f, err = exclusiveOutput(p); err == nil {
@@ -56,5 +59,11 @@ func TestSetupReadBounds(t *testing.T) {
 	}
 	if _, err := readSetup(p); err == nil {
 		t.Fatal("trailing JSON accepted")
+	}
+}
+
+func TestSetupReadRejectsDirectory(t *testing.T) {
+	if _, err := readSetup(t.TempDir()); err == nil {
+		t.Fatal("directory accepted")
 	}
 }

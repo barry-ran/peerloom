@@ -86,6 +86,13 @@ func run(args []string) error {
 			return err
 		}
 		defer secretFile.Close()
+		// Check directory durability support before any issuance, including
+		// the legacy bootstrap path which commits before emitting its result.
+		if err := syncOutputDirectory(secretFile.Name()); err != nil {
+			_ = secretFile.Close()
+			_ = os.Remove(*output)
+			return err
+		}
 	}
 	emit := func(result management.KeyResult) error {
 		if secretFile == nil {

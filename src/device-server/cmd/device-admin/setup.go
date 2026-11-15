@@ -6,12 +6,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/barry-ran/peerloom/src/device-server/internal/config"
-	"github.com/barry-ran/peerloom/src/device-server/internal/database"
-	"github.com/barry-ran/peerloom/src/device-server/internal/management"
 	"io"
 	"os"
 	"time"
+
+	"github.com/barry-ran/peerloom/src/device-server/internal/config"
+	"github.com/barry-ran/peerloom/src/device-server/internal/database"
+	"github.com/barry-ran/peerloom/src/device-server/internal/management"
 )
 
 // exclusiveOutput never replaces an existing credential file. The containing
@@ -26,7 +27,10 @@ func writeSecret(f *os.File, value any) error {
 	if err := json.NewEncoder(f).Encode(value); err != nil {
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return syncOutputDirectory(f.Name())
 }
 func runSetup(args []string) error {
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
@@ -76,7 +80,7 @@ func runSetup(args []string) error {
 }
 
 func readSetup(path string) (management.SetupResult, error) {
-	f, err := os.Open(path)
+	f, err := openSetupInput(path)
 	if err != nil {
 		return management.SetupResult{}, err
 	}
