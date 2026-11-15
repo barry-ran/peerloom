@@ -9,6 +9,7 @@ import (
 	"github.com/barry-ran/peerloom/src/device-server/internal/config"
 	"github.com/barry-ran/peerloom/src/device-server/internal/database"
 	"github.com/barry-ran/peerloom/src/device-server/internal/management"
+	"io"
 	"os"
 	"time"
 )
@@ -72,4 +73,58 @@ func runSetup(args []string) error {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{"tenant_id": r.TenantID, "application_id": r.ApplicationID, "credential_id": r.CredentialID, "expires_at": r.ExpiresAt, "output": *output})
+}
+
+func readSetup(path string) (management.SetupResult, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return management.SetupResult{}, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 16*1024+1))
+	if err != nil {
+		return management.SetupResult{}, err
+	}
+	if len(b) > 16*1024 {
+		return management.SetupResult{}, errors.New("setup material too large")
+	}
+	var r management.SetupResult
+	if err = json.Unmarshal(b, &r); err != nil {
+		return management.SetupResult{}, errors.New("invalid setup JSON")
+	}
+	return r, nil
+}
+func runSetupVerify(args []string) error {
+	flags := flag.NewFlagSet("setup-verify", flag.ContinueOnError)
+	offline := flags.Bool("offline", false, "authorize local database inspection")
+	input := flags.String("input", "", "existing setup JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if !*offline || *input == "" || flags.NArg() != 0 {
+		return errors.New("setup-verify requires --offline --input")
+	}
+	material, err := readSetup(*input)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := database.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	status, err := management.VerifySetup(ctx, pool, material)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(struct {
+		management.KeyStatus
+		ApplicationID string `json:"application_id"`
+	}{status, material.ApplicationID})
 }

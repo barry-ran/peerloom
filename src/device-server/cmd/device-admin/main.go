@@ -26,6 +26,9 @@ func run(args []string) error {
 		return errors.New("usage: device-admin setup|bootstrap|issue-key|revoke-key|key-status --offline [options]; key output is secret")
 	}
 	command := args[0]
+	if command == "setup-verify" {
+		return runSetupVerify(args[1:])
+	}
 	if command == "setup" {
 		return runSetup(args[1:])
 	}

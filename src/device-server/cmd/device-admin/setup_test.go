@@ -43,3 +43,18 @@ func TestSetupRequiresExplicitAuthorityAndOutput(t *testing.T) {
 		}
 	}
 }
+func TestSetupReadBounds(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "material.json")
+	if err := os.WriteFile(p, []byte(strings.Repeat("x", 16385)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSetup(p); err == nil {
+		t.Fatal("oversized input accepted")
+	}
+	if err := os.WriteFile(p, []byte(`{"service_credential":"test"} trailing`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSetup(p); err == nil {
+		t.Fatal("trailing JSON accepted")
+	}
+}

@@ -95,3 +95,19 @@ func InspectKey(ctx context.Context, pool *pgxpool.Pool, tenant, id string) (Key
 	err := pool.QueryRow(ctx, `SELECT c.scope,c.expires_at,c.revoked_at,c.expires_at<=clock_timestamp(),t.status='active' FROM tenant_service_credentials c JOIN tenants t ON t.id=c.tenant_id WHERE c.tenant_id=$1 AND c.id=$2`, tenant, id).Scan(&r.Scope, &r.ExpiresAt, &r.RevokedAt, &r.Expired, &r.TenantActive)
 	return r, err
 }
+
+// VerifySetup validates actual secret material and application ownership, not just IDs.
+func VerifySetup(ctx context.Context, pool *pgxpool.Pool, input SetupResult) (KeyStatus, error) {
+	if !uuidPattern.MatchString(input.TenantID) || !uuidPattern.MatchString(input.CredentialID) || !uuidPattern.MatchString(input.ApplicationID) || len(input.ServiceCredential) > 512 || len(input.ServiceCredential) < 10 {
+		return KeyStatus{}, fail("INVALID_SETUP", 422)
+	}
+	var valid bool
+	err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tenant_service_credentials c JOIN tenants t ON t.id=c.tenant_id JOIN applications a ON a.tenant_id=t.id WHERE c.tenant_id=$1 AND c.id=$2 AND c.credential_hash=$3 AND a.id=$4 AND a.enabled AND t.name=$5 AND a.name=$6)`, input.TenantID, input.CredentialID, hash(input.ServiceCredential), input.ApplicationID, input.TenantName, input.ApplicationName).Scan(&valid)
+	if err != nil {
+		return KeyStatus{}, err
+	}
+	if !valid {
+		return KeyStatus{}, fail("SETUP_MATERIAL_INVALID", 403)
+	}
+	return InspectKey(ctx, pool, input.TenantID, input.CredentialID)
+}

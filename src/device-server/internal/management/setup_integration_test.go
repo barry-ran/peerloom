@@ -37,7 +37,17 @@ func TestSetupEmptyTransactionAndRepeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = page
+	if len(page.Items) != 1 || page.Items[0].ID != got.ApplicationID || page.Items[0].TenantID != got.TenantID {
+		t.Fatal("wrong application mapping")
+	}
+	if _, err = VerifySetup(f.ctx, f.pool, saved); err != nil {
+		t.Fatal(err)
+	}
+	fake := saved
+	fake.ServiceCredential = "svc_invalidmaterial"
+	if _, err = VerifySetup(f.ctx, f.pool, fake); err == nil {
+		t.Fatal("fake secret accepted")
+	}
 	var mode string
 	if err = f.pool.QueryRow(f.ctx, "SELECT registration_mode FROM applications WHERE id=$1", got.ApplicationID).Scan(&mode); err != nil || mode != "grant" {
 		t.Fatal("unsafe registration mode", err)
@@ -74,5 +84,60 @@ func TestIssueKeyPersistenceFailureRollsBack(t *testing.T) {
 	}
 	if _, err = f.service.Authenticate(f.ctx, f.credential.ServiceCredential); err != nil {
 		t.Fatal("old credential disrupted", err)
+	}
+}
+
+func TestSetupConcurrentAndKeyOverlap(t *testing.T) {
+	f := setup(t)
+	if _, err := f.pool.Exec(f.ctx, "TRUNCATE tenants CASCADE"); err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		r   SetupResult
+		err error
+	}
+	results := make(chan outcome, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			r, err := SetupEmpty(f.ctx, f.pool, "first", "app", time.Hour, func(SetupResult) error { return nil })
+			results <- outcome{r, err}
+		}()
+	}
+	var winner SetupResult
+	ok := 0
+	for i := 0; i < 2; i++ {
+		r := <-results
+		if r.err == nil {
+			ok++
+			winner = r.r
+		} else {
+			requireCode(t, r.err, "SETUP_ALREADY_INITIALIZED")
+		}
+	}
+	if ok != 1 {
+		t.Fatal("concurrent setup duplicated")
+	}
+	next, err := IssueKey(f.ctx, f.pool, winner.TenantID, ScopeAdmin, time.Hour, "rotate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.service.Authenticate(f.ctx, winner.ServiceCredential); err != nil {
+		t.Fatal("overlap lost")
+	}
+	if _, err = f.service.Authenticate(f.ctx, next.ServiceCredential); err != nil {
+		t.Fatal("new key invalid")
+	}
+	if err = RevokeKey(f.ctx, f.pool, winner.TenantID, winner.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.service.Authenticate(f.ctx, next.ServiceCredential); err != nil {
+		t.Fatal("new key revoked with old")
+	}
+	if _, err = f.pool.Exec(f.ctx, "UPDATE tenant_service_credentials SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", next.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	status, err := InspectKey(f.ctx, f.pool, next.TenantID, next.CredentialID)
+	if err != nil || !status.Expired {
+		t.Fatal("expiry missing", err)
 	}
 }
