@@ -52,6 +52,11 @@ func BootstrapKey(ctx context.Context, pool *pgxpool.Pool, name string, scope Sc
 // IssueKey never adopts an unverified request tenant; only the explicit offline
 // CLI calls this function using operator-selected database credentials.
 func IssueKey(ctx context.Context, pool *pgxpool.Pool, tenant string, scope Scope, ttl time.Duration, label string) (KeyResult, error) {
+	return IssueKeyPersisted(ctx, pool, tenant, scope, ttl, label, nil)
+}
+
+// IssueKeyPersisted saves replacement material before committing. Existing keys remain valid.
+func IssueKeyPersisted(ctx context.Context, pool *pgxpool.Pool, tenant string, scope Scope, ttl time.Duration, label string, persist func(KeyResult) error) (KeyResult, error) {
 	if !uuidPattern.MatchString(tenant) {
 		return KeyResult{}, fail("INVALID_TENANT", 422)
 	}
@@ -75,6 +80,11 @@ func IssueKey(ctx context.Context, pool *pgxpool.Pool, tenant string, scope Scop
 	result, err := issueKey(ctx, tx, tenant, scope, ttl, label)
 	if err != nil {
 		return KeyResult{}, err
+	}
+	if persist != nil {
+		if err = persist(result); err != nil {
+			return KeyResult{}, err
+		}
 	}
 	if err = commit(ctx, tx); err != nil {
 		return KeyResult{}, err
