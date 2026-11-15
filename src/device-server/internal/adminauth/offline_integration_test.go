@@ -193,7 +193,7 @@ func TestBrowserAndServiceReceiptNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, `INSERT INTO tenant_service_credentials(id,tenant_id,credential_hash,scope,label,expires_at) VALUES($1,$2,$3,'admin','fixture',clock_timestamp()+interval '1 hour')`, user, tenant, digest(serviceToken)); err != nil {
+	if _, err = pool.Exec(ctx, `WITH subject AS (INSERT INTO service_subjects(id,tenant_id,scope,current_credential_id) VALUES($1,$2,'admin',$1) RETURNING id,tenant_id) INSERT INTO tenant_service_credentials(id,subject_id,tenant_id,credential_hash,scope,label,expires_at) SELECT id,id,tenant_id,$3,'admin','fixture',clock_timestamp()+interval '1 hour' FROM subject`, user, tenant, digest(serviceToken)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = CreateUser(ctx, pool, tenant, "second", offlinePassword, management.ScopeAdmin); err != nil {
