@@ -60,9 +60,11 @@ flowchart LR
 
 该入口不是公网一键部署：域名、可信 TLS 证书及公网/TURN 策略仍由运营者提供，按后面的 HTTPS/WSS 流程配置。更换服务凭据仍需显式运维操作，不能把过期检查当作自动续期。
 
-Credential issuance runs in the Linux deployment container and requires an operator-owned private parent directory. Durable setup/issue output is not supported on non-Linux hosts outside that container.
+凭据签发在 Linux 部署容器内执行，输出父目录必须由运维用户拥有且为私有目录。不支持在该容器外的非 Linux 主机直接签发需要持久化保证的 setup/issue 输出。
 
-Recovery boundary: retries are automatic only when retained state is complete and validates. If `init-private.py` is interrupted while generating `.secrets`, the next `up` rejects the partial directory and preserves it for operator review; it never fills missing secrets, deletes files, or regenerates passwords. If the setup output exists but database commit was uncertain, `setup-verify` must succeed before proceeding. Marker file contents and their parent directory are fsynced; a sync error retains the file and reports failure, not readiness.
+恢复边界：仅当保留状态完整且验证通过时，才支持自动重试。若 `init-private.py` 在生成 `.secrets` 时中断，下次 `up` 会拒绝不完整目录并保留现场，交由运维核查，不会补写、删除或重新生成密码。若 setup 输出已落盘但数据库提交结果不确定，必须通过 `setup-verify` 才能继续。标记文件内容及父目录都会执行 fsync；同步失败仍保留文件并报错，不会报告就绪。
+
+初始化默认只创建一个租户和一个应用，不会自动配置 QM 所需的双角色应用映射。业务后端仍须按自身角色与授权模型配置接入；此入口不是整个 QM 项目的一键部署。
 
 ## 首次启动：仅本机 HTTP
 
