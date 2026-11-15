@@ -38,11 +38,34 @@ class Failure(Exception):
     """Fixed diagnostic labels only, never arbitrary command output or credentials."""
 
 
-def run(args, *, cwd=None, env=None, timeout=180, stdout=subprocess.PIPE, stderr=subprocess.PIPE):
+def build_failure_category(output, error_output):
+    # Fixed labels only. Never publish paths, source lines, environment values,
+    # diagnostics verbatim, or service logs. Used solely for checksum-pinned builds.
+    data = ((output or b'') + (error_output or b''))[-1024 * 1024:].lower()
+    categories = []
+    patterns = (
+        ('compiler-killed', (b'killed signal terminated program', b'fatal error: killed')),
+        ('out-of-memory', (b'out of memory', b'cannot allocate memory')),
+        ('disk-full', (b'no space left on device',)),
+        ('missing-build-target', (b'no rule to make target',)),
+        ('missing-input', (b'no such file or directory', b'file not found')),
+        ('link-symbol-failure', (b'undefined reference', b'undefined symbols')),
+        ('unsupported-option', (b'unrecognized command-line option', b'unknown argument')),
+        ('permission-denied', (b'permission denied',)),
+        ('compiler-error', (b'error:',)),
+    )
+    for label, needles in patterns:
+        if any(needle in data for needle in needles):
+            categories.append(label)
+    return ','.join(categories) if categories else 'unclassified-build-failure'
+
+
+def run(args, *, cwd=None, env=None, timeout=180, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        build_diagnostics=False):
     process = subprocess.Popen(args, cwd=cwd, env=env, stdout=stdout, stderr=stderr,
                                stdin=subprocess.DEVNULL, start_new_session=True)
     try:
-        output, _ = process.communicate(timeout=timeout)
+        output, error_output = process.communicate(timeout=timeout)
     except BaseException as error:
         # Only the process group created by this invocation. Simulator teardown below
         # owns any Xcode child that escaped this group; no name-based process sweep.
@@ -58,7 +81,8 @@ def run(args, *, cwd=None, env=None, timeout=180, stdout=subprocess.PIPE, stderr
             raise Failure(Path(args[0]).name + ': timeout') from None
         raise
     if process.returncode:
-        raise Failure(Path(args[0]).name + ': exit ' + str(process.returncode))
+        diagnostic = ('; build=' + build_failure_category(output, error_output)) if build_diagnostics else ''
+        raise Failure(Path(args[0]).name + ': exit ' + str(process.returncode) + diagnostic)
     return output
 
 
@@ -232,7 +256,7 @@ def dependencies(cache):
                 run(['make', 'install'], cwd=source, timeout=120)
             else:
                 run(['make', '-j3', 'MALLOC=libc', 'OPTIMIZATION=-O2', 'BUILD_TLS=no',
-                     'redis-server', 'redis-cli'], cwd=source, timeout=600)
+                     'redis-server', 'redis-cli'], cwd=source, timeout=600, build_diagnostics=True)
                 (prefix / 'bin').mkdir(parents=True, mode=0o700)
                 for executable in ('redis-server', 'redis-cli'):
                     shutil.copy2(source / 'src' / executable, prefix / 'bin' / executable)

@@ -65,6 +65,22 @@ class ServiceSafety(unittest.TestCase):
             with self.assertRaisesRegex(SERVICE.Failure, 'checksum mismatch'):
                 SERVICE.download({**spec, 'sha256': '0' * 64}, Path(temporary) / 'mismatch')
 
+    def test_dependency_build_diagnostics_never_echo_command_output(self):
+        secret = b'/private/path token=do-not-publish source-code'
+        samples = ((b'fatal error: Killed signal terminated program cc1', 'compiler-killed'),
+                   (b'No rule to make target private-file', 'missing-build-target'),
+                   (b'fatal error: private-header.h: No such file or directory', 'missing-input'),
+                   (b'undefined reference to private_symbol', 'link-symbol-failure'),
+                   (b'nonstandard unknown failure', 'unclassified-build-failure'))
+        for diagnostic, category in samples:
+            with self.subTest(category=category):
+                result = SERVICE.build_failure_category(secret, diagnostic + secret)
+                self.assertIn(category, result)
+                self.assertNotIn('private', result)
+                self.assertNotIn('do-not-publish', result)
+                self.assertNotIn('source-code', result)
+        self.assertEqual(SERVICE.build_failure_category(None, None), 'unclassified-build-failure')
+
     def test_download_http_error_discloses_status_only(self):
         secret = 'synthetic-private-query-header-body'
         error = SERVICE.urllib.error.HTTPError('https://download.redis.io/?' + secret, 403,
