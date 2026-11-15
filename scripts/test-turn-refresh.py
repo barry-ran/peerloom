@@ -237,10 +237,10 @@ def run(binary=None, image=None):
                 kind, attrs = successor.allocate()
                 if kind != 0x0103:
                     raise RuntimeError('overlapping successor secret allocation failed')
-                kind, attrs = current.refresh()
+                kind, attrs = positive.refresh()
                 if kind != 0x0104:
                     raise RuntimeError('old allocation refresh failed during secret overlap')
-                current.exchange()
+                positive.exchange()
                 successor.exchange()
                 print('PASS: preconfigured overlapping coturn secrets accept successor allocation; old allocation Refresh and both bidirectional data paths preserved; not runtime coturn reconfiguration')
                 print('PASS: authenticated existing allocation Refresh after REST expiry; '
