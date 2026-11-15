@@ -152,7 +152,9 @@ for (const language of ['zh', 'en'] as const) {
   let lose = false;
   await page.route(/\/admin\/api\/v1\/relay-nodes\/[^/?]+$/, async route => {
    if (route.request().method() !== 'PATCH') { await route.continue(); return; }
-   requests.push({body:route.request().postData()!,key:route.request().headers()['idempotency-key']});
+   const body = route.request().postData(); const key = route.request().headers()['idempotency-key'];
+   if (body === null || key === undefined) throw new Error('Expected mutation body and idempotency key');
+   requests.push({body,key});
    if (lose) {
     lose = false; const response = await route.fetch(); expect(response.status()).toBe(200);
     await route.fulfill({status:503,json:{code:'SYNTHETIC_RESPONSE_LOSS'}}); await response.dispose();
@@ -163,8 +165,10 @@ for (const language of ['zh', 'en'] as const) {
   await page.getByRole('button',{name:labels.save,exact:true}).click();
   await page.getByRole('button',{name:labels.save,exact:true}).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  expect(JSON.parse(requests[0].body)).not.toHaveProperty('secret');
-  expect(JSON.parse(requests[0].body)).not.toHaveProperty('secret_ref');
+  const initialRequest = requests[0];
+  if (!initialRequest) throw new Error('Expected captured edit request');
+  expect(JSON.parse(initialRequest.body)).not.toHaveProperty('secret');
+  expect(JSON.parse(initialRequest.body)).not.toHaveProperty('secret_ref');
   await row.getByRole('button',{name:labels.edit,exact:true}).click();
   await page.getByLabel(labels.key,{exact:true}).fill(rotated);
   await page.getByRole('button',{name:labels.save,exact:true}).click();
@@ -176,7 +180,9 @@ for (const language of ['zh', 'en'] as const) {
   await page.getByRole('button',{name:labels.retry,exact:true}).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(requests).toHaveLength(3); expect(requests[1]).toEqual(requests[2]);
-  expect(JSON.parse(requests[1].body).secret).toBe(rotated);
+  const rotationRequest = requests[1];
+  if (!rotationRequest) throw new Error('Expected captured rotation request');
+  expect(JSON.parse(rotationRequest.body).secret).toBe(rotated);
   expect(await page.content()).not.toContain(secret); expect(await page.content()).not.toContain(rotated);
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(rotated);
   expect(await page.evaluate(() => JSON.stringify(sessionStorage))).not.toContain(rotated);
