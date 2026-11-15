@@ -676,8 +676,12 @@ class LaunchDiagnosticTests(unittest.TestCase):
         for child_code in (0, 7):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
+                # This checks exit-code preservation, not deadline enforcement.
+                # Real interpreter startup on a loaded runner must not consume
+                # the 0.2s slack above the fixture sleep and turn it into timeout.
+                # The adjacent bounded-collector test retains its strict 0.2s limit.
                 result, children = self.run_observed(root, f"import time; time.sleep(.3); raise SystemExit({child_code})",
-                                                      sample="raise SystemExit(9)", host="print('invalid JSON')")
+                                                      sample="raise SystemExit(9)", host="print('invalid JSON')", timeout=5)
                 self.assertEqual(result, child_code)
                 self.assertTrue(all(child.poll() is not None for child in children))
                 self.assertEqual(json.loads((root / "phase-test-host-log.log").read_text())["classification"], "invalid-output")
