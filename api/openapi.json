@@ -5973,7 +5973,7 @@
         "required": [
           "name",
           "endpoint",
-          "secret_ref"
+          "secret"
         ],
         "properties": {
           "name": {
@@ -5993,11 +5993,12 @@
             "maxLength": 2048,
             "pattern": "^[^\\u0000]+$"
           },
-          "secret_ref": {
+          "secret": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 64,
-            "pattern": "^[A-Za-z0-9_-]+$"
+            "minLength": 32,
+            "maxLength": 256,
+            "pattern": "^[!-~]+$",
+            "writeOnly": true
           }
         }
       },
@@ -6023,14 +6024,15 @@
             "maxLength": 2048,
             "pattern": "^[^\\u0000]+$"
           },
-          "secret_ref": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64,
-            "pattern": "^[A-Za-z0-9_-]+$"
-          },
           "enabled": {
             "type": "boolean"
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256,
+            "pattern": "^[!-~]+$",
+            "writeOnly": true
           }
         }
       },
@@ -6046,7 +6048,9 @@
           "tenant_id",
           "enabled",
           "revision",
-          "created_at"
+          "created_at",
+          "has_secret",
+          "secret_version"
         ],
         "properties": {
           "name": {
@@ -6068,9 +6072,8 @@
           },
           "secret_ref": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 64,
-            "pattern": "^[A-Za-z0-9_-]+$"
+            "readOnly": true,
+            "description": "Legacy display-only reference; never used for secret resolution."
           },
           "id": {
             "type": "string",
@@ -6090,6 +6093,13 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "has_secret": {
+            "type": "boolean"
+          },
+          "secret_version": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

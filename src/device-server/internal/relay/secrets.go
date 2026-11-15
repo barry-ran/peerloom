@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -88,7 +89,7 @@ func validSecret(s []byte) bool {
 	return true
 }
 func secretAAD(nodeID, tenant, keyID string, version int64) []byte {
-	b, _ := json.Marshal([]any{"peerloom-relay-secret-v1", nodeID, tenant, keyID, version})
+	b, _ := json.Marshal([]any{"peerloom-relay-secret-v1", strings.ToLower(nodeID), strings.ToLower(tenant), keyID, version})
 	return b
 }
 

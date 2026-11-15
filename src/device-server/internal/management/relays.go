@@ -78,26 +78,26 @@ func (s *Service) validateRelay(tenant string, input RelayNodeInput) error {
 		return fail("LEGACY_RELAY_REFERENCE_UNSUPPORTED", 422)
 	}
 	if err := s.relayIssuer.ValidateConfiguration(input.Endpoint, input.Secret); err != nil {
-		return err
+		return relayManagementError(err)
 	}
 	return nil
 }
 func (s *Service) CreateRelayNode(ctx context.Context, p Principal, input RelayNodeInput, key string) (RelayNode, error) {
 	if err := s.validateRelay(p.tenantID, input); err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	tx, err := s.begin(ctx, p, true)
 	if err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	defer rollback(tx)
 	if err = relay.LockConfiguration(ctx, tx); err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	var result RelayNode
 	found, keyHash, requestHash, err := s.prepareReplay(ctx, tx, p, "relay_node.create", key, input, &result)
 	if err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	if found {
 		return result, nil
@@ -107,7 +107,7 @@ func (s *Service) CreateRelayNode(ctx context.Context, p Principal, input RelayN
 		return RelayNode{}, fail("DATABASE_UNAVAILABLE", 503)
 	}
 	if err = s.relayIssuer.StoreSecret(ctx, tx, result.ID, p.tenantID, input.Secret, 1); err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	if _, err = tx.Exec(ctx, "UPDATE relay_nodes SET secret_version=1 WHERE id=$1 AND tenant_id=$2", result.ID, p.tenantID); err != nil {
 		return RelayNode{}, fail("DATABASE_UNAVAILABLE", 503)
@@ -115,7 +115,7 @@ func (s *Service) CreateRelayNode(ctx context.Context, p Principal, input RelayN
 	result.SecretVersion = 1
 	result.HasSecret = true
 	if err = s.finishRelay(ctx, tx, p, "relay_node.create", result, keyHash, requestHash, 201); err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	return result, nil
 }
@@ -134,17 +134,17 @@ func (s *Service) UpdateRelayNode(ctx context.Context, p Principal, id string, i
 	}
 	tx, err := s.begin(ctx, p, true)
 	if err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	defer rollback(tx)
 	if err = relay.LockConfiguration(ctx, tx); err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	var result RelayNode
 	operation := "relay_node.update:" + strings.ToLower(id)
 	found, keyHash, requestHash, err := s.prepareReplay(ctx, tx, p, operation, key, input, &result)
 	if err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	if found {
 		return result, nil
@@ -175,15 +175,15 @@ func (s *Service) UpdateRelayNode(ctx context.Context, p Principal, id string, i
 		return RelayNode{}, fail("INVALID_RELAY_NODE", 422)
 	}
 	if err = s.relayIssuer.ValidateEndpoint(result.Endpoint); err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	if input.Secret != nil {
 		if err = s.relayIssuer.ValidateConfiguration(result.Endpoint, *input.Secret); err != nil {
-			return RelayNode{}, err
+			return RelayNode{}, relayManagementError(err)
 		}
 		result.SecretVersion++
 		if err = s.relayIssuer.StoreSecret(ctx, tx, result.ID, p.tenantID, *input.Secret, result.SecretVersion); err != nil {
-			return RelayNode{}, err
+			return RelayNode{}, relayManagementError(err)
 		}
 	}
 	if result.Enabled && result.SecretVersion == 0 {
@@ -194,7 +194,7 @@ func (s *Service) UpdateRelayNode(ctx context.Context, p Principal, id string, i
 		return RelayNode{}, fail("DATABASE_UNAVAILABLE", 503)
 	}
 	if err = s.finishRelay(ctx, tx, p, operation, result, keyHash, requestHash, 200); err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	return result, nil
 }
@@ -204,7 +204,7 @@ func (s *Service) GetRelayNode(ctx context.Context, p Principal, id string) (Rel
 	}
 	tx, err := s.begin(ctx, p, false)
 	if err != nil {
-		return RelayNode{}, err
+		return RelayNode{}, relayManagementError(err)
 	}
 	defer rollback(tx)
 	result, err := scanRelay(tx.QueryRow(ctx, "SELECT "+relayColumns+" FROM relay_nodes WHERE tenant_id=$1 AND id=$2", p.tenantID, id))
@@ -257,4 +257,12 @@ func (s *Service) ListRelayNodes(ctx context.Context, p Principal, page Page) (R
 		return RelayNodePage{}, fail("DATABASE_UNAVAILABLE", 503)
 	}
 	return result, nil
+}
+
+func relayManagementError(err error) error {
+	var e *relay.Error
+	if errors.As(err, &e) {
+		return fail(e.Code, e.Status)
+	}
+	return err
 }

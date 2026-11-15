@@ -40,7 +40,7 @@ func TestRelayManagementApprovalIsolationAndRevision(t *testing.T) {
 	bad := input
 	bad.Endpoint = "http://attacker.example.com"
 	_, err = f.service.CreateRelayNode(f.ctx, f.principal, bad, "bad-url")
-	requireRelayCode(t, err, "INVALID_RELAY_NODE")
+	requireCode(t, err, "INVALID_RELAY_NODE")
 	bad.Endpoint = "turn:shared.example.com:3478?transport=udp"
 	bad.SecretRef = "shared-v1"
 	_, err = f.service.CreateRelayNode(f.ctx, f.principal, bad, "shared-reference")

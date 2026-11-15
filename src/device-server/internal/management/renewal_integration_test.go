@@ -172,8 +172,10 @@ func TestLegacySchemaReplaySurvivesSubjectMigrationAndRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {
-		t.Fatal(err)
+	for version := len(migrations); version >= 12; version-- {
+		if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var oldID string
 	var before []byte
@@ -212,6 +214,11 @@ func TestLegacySchemaReplaySurvivesSubjectMigrationAndRenewal(t *testing.T) {
 	replay, err := f.service.CreateApplication(f.ctx, next, ApplicationInput{Name: "legacy-v1"}, "legacy-operation-7fa80ae8624b448ea9d85a3d0ac1ccaa")
 	if err != nil || replay.ID != app.ID {
 		t.Fatalf("old ciphertext not decryptable by successor: %v", err)
+	}
+	for version := len(migrations); version > 12; version-- {
+		if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err == nil {
 		t.Fatal("renewed subjects downgrade unexpectedly allowed")
