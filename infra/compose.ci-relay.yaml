@@ -2,9 +2,8 @@
 services:
   device-server:
     environment:
-      RELAY_REGISTRY_FILE: /run/secrets/ci_relay_registry
       RELAY_DEVELOPMENT_LOOPBACK: 'true'
-    secrets: [ci_relay_registry]
+    secrets: [ci_relay_secret]
 secrets:
-  ci_relay_registry:
-    file: ${PEERLOOM_TEST_RELAY_REGISTRY_FILE:?isolated test registry required}
+  ci_relay_secret:
+    file: ${PEERLOOM_TEST_RELAY_SECRET_FILE:?isolated test TURN secret required}

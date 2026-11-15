@@ -47,11 +47,12 @@ def generate(package):
             'redis_password': redis + '\n',
             'redis_config': f'bind 0.0.0.0\nprotected-mode yes\nrequirepass {redis}\nsave ""\nappendonly no\n',
             'replay_key': base64.b64encode(secrets.token_bytes(32)).decode('ascii') + '\n',
+            'relay_encryption_key': secrets.token_bytes(32),
         }
         for name, value in contents.items():
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
             with os.fdopen(fd, 'wb') as stream:
-                stream.write(value.encode('ascii'))
+                stream.write(value if isinstance(value, bytes) else value.encode('ascii'))
                 stream.flush()
                 os.fsync(stream.fileno())
                 # Only this newly-created file. Parent stays 0700: no host traversal.

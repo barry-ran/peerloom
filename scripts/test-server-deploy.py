@@ -23,7 +23,8 @@ class DeploymentTests(unittest.TestCase):
             private = root / '.secrets'
             self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o700)
             before = {p.name: p.read_bytes() for p in private.iterdir()}
-            self.assertEqual(len(before), 5)
+            self.assertEqual(len(before), 6)
+            self.assertEqual(len(before["relay_encryption_key"]), 32)
             for p in private.iterdir():
                 self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o444)
             with self.assertRaises(FileExistsError):

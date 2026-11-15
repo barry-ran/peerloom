@@ -35,9 +35,9 @@ if name == "test-managed-relay.sh":
     p = pathlib.Path(sys.argv[sys.argv.index("--pair-fixture")+1])
     secret = pathlib.Path(sys.argv[sys.argv.index("--shared-secret-file")+1])
     assert stat.S_IMODE(p.stat().st_mode) == 0o600 and stat.S_IMODE(secret.stat().st_mode) == 0o600
-    registry = pathlib.Path(os.environ["PEERLOOM_TEST_RELAY_REGISTRY_FILE"])
+    registry = pathlib.Path(os.environ["PEERLOOM_TEST_RELAY_SECRET_FILE"])
     assert stat.S_IMODE(registry.stat().st_mode) == 0o444 and stat.S_IMODE(registry.parent.stat().st_mode) == 0o700
-    assert json.loads(registry.read_text())["bindings"]["ci-managed-relay"]["secret"] == secret.read_text()
+    assert registry.read_text() == secret.read_text()
     pathlib.Path("relay-private-proof").write_text(secret.read_text())
     record = pathlib.Path("fixture-paths")
     previous = record.read_text().splitlines()
@@ -93,6 +93,8 @@ if name == "python3":
 if name == "docker":
     if 'relay-set-shared' in sys.argv:
         assert '--offline' in sys.argv
+        assert sys.argv[sys.argv.index('--secret-file') + 1] == '/run/secrets/ci_relay_secret'
+        assert '--secret-ref' not in sys.argv
         assert sys.argv[sys.argv.index('--node-id') + 1] == '88888888-8888-4888-8888-888888888888'
         enabled = [arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--enabled=')]
         assert enabled in (['true'], ['false'])

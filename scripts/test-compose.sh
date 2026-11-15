@@ -14,7 +14,7 @@ set_shared_node() {
   "${compose[@]}" run --rm -T --quiet-pull --no-deps --entrypoint device-admin device-server \
     relay-set-shared --offline --node-id 88888888-8888-4888-8888-888888888888 \
     --name ci-managed-relay --endpoint 'turn:127.0.0.1:53478?transport=udp' \
-    --secret-ref ci-managed-relay "--enabled=$1" > /dev/null
+    --secret-file /run/secrets/ci_relay_secret "--enabled=$1" > /dev/null
 }
 with_shared_relay() {
   local result=0
@@ -51,7 +51,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 relay_fixture="$(mktemp -d "$PWD/.secrets/relay-fixture.XXXXXX")"
-export PEERLOOM_TEST_RELAY_REGISTRY_FILE="$relay_fixture/registry.json"
+export PEERLOOM_TEST_RELAY_SECRET_FILE="$relay_fixture/container-secret"
 python3 - "$relay_fixture" <<'REGISTRY'
 from pathlib import Path
 import json
@@ -61,10 +61,9 @@ p = Path(sys.argv[1])
 secret = secrets.token_hex(32)
 (p / 'shared-secret').write_text(secret)
 (p / 'shared-secret').chmod(0o600)
-(p / 'registry.json').write_text(json.dumps({'bindings': {'ci-managed-relay': {
-    'tenant_id': '', 'secret': secret, 'urls': ['turn:127.0.0.1:53478?transport=udp']}}}))
-# Compose bind-secret必须可由容器非root用户读取；父目录0700限制宿主访问。
-(p / 'registry.json').chmod(0o444)
+# Separate read-only bind source; host coturn fixture retains its required 0600 file.
+(p / 'container-secret').write_text(secret)
+(p / 'container-secret').chmod(0o444)
 REGISTRY
 "${compose[@]}" config --quiet
 "${compose[@]}" build

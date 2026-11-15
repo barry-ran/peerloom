@@ -21,12 +21,27 @@ class SecretsTest(unittest.TestCase):
             password = (directory / "postgres_password").read_text().strip()
             self.assertEqual(len(password), 64)
             self.assertEqual(len(base64.b64decode((directory / "replay_key").read_text().strip(), validate=True)), 32)
+            self.assertEqual(len((directory / "relay_encryption_key").read_bytes()), 32)
             self.assertIn(password, (directory / "database_url").read_text())
             for file in directory.iterdir():
                 self.assertEqual(stat.S_IMODE(file.stat().st_mode), 0o444)
             with self.assertRaises(FileExistsError):
                 module.generate(directory)
             self.assertEqual(password, (directory / "postgres_password").read_text().strip())
+
+    def test_relay_key_addition_preserves_existing_data_and_key(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / ".secrets"
+            directory.mkdir(mode=0o700)
+            sentinel = directory / "database_url"
+            sentinel.write_text("unchanged")
+            module.add_relay_key(directory)
+            key = (directory / "relay_encryption_key").read_bytes()
+            self.assertEqual(len(key), 32)
+            with self.assertRaises(FileExistsError):
+                module.add_relay_key(directory)
+            self.assertEqual((directory / "relay_encryption_key").read_bytes(), key)
+            self.assertEqual(sentinel.read_text(), "unchanged")
 
     def test_reject_symlink(self):
         with tempfile.TemporaryDirectory() as root:

@@ -47,7 +47,7 @@ class ControllerTests(unittest.TestCase):
             self.assertTrue((target / 'bin/device-server').stat().st_mode & 0o111)
 
     def test_service_subject_migration_is_required(self):
-        required = 'infra/migrations/000012_service_subjects.up.sql'
+        required = 'infra/migrations/000013_managed_relay_secrets.up.sql'
         self.assertIn(required, m.SQL)
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw); target = root / 'out'; target.mkdir()

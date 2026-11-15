@@ -135,7 +135,7 @@ class PackageTests(unittest.TestCase):
 
     def test_server_missing_service_subject_migration_rejected(self):
         self.server_fixture()
-        (self.root/'infra/migrations/000012_service_subjects.up.sql').unlink()
+        (self.root/'infra/migrations/000013_managed_relay_secrets.up.sql').unlink()
         with self.assertRaisesRegex(m.PackageError, 'MIGRATION'):
             self.finish_server()
 

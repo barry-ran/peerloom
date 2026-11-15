@@ -9,11 +9,11 @@ import secrets
 import tempfile
 
 
-def write_new(directory: Path, name: str, content: str) -> None:
+def write_new(directory: Path, name: str, content: str | bytes) -> None:
     fd, temporary = tempfile.mkstemp(prefix=".pending-", dir=directory)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(content)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content if isinstance(content, bytes) else content.encode("utf-8"))
             stream.flush()
             os.fsync(stream.fileno())
         # 主机目录 0700；容器只获得显式授权的单文件挂载。
@@ -38,6 +38,15 @@ def add_replay_key(directory: Path) -> None:
     write_new(directory, "replay_key", new_replay_key())
 
 
+def add_relay_key(directory: Path) -> None:
+    # Add only an absent key. Never replace a key protecting persisted ciphertext.
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("unsafe private directory")
+    if directory.stat().st_uid != os.geteuid() or stat.S_IMODE(directory.stat().st_mode) != 0o700:
+        raise ValueError("unsafe private directory")
+    write_new(directory, "relay_encryption_key", secrets.token_bytes(32))
+
+
 def generate(directory: Path) -> None:
     # mkdir 独占创建也会拒绝已有目录、普通文件或符号链接。
     directory.mkdir(mode=0o700)
@@ -46,6 +55,7 @@ def generate(directory: Path) -> None:
     redis_password = secrets.token_hex(32)
     contents = {
         "replay_key": new_replay_key(),
+        "relay_encryption_key": secrets.token_bytes(32),
         "postgres_password": password + "\n",
         "database_url": f"postgres://peerloom:{password}@postgres:5432/peerloom?sslmode=disable\n",
         "redis_password": redis_password + "\n",
@@ -58,11 +68,16 @@ def generate(directory: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--add-replay-key", action="store_true", help="仅为已有开发环境增加不存在的重放加密密钥")
+    parser.add_argument("--add-relay-key", action="store_true", help="Add an absent TURN encryption key; never replace existing ciphertext keys")
     args = parser.parse_args()
+    if args.add_replay_key and args.add_relay_key:
+        parser.error("choose one explicit key addition")
     os.umask(0o077)
     directory = Path(__file__).resolve().parent.parent / ".secrets"
     try:
-        if args.add_replay_key:
+        if args.add_relay_key:
+            add_relay_key(directory)
+        elif args.add_replay_key:
             add_replay_key(directory)
         else:
             generate(directory)

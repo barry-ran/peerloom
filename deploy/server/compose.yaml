@@ -60,6 +60,7 @@ services:
       ADMIN_ORIGIN: "${ADMIN_ORIGIN:-}"
       ADMIN_DEVELOPMENT_LOOPBACK: "${ADMIN_DEVELOPMENT_LOOPBACK:-}"
       REPLAY_KEY_FILE: /run/secrets/replay_key
+      RELAY_ENCRYPTION_KEY_FILE: /run/secrets/relay_encryption_key
       REDIS_ADDRESS: redis:6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
       # Optional direct-enrollment policies; direct mode still requires explicit admin opt-in.
@@ -68,7 +69,7 @@ services:
       DIRECT_APP_PER_MINUTE: "${DIRECT_APP_PER_MINUTE:-0}"
       DIRECT_APP_PER_DAY: "${DIRECT_APP_PER_DAY:-0}"
       DIRECT_APP_DEVICES: "${DIRECT_APP_DEVICES:-0}"
-    secrets: [database_url, replay_key, redis_password]
+    secrets: [database_url, replay_key, redis_password, relay_encryption_key]
     networks: [backend, egress]
     depends_on:
       postgres: {condition: service_healthy}
@@ -124,3 +125,5 @@ secrets:
     file: ../.secrets/redis_config
   replay_key:
     file: ../.secrets/replay_key
+  relay_encryption_key:
+    file: ../.secrets/relay_encryption_key

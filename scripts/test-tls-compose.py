@@ -152,7 +152,7 @@ def configuration(root, directory, project):
     if services['gateway']['ports'] != ['127.0.0.1:18080:8080'] or services['postgres'].get('ports') or services['redis'].get('ports'):
         raise Failure('refusing unexpected original public ports')
     for name, value in config['secrets'].items():
-        if name not in ('postgres_password', 'database_url', 'redis_password', 'redis_config', 'replay_key'):
+        if name not in ('postgres_password', 'database_url', 'redis_password', 'redis_config', 'replay_key', 'relay_encryption_key'):
             raise Failure('unknown fixture secret')
         value['file'] = str(directory / '.secrets' / name)
     server = config['services']['device-server']

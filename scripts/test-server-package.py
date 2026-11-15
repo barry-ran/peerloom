@@ -244,23 +244,23 @@ def execute(payload, client=None):
                  'test -s /etc/ssl/cert.pem; for x in go cargo rustc node npm; do ! command -v "$x"; done; test ! -e /src'])
             stage = 'least-privilege secret mounts'
             for service, check in {
-                'device-server': 'test -r /run/secrets/database_url; test -r /run/secrets/replay_key; test -r /run/secrets/redis_password; test ! -e /run/secrets/postgres_password; test ! -e /run/secrets/redis_config',
-                'migrate': 'test -r /run/secrets/database_url; test ! -e /run/secrets/replay_key; test ! -e /run/secrets/redis_password',
-                'gateway': 'test -r /run/secrets/tls_private_key; test ! -e /run/secrets/database_url; test ! -e /run/secrets/replay_key',
+                'device-server': 'test -r /run/secrets/database_url; test -r /run/secrets/replay_key; test -r /run/secrets/relay_encryption_key; test -r /run/secrets/redis_password; test ! -e /run/secrets/postgres_password; test ! -e /run/secrets/redis_config',
+                'migrate': 'test ! -e /run/secrets/relay_encryption_key; test -r /run/secrets/database_url; test ! -e /run/secrets/replay_key; test ! -e /run/secrets/redis_password',
+                'gateway': 'test ! -e /run/secrets/relay_encryption_key; test -r /run/secrets/tls_private_key; test ! -e /run/secrets/database_url; test ! -e /run/secrets/replay_key',
             }.items():
-                allowed = {'device-server': 'database_url replay_key redis_password',
+                allowed = {'device-server': 'database_url replay_key redis_password relay_encryption_key',
                            'migrate': 'database_url', 'gateway': 'tls_certificate tls_private_key'}[service]
                 readonly = ('for name in ' + allowed + '; do f=/run/secrets/$name; '
                             'test ! -w "$f"; before="$(cksum "$f")"; '
                             'if (printf forbidden >> "$f") 2>/dev/null; then exit 1; fi; '
                             'test "$before" = "$(cksum "$f")"; done')
                 oneoff(service, ['-ec', 'test "$(id -u)" != 0; ' + check + '; ' + readonly], entrypoint='sh')
-            stage = 'database and schema 11'
+            stage = 'database and schema 13'
             run(compose + ['up', '-d', '--wait', 'postgres', 'redis'])
             oneoff('migrate', [])
             versions = run(compose + ['exec', '-T', 'postgres', 'psql', '-U', 'peerloom', '-d', 'peerloom',
                            '-Atc', 'SELECT string_agg(version::text,\',\' ORDER BY version) FROM schema_migrations'], capture=True)
-            if versions.strip() != b'1,2,3,4,5,6,7,8,9,10,11,12':
+            if versions.strip() != b'1,2,3,4,5,6,7,8,9,10,11,12,13':
                 raise Failure('migration versions mismatch')
             stage = 'explicit isolated fixture accounts'
             pair = json.loads(oneoff('device-server', ['--development', '--pair'], entrypoint='device-bootstrap', capture=True))

@@ -15,7 +15,7 @@ class SelfhostError(ValueError):
     """A fixed diagnostic that never includes secret input."""
 
 
-SECRET_NAMES = ('postgres_password', 'database_url', 'redis_password', 'redis_config', 'replay_key')
+SECRET_NAMES = ('postgres_password', 'database_url', 'redis_password', 'redis_config', 'replay_key', 'relay_encryption_key')
 
 
 def invoke(command, *, capture=False):

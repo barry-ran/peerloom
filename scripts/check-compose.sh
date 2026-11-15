@@ -16,6 +16,8 @@ assert not s["postgres"].get("ports"), "PostgreSQL must not be published"
 assert not s["redis"].get("ports"), "Redis must not be published"
 assert all(p.get("host_ip") == "127.0.0.1" for p in s["gateway"]["ports"]), "Gateway must stay loopback-only"
 assert s["device-server"]["environment"].get("DATABASE_URL_FILE"), "Use file-mounted DB secret"
+assert s["device-server"]["environment"].get("RELAY_ENCRYPTION_KEY_FILE") == "/run/secrets/relay_encryption_key"
+assert "relay_encryption_key" in {secret["source"] for secret in s["device-server"]["secrets"]}
 assert s["device-server"]["environment"].get("REPLAY_KEY_FILE"), "Identity server requires replay key file"
 assert s["device-server"]["environment"].get("REDIS_ADDRESS") == "redis:6379", "Redis address mismatch"
 assert s["device-server"]["environment"].get("REDIS_PASSWORD_FILE") == "/run/secrets/redis_password", "Redis credential must use mounted file"
@@ -24,6 +26,7 @@ assert s["device-server"]["depends_on"]["redis"]["condition"] == "service_health
 assert "replay_key" in {secret["source"] for secret in s["device-server"]["secrets"]}, "Replay key mount missing"
 for name, service in s.items():
     if name != "device-server":
+        assert "relay_encryption_key" not in {secret["source"] for secret in service.get("secrets", [])}, "Relay encryption key must stay server-only"
         assert "replay_key" not in {secret["source"] for secret in service.get("secrets", [])}, "Replay key must stay server-only"
 '
 

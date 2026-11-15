@@ -31,6 +31,8 @@
 !infra/migrations/000011_installation_identity.up.sql
 !infra/migrations/000012_service_subjects.down.sql
 !infra/migrations/000012_service_subjects.up.sql
+!infra/migrations/000013_managed_relay_secrets.down.sql
+!infra/migrations/000013_managed_relay_secrets.up.sql
 !deploy/
 !deploy/Dockerfile
 !deploy/Dockerfile.dockerignore
