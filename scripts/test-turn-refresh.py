@@ -219,6 +219,8 @@ def run(binary=None, image=None):
                 kind, attrs = current.refresh()
                 if kind != 0x0104 or struct.unpack('!I', attrs[0x000D][0])[0] <= 0:
                     raise RuntimeError('existing allocation rejected post-expiry Refresh')
+                current.exchange()
+                print('PASS: existing allocation creates permission and exchanges bidirectional payload after REST credential expiry; not permission lifetime or nonce aging coverage')
                 rejected = Allocation(('127.0.0.1', 53478), soon)
                 clients.append(rejected)
                 kind, attrs = rejected.allocate()
