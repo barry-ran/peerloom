@@ -234,7 +234,7 @@ func TestSharedRelayOperatorCannotAdoptTenantNode(t *testing.T) {
 	if err = relay.SetSharedNode(f.ctx, f.pool, issuer, input); err == nil {
 		t.Fatal("operator adopted existing tenant node")
 	}
-	input.ID = "00000000-0000-0000-0000-000000000094"
+	input.ID = "ABCDEFAB-0000-0000-0000-000000000094"
 	if err = relay.SetSharedNode(f.ctx, f.pool, issuer, input); err != nil {
 		t.Fatal(err)
 	}
@@ -253,6 +253,9 @@ func TestSharedRelayOperatorCannotAdoptTenantNode(t *testing.T) {
 	response, err := service.IssueForSession(f.ctx, pair.actors[0], session.ID)
 	if err != nil || len(response.ICEServers) != 2 {
 		t.Fatalf("tenant plus approved shared nodes: %v", err)
+	}
+	if !matchesTURN(response.ICEServers[1], strings.Repeat("x", 32)) {
+		t.Fatal("uppercase shared node ID failed canonical encrypted-secret lookup")
 	}
 	input.Enabled = false
 	if err = relay.SetSharedNode(f.ctx, f.pool, issuer, input); err != nil {
