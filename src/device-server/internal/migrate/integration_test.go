@@ -130,7 +130,7 @@ func TestLongLivedMigrationRejectsPopulatedLegacyCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = Apply(ctx, pool, ms[:len(ms)-1], "up"); err != nil {
+	if err = Apply(ctx, pool, ms[:10], "up"); err != nil {
 		t.Fatal(err)
 	}
 	_, err = pool.Exec(ctx, `WITH tenant AS (

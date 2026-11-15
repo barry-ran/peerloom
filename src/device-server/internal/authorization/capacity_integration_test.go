@@ -47,8 +47,10 @@ func TestCapacityMigrationPreservesExistingPolicies(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Exercise capacity migration 10 independently of later schema additions.
-	if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {
-		t.Fatal(err)
+	for i := len(migrations); i > 10; i-- {
+		if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	migrations = migrations[:10]
 	if err = migrate.Apply(f.ctx, f.pool, migrations, "down"); err != nil {

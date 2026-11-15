@@ -269,10 +269,19 @@ func TestExpiryPaginationAndRevalidation(t *testing.T) {
 	}
 	_, err = f.service.CreateApplication(f.ctx, f.principal, ApplicationInput{Name: "one"}, "create-application-one")
 	requireCode(t, err, "REPLAY_EXPIRED")
-	if _, err = f.pool.Exec(f.ctx, "UPDATE tenant_service_credentials SET scope='read' WHERE id=$1", f.principal.CredentialID()); err != nil {
+	if _, err = f.pool.Exec(f.ctx, "UPDATE tenant_service_credentials SET scope='read' WHERE id=$1", f.principal.CredentialID()); err == nil {
+		t.Fatal("fixed subject scope changed without matching authority")
+	}
+	readKey, err := IssueKey(f.ctx, f.pool, f.principal.TenantID(), ScopeRead, time.Hour, "revalidate")
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.service.CreateApplication(f.ctx, f.principal, ApplicationInput{Name: "downgraded"}, "downgraded-scope-request")
+	readPrincipal, err := f.service.Authenticate(f.ctx, readKey.ServiceCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readPrincipal.scope = ScopeAdmin // stale/forged cached scope cannot grant authority.
+	_, err = f.service.CreateApplication(f.ctx, readPrincipal, ApplicationInput{Name: "downgraded"}, "downgraded-scope-request")
 	requireCode(t, err, "SCOPE_REQUIRED")
 	if _, err = f.pool.Exec(f.ctx, "UPDATE tenants SET status='suspended' WHERE id=$1", f.principal.TenantID()); err != nil {
 		t.Fatal(err)

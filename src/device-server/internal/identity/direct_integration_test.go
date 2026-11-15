@@ -375,8 +375,10 @@ func TestDirectCounterMigrationPreservesRowsAndRollbackFailsClosed(t *testing.T)
 	}
 	// First remove identity schema 11, then exercise the counter migration 10
 	// explicitly instead of assuming it is always the newest migration.
-	if err = migrate.Apply(ctx, p, migrations, "down"); err != nil {
-		t.Fatal(err)
+	for i := len(migrations); i > 10; i-- {
+		if err = migrate.Apply(ctx, p, migrations, "down"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	migrations = migrations[:10]
 	if err = migrate.Apply(ctx, p, migrations, "down"); err != nil {
