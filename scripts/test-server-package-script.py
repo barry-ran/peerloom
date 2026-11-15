@@ -28,7 +28,7 @@ def archive(path, entries):
 
 def fixture(path):
     names = {'bin/' + n for n in m.BINS} | set(m.SQL) | {
-        'deploy/Dockerfile', 'deploy/Dockerfile.dockerignore', 'deploy/init-private.py',
+        'deploy/Dockerfile', 'deploy/Dockerfile.dockerignore', 'deploy/init-private.py', 'deploy/selfhost.py',
         'deploy/compose.yaml', 'deploy/compose.tls.yaml', 'deploy/gateway/nginx-tls.conf'}
     entries = [(n, b'synthetic bytes', 0o755 if n.startswith('bin/') else 0o644, tarfile.REGTYPE)
                for n in sorted(names)]
@@ -49,7 +49,7 @@ class ControllerTests(unittest.TestCase):
     def test_reject_path_links_modes_and_source(self):
         cases = [('../escape', tarfile.REGTYPE, 0o644), ('/absolute', tarfile.REGTYPE, 0o644),
                  ('bin/alias', tarfile.SYMTYPE, 0o644), ('bin/hard', tarfile.LNKTYPE, 0o644),
-                 ('bin/setuid', tarfile.REGTYPE, 0o4755), ('src/private.go', tarfile.REGTYPE, 0o644)]
+                 ('bin/setuid', tarfile.REGTYPE, 0o4755), ('src/private.go', tarfile.REGTYPE, 0o644), ('.operator/connection.json', tarfile.REGTYPE, 0o600)]
         for name, kind, mode in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw); target = root / 'out'; target.mkdir()

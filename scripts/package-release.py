@@ -210,7 +210,7 @@ def server_sources(root):
         raise PackageError('SERVER_MIGRATION_SET_REQUIRED')
     sources += [(root / 'infra/migrations' / name, 'infra/migrations/' + name) for name in migrations]
     deployment = ('Dockerfile', 'Dockerfile.dockerignore', 'compose.yaml', 'compose.tls.yaml',
-                  'gateway/nginx.conf', 'gateway/nginx-tls.conf', 'init-private.py', 'README.md')
+                  'gateway/nginx.conf', 'gateway/nginx-tls.conf', 'init-private.py', 'selfhost.py', 'README.md')
     sources += [(root / 'deploy/server' / name, 'deploy/' + name) for name in deployment]
     sources.append((root / 'docs/部署指南.md', 'docs/部署指南.md'))
     return sources

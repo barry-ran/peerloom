@@ -56,7 +56,7 @@ def extract(payload, root):
             if (not member.isfile() or name in seen or not parts or name != '/'.join(parts)
                     or name.startswith('/') or any(p in ('.', '..') for p in parts)
                     or '\\' in name or '\x00' in name or member.mode & 0o7022
-                    or name.startswith(('src/', 'sdk/', '.secrets/', '.git/'))
+                    or name.startswith(('src/', 'sdk/', '.secrets/', '.operator/', '.git/'))
                     or name.endswith(('.go', '.rs', '.kt', '.swift', '.c', '.cpp'))):
                 raise Failure('unsafe or source-bearing package member')
             total += member.size
@@ -75,7 +75,7 @@ def extract(payload, root):
                     remaining -= len(chunk)
             destination.chmod(member.mode & 0o777)
     required = {'bin/' + name for name in BINS} | set(SQL) | {
-        'deploy/Dockerfile', 'deploy/Dockerfile.dockerignore', 'deploy/init-private.py',
+        'deploy/Dockerfile', 'deploy/Dockerfile.dockerignore', 'deploy/init-private.py', 'deploy/selfhost.py',
         'deploy/compose.yaml', 'deploy/compose.tls.yaml', 'deploy/gateway/nginx-tls.conf',
         'SHA256SUMS'}
     if not required <= seen:
@@ -317,6 +317,52 @@ def execute(payload, client=None):
     print('实际 server tar：无源码 runtime、11版迁移、HTTPS admin 登录/CSRF、认证 WSS heartbeat 通过。')
 
 
+def verify_selfhost_package(payload):
+    # Exercise delivered bytes, not source, using a unique project and image.
+    project = 'selfhost-' + uuid.uuid4().hex
+    with tempfile.TemporaryDirectory(prefix=project + '-') as raw:
+        package = Path(raw) / 'package'
+        package.mkdir(mode=0o700)
+        extract(payload, package)
+        command = ['python3', str(package / 'deploy/selfhost.py')]
+        compose = ['docker', 'compose', '--project-directory', str(package / 'deploy'),
+                   '--project-name', project, '-f', str(package / 'deploy/compose.yaml')]
+        image = 'peerloom-selfhost-' + project + ':runtime'
+        try:
+            first = invoke(command + ['up', '--project-name', project], capture=True, timeout=900)
+            connection = package / '.operator/connection.json'
+            original = connection.read_bytes()
+            value = json.loads(original)
+            if value['service_credential'].encode() in first:
+                raise Failure('selfhost secret leaked to output')
+            invoke(command + ['up', '--project-name', project], capture=True, timeout=900)
+            if connection.read_bytes() != original:
+                raise Failure('selfhost repeat changed identity or credential')
+            status = invoke(command + ['status', '--project-name', project], capture=True)
+            if value['service_credential'].encode() in status:
+                raise Failure('selfhost status leaked a secret')
+            # Corrupted local secret must not be reported as ready, even with valid IDs.
+            value['service_credential'] = 'svc_' + 'invalid-but-same-owner'
+            connection.write_text(json.dumps(value), encoding='utf-8')
+            try:
+                invoke(command + ['status', '--project-name', project], capture=True)
+            except Failure:
+                pass
+            else:
+                raise Failure('selfhost accepted corrupted credential')
+            connection.write_bytes(original)
+        finally:
+            # This UUID project was created solely by this test; never use broad prune.
+            invoke(compose + ['down', '--volumes', '--remove-orphans', '--timeout', '10'], timeout=90)
+            present = invoke(['docker', 'image', 'ls', '--filter', 'reference=' + image,
+                              '--format', '{{.Repository}}:{{.Tag}}'], capture=True).decode().strip()
+            if present:
+                if present != image:
+                    raise Failure('selfhost image ownership mismatch')
+                invoke(['docker', 'image', 'rm', image], timeout=30)
+    print('Self-host release fresh/repeat/status and corrupted-key rejection passed.')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--package', required=True, type=Path)
@@ -326,6 +372,7 @@ def main():
     signal.signal(signal.SIGINT, interrupted)
     try:
         execute(args.package)
+        verify_selfhost_package(args.package)
     except Exception as error:
         raise SystemExit('server package acceptance failed: ' + safe_diagnostic(error)) from None
 

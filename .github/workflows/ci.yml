@@ -116,6 +116,7 @@ jobs:
           PEERLOOM_NONOWNER_TEST: '1'
         run: |
           python3 scripts/test-server-deploy.py
+          python3 scripts/test-selfhost.py
           python3 scripts/test-server-package-script.py
       - name: 仅解服务端交付包的真实 TLS 管理与 WSS 验收
         timeout-minutes: 8

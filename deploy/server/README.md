@@ -32,6 +32,34 @@ sha256sum -c SHA256SUMS
 
 以下命令全部在这个 `runtime` 包根执行。`release-metadata.json` 必须标明正确版本/提交、`platform=server-linux-amd64`、`product=server`；校验和只证明字节一致，不替代可信下载来源或签名。
 
+## 简化自建部署（推荐首次安装）
+
+在已校验的 Linux 发布包 `runtime` 根目录执行：
+
+```sh
+python3 deploy/selfhost.py up --project-name my-peerloom \
+  --tenant-name '我的平台' --application-name '我的应用'
+python3 deploy/selfhost.py status --project-name my-peerloom
+```
+
+`up` 依次生成私有数据库秘密、构建固定运行时镜像、启动数据库与 Redis、迁移、一次性创建租户/应用/30 天服务凭据，并启动控制面与回环网关。没有默认密码，不开启管理后台，不开放公网；**仍需先下载、校验发布包，以及准备 Docker/Compose/Python**。发布包之外不下载源码或安装开发工具。
+
+```mermaid
+flowchart LR
+    A[校验发布包] --> B[selfhost up]
+    B --> C[私有秘密与依赖就绪]
+    C --> D[数据库迁移]
+    D --> E[离线初始化租户和应用]
+    E --> F[服务健康检查]
+    F --> G[业务后端读取接入文件]
+```
+
+接入信息写入 `.operator/connection.json`（目录 0700，文件 0600），包含租户、应用 ID、凭据 ID、有效期和服务凭据；终端只显示非秘密状态。只交给可信业务后端，不能放到 PC/手机客户端、Git 或日志。`status` 查询真实数据库中的凭据到期、撤销和租户状态，不会生成、续期或撤销密钥。
+
+必须固定 `--project-name` 和安装目录，重复 `up` 时使用相同租户/应用名称。包装会校验已保存的参数、项目归属和完整秘密，正常重入不会新建租户/应用或轮换凭据。每阶段失败后保留原状态；普通命令失败可修正原因后重入，部分秘密或初始化结果不完整则拒绝，需运维核查，**不要删除秘密或数据库卷来重试**。发现同名外部 Compose 项目、已有手工部署秘密时不会自动接管；已有安装继续使用下面的显式运维方式。
+
+该入口不是公网一键部署：域名、可信 TLS 证书及公网/TURN 策略仍由运营者提供，按后面的 HTTPS/WSS 流程配置。更换服务凭据仍需显式运维操作，不能把过期检查当作自动续期。
+
 ## 首次启动：仅本机 HTTP
 
 ```sh
