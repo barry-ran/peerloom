@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import subprocess
 import time
@@ -60,14 +61,15 @@ def run(args):
         print('PASS: actual accepted SDK session ICE HTTP issuance/reuse and audience isolation; SDK transport still DirectOnly')
         return
     create = {'name': 'local-approved-relay', 'endpoint': 'turn:relay.example.com:3478?transport=udp',
-              'secret_ref': 'test-tenant-v1'}
+              'secret': secrets.token_hex(32)}
     node = client.request('POST', '/v1/relay-nodes', 201, credential, create, 'relay-live-create')
     replay = client.request('POST', '/v1/relay-nodes', 201, credential, create, 'relay-live-create')
-    MODULE.require(node == replay, 'node creation replay changed')
+    MODULE.require(node == replay and node['has_secret'] and node['secret_version'] == 1, 'node creation replay changed')
+    MODULE.require('secret' not in node, 'relay response exposed secret')
     route = '/v1/relay-nodes/' + node['id']
     client.request('PATCH', route, 422, credential, {'enabled': None}, 'reject-null-enabled')
     client.request('POST', '/v1/relay-nodes', 422, credential,
-                   dict(create, endpoint='turn:unapproved.example.com:3478?transport=udp'), 'reject-url')
+                   dict(create, endpoint='http://relay.example.com:3478'), 'reject-url')
     changed = client.request('PATCH', route, 200, credential, {'region': 'local'}, 'relay-live-region')
     MODULE.require(changed['revision'] == node['revision'] + 1, 'node revision did not advance')
     page = client.request('GET', '/v1/relay-nodes?limit=1', 200, credential)
@@ -75,7 +77,7 @@ def run(args):
     removed = client.request('DELETE', route, 200, credential, key='relay-live-disable')
     MODULE.require(removed['enabled'] is False, 'node soft delete failed')
     client.request('PATCH', route, 200, credential, {'enabled': True}, 'relay-live-enable')
-    print('PASS: actual relay HTTP typed CRUD, approved URL, revision, idempotency and pagination')
+    print('PASS: actual relay HTTP typed CRUD, managed secret, valid URL, revision, idempotency and pagination')
 
 
 def main():
