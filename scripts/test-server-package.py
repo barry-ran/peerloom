@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BINS = ('device-server', 'device-migrate', 'device-bootstrap', 'device-admin', 'device-admin-user')
 MIGRATIONS = ('initial', 'identity_replay', 'session_authorization', 'tenant_management',
               'managed_relay', 'browser_administration', 'direct_registration',
-              'session_recovery', 'webhook_delivery', 'optional_capacity', 'installation_identity', 'service_subjects')
+              'session_recovery', 'webhook_delivery', 'optional_capacity', 'installation_identity', 'service_subjects', 'managed_relay_secrets')
 SQL = tuple(f'infra/migrations/{i:06}_{name}.{direction}.sql'
             for i, name in enumerate(MIGRATIONS, 1) for direction in ('up', 'down'))
 
