@@ -17,6 +17,7 @@ import (
 	"github.com/barry-ran/peerloom/src/device-server/internal/adminweb"
 	"github.com/barry-ran/peerloom/src/device-server/internal/httpserver"
 	"github.com/barry-ran/peerloom/src/device-server/internal/management"
+	"github.com/barry-ran/peerloom/src/device-server/internal/relay"
 	"github.com/barry-ran/peerloom/src/device-server/internal/webhook"
 )
 
@@ -51,7 +52,16 @@ func TestBrowserConsoleChromium(t *testing.T) {
 	if _, err = rand.Read(key); err != nil {
 		t.Fatal("generate fixture replay key")
 	}
-	backend, err := management.New(pool, key, management.DefaultSettings())
+	relayKey := make([]byte, 32)
+	if _, err = rand.Read(relayKey); err != nil {
+		t.Fatal("generate isolated fixture relay encryption key")
+	}
+	relayIssuer, err := relay.NewDatabaseIssuer(relayKey, 10*time.Minute, false)
+	clear(relayKey)
+	if err != nil {
+		t.Fatal("create fixture relay issuer")
+	}
+	backend, err := management.NewWithRelay(pool, key, management.DefaultSettings(), nil, relayIssuer)
 	if err != nil {
 		t.Fatal("create fixture management service")
 	}
@@ -102,6 +112,16 @@ func TestBrowserConsoleChromium(t *testing.T) {
 	t.Logf("actual Chromium output:\n%s", strings.TrimSpace(string(output)))
 	if err != nil {
 		t.Fatal("actual Chromium console gate failed; inspect retained browser artifacts")
+	}
+	var relayNodes, relayVersions, plaintextSecrets int
+	err = pool.QueryRow(ctx, `SELECT
+ (SELECT count(*) FROM relay_nodes WHERE tenant_id=$1 AND name IN('managed-relay-zh','managed-relay-en') AND secret_version=3),
+ (SELECT count(*) FROM relay_secret_versions WHERE tenant_id=$1),
+ (SELECT count(*) FROM relay_secret_versions WHERE tenant_id=$1 AND
+ (position(convert_to('synthetic-rest-shared-key-for-browser-123456','UTF8') in ciphertext)>0 OR
+ position(convert_to('synthetic-rest-rotated-key-for-browser-654321','UTF8') in ciphertext)>0))`, tenant).Scan(&relayNodes, &relayVersions, &plaintextSecrets)
+	if err != nil || relayNodes != 2 || relayVersions != 6 || plaintextSecrets != 0 {
+		t.Fatal("browser relay encrypted-version evidence mismatch")
 	}
 	var endpointCount int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM webhook_endpoints WHERE tenant_id=$1 AND NOT enabled AND revision=2", tenant).Scan(&endpointCount); err != nil || endpointCount != 1 {
