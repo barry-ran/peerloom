@@ -111,3 +111,83 @@ test('webhook approved binding, cancellation and disable without secret exposure
  expect(await page.evaluate(()=>Object.keys(sessionStorage))).toEqual([]);
  await page.getByRole('button',{name:'退出登录',exact:true}).click();
 });
+
+for (const language of ['zh', 'en'] as const) {
+ test(`managed TURN REST secret create, edit, rotate and replay (${language})`, async ({page}) => {
+  await login(page);
+  if (language === 'en') await page.getByRole('button', {name:'English', exact:true}).click();
+  const labels = language === 'zh' ? {relay:'中继节点',create:'创建中继节点',name:'名称',url:'TURN 地址',key:'coturn REST 共享密钥',save:'确认',close:'关闭',edit:'编辑',retry:'使用相同请求重试',details:'详情'} :
+    {relay:'Relay nodes',create:'Create relay node',name:'Name',url:'TURN URL',key:'coturn REST shared key',save:'Confirm',close:'Close',edit:'Edit',retry:'Retry same request',details:'Details'};
+  const secret = 'synthetic-rest-shared-key-for-browser-123456';
+  const rotated = 'synthetic-rest-rotated-key-for-browser-654321';
+  const name = `managed-relay-${language}`;
+  await page.getByRole('button', {name:labels.relay,exact:true}).click();
+  await page.getByRole('button', {name:labels.create,exact:true}).click();
+  const keyField = page.getByLabel(labels.key, {exact:true});
+  await expect(keyField).toHaveAttribute('type','password');
+  await expect(keyField).toHaveValue('');
+  await page.screenshot({path:`test-results/managed-relay-${language}.png`,fullPage:true});
+  await keyField.fill(secret);
+  await page.getByRole('button', {name:labels.close,exact:true}).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', {name:labels.create,exact:true}).click();
+  await expect(page.getByLabel(labels.key,{exact:true})).toHaveValue('');
+  await page.getByLabel(labels.name,{exact:true}).fill(name);
+  await page.getByLabel(labels.url,{exact:true}).fill('turn:relay.example.com:3478?transport=udp');
+  await page.getByLabel(labels.key,{exact:true}).fill('short');
+  await page.getByRole('button', {name:labels.save,exact:true}).click();
+  await expect(page.getByLabel(labels.key,{exact:true})).toBeVisible();
+  await page.getByLabel(labels.key,{exact:true}).fill(secret);
+  await page.getByRole('button', {name:labels.save,exact:true}).click();
+  await expect(page.getByLabel(labels.key,{exact:true})).toHaveCount(0);
+  expect(await page.getByRole('dialog').textContent()).not.toContain(secret);
+  await page.getByRole('button', {name:labels.save,exact:true}).click();
+  const row = page.getByRole('row').filter({has:page.getByRole('cell',{name,exact:true})});
+  await expect(row).toHaveCount(1);
+  await row.getByRole('button',{name:labels.details,exact:true}).click();
+  expect(await page.getByRole('dialog').textContent()).not.toContain(secret);
+  expect(await page.getByRole('dialog').textContent()).toContain('has_secret');
+  await page.getByRole('button',{name:labels.close,exact:true}).click();
+  const requests: Array<{body:string,key:string}> = [];
+  let lose = false;
+  await page.route(/\/admin\/api\/v1\/relay-nodes\/[^/?]+$/, async route => {
+   if (route.request().method() !== 'PATCH') { await route.continue(); return; }
+   requests.push({body:route.request().postData()!,key:route.request().headers()['idempotency-key']});
+   if (lose) {
+    lose = false; const response = await route.fetch(); expect(response.status()).toBe(200);
+    await route.fulfill({status:503,json:{code:'SYNTHETIC_RESPONSE_LOSS'}}); await response.dispose();
+   } else await route.continue();
+  });
+  await row.getByRole('button',{name:labels.edit,exact:true}).click();
+  await expect(page.getByLabel(labels.key,{exact:true})).toHaveValue('');
+  await page.getByRole('button',{name:labels.save,exact:true}).click();
+  await page.getByRole('button',{name:labels.save,exact:true}).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(JSON.parse(requests[0].body)).not.toHaveProperty('secret');
+  expect(JSON.parse(requests[0].body)).not.toHaveProperty('secret_ref');
+  await row.getByRole('button',{name:labels.edit,exact:true}).click();
+  await page.getByLabel(labels.key,{exact:true}).fill(rotated);
+  await page.getByRole('button',{name:labels.save,exact:true}).click();
+  lose = true;
+  await page.getByRole('button',{name:labels.save,exact:true}).evaluate((element:HTMLButtonElement) => { element.click(); element.click(); });
+  await expect(page.getByRole('alert')).toContainText('SYNTHETIC_RESPONSE_LOSS');
+  expect(requests).toHaveLength(2);
+  expect(await page.getByRole('dialog').textContent()).not.toContain(rotated);
+  await page.getByRole('button',{name:labels.retry,exact:true}).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(requests).toHaveLength(3); expect(requests[1]).toEqual(requests[2]);
+  expect(JSON.parse(requests[1].body).secret).toBe(rotated);
+  expect(await page.content()).not.toContain(secret); expect(await page.content()).not.toContain(rotated);
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(rotated);
+  expect(await page.evaluate(() => JSON.stringify(sessionStorage))).not.toContain(rotated);
+  await row.getByRole('button',{name:labels.details,exact:true}).click();
+  await expect(page.getByRole('dialog')).toContainText('"secret_version": 2');
+ });
+}
+
+test('read-only relay view never offers secret mutation', async ({page}) => {
+ await login(page,'reader'); await page.getByRole('button',{name:'中继节点',exact:true}).click();
+ await expect(page.getByRole('button',{name:'创建中继节点',exact:true})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'编辑',exact:true})).toHaveCount(0);
+ await expect(page.getByLabel('coturn REST 共享密钥',{exact:true})).toHaveCount(0);
+});
