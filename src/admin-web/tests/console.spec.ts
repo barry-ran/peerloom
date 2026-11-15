@@ -182,6 +182,24 @@ for (const language of ['zh', 'en'] as const) {
   expect(await page.evaluate(() => JSON.stringify(sessionStorage))).not.toContain(rotated);
   await row.getByRole('button',{name:labels.details,exact:true}).click();
   await expect(page.getByRole('dialog')).toContainText('"secret_version": 2');
+  await page.getByRole('button',{name:labels.close,exact:true}).click();
+  await row.getByRole('button',{name:labels.edit,exact:true}).click();
+  await page.getByLabel(labels.key,{exact:true}).fill(rotated + '-cancel');
+  await page.getByRole('button',{name:labels.save,exact:true}).click();
+  lose = true;
+  await page.getByRole('button',{name:labels.save,exact:true}).click();
+  await expect(page.getByRole('alert')).toContainText('SYNTHETIC_RESPONSE_LOSS');
+  const countBeforeCancel = requests.length;
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.getByRole('button',{name:labels.close,exact:true}).click();
+  await expect(page.getByRole('button',{name:labels.retry,exact:true})).toBeVisible();
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button',{name:labels.close,exact:true}).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await row.getByRole('button',{name:labels.edit,exact:true}).click();
+  await expect(page.getByLabel(labels.key,{exact:true})).toHaveValue('');
+  expect(requests).toHaveLength(countBeforeCancel);
+  await page.getByRole('button',{name:labels.close,exact:true}).click();
  });
 }
 
