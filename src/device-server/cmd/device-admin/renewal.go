@@ -29,9 +29,9 @@ func runRenewalCommand(command string, args []string) error {
 	if !*offline || fs.NArg() != 0 {
 		return errors.New("requires --offline")
 	}
-	if command == "revoke-subject" {
+	if command != "renew-key" {
 		if *tenant == "" || *subject == "" || *input != "" || *output != "" || *op != "" {
-			return errors.New("revoke-subject requires --tenant-id --subject-id only")
+			return errors.New("subject administration requires --tenant-id --subject-id only")
 		}
 	} else if *input == "" || *output == "" || *op == "" || *tenant != "" || *subject != "" {
 		return errors.New("renew-key requires --input --output --operation-id")
@@ -47,8 +47,11 @@ func runRenewalCommand(command string, args []string) error {
 		return err
 	}
 	defer pool.Close()
-	if command == "revoke-subject" {
-		return management.RevokeSubject(ctx, pool, *tenant, *subject)
+	if command != "renew-key" {
+		if command == "revoke-subject" {
+			return management.RevokeSubject(ctx, pool, *tenant, *subject)
+		}
+		return management.SetSubjectRenewal(ctx, pool, *tenant, *subject, command == "enable-renewal")
 	}
 	material, err := readSetup(*input)
 	if err != nil {

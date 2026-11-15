@@ -15,7 +15,7 @@ import (
 )
 
 func TestRenewalSingleSuccessorAndStableReplay(t *testing.T) {
-	f := setup(t)
+	f := renewalFixture(t)
 	app, err := f.service.CreateApplication(f.ctx, f.principal, ApplicationInput{Name: "stable"}, "original-operation-7fa80ae8624b448ea9d85a3d0ac1ccaa")
 	if err != nil {
 		t.Fatal(err)
@@ -76,9 +76,12 @@ func TestRenewalSingleSuccessorAndStableReplay(t *testing.T) {
 }
 
 func TestRenewalAuthorityAndExpiredRecovery(t *testing.T) {
-	f := setup(t)
+	f := renewalFixture(t)
 	readKey, err := IssueKey(f.ctx, f.pool, f.principal.TenantID(), ScopeRead, time.Hour, "reader")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = SetSubjectRenewal(f.ctx, f.pool, readKey.TenantID, readKey.SubjectID, true); err != nil {
 		t.Fatal(err)
 	}
 	p, err := f.service.Authenticate(f.ctx, readKey.ServiceCredential)
@@ -107,7 +110,7 @@ func TestRenewalAuthorityAndExpiredRecovery(t *testing.T) {
 }
 
 func TestRenewalHTTPContractAndNoScopeOverride(t *testing.T) {
-	f := setup(t)
+	f := renewalFixture(t)
 	h := NewHandler(f.service)
 	req := httptest.NewRequest(http.MethodPost, "/v1/service-credentials/renew", bytes.NewBufferString("{}"))
 	req.Header.Set("Authorization", "Bearer "+f.credential.ServiceCredential)
@@ -137,7 +140,7 @@ func TestRenewalHTTPContractAndNoScopeOverride(t *testing.T) {
 }
 
 func TestRenewalRollbackAndRevokedSuccessor(t *testing.T) {
-	f := setup(t)
+	f := renewalFixture(t)
 	_, err := f.service.RenewServiceKeyPersisted(f.ctx, f.principal, "persist-failure-operation-7fa80ae8624b448ea9d85a3d0ac1ccaa", func(ServiceKeyRenewal) error { return fail("TEST_PERSIST", 500) })
 	requireCode(t, err, "TEST_PERSIST")
 	var count int
@@ -156,7 +159,7 @@ func TestRenewalRollbackAndRevokedSuccessor(t *testing.T) {
 }
 
 func TestLegacySchemaReplaySurvivesSubjectMigrationAndRenewal(t *testing.T) {
-	f := setup(t)
+	f := renewalFixture(t)
 	app, err := f.service.CreateApplication(f.ctx, f.principal, ApplicationInput{Name: "legacy-v1"}, "legacy-operation-7fa80ae8624b448ea9d85a3d0ac1ccaa")
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +194,9 @@ func TestLegacySchemaReplaySurvivesSubjectMigrationAndRenewal(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("migration rewrote encrypted receipt")
 	}
+	if err = SetSubjectRenewal(f.ctx, f.pool, f.credential.TenantID, f.credential.SubjectID, true); err != nil {
+		t.Fatal(err)
+	}
 	p, err := f.service.Authenticate(f.ctx, f.credential.ServiceCredential)
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +220,7 @@ func TestLegacySchemaReplaySurvivesSubjectMigrationAndRenewal(t *testing.T) {
 
 func TestRenewalDisabledTenantAndRacingRevocation(t *testing.T) {
 	for _, subject := range []bool{false, true} {
-		f := setup(t)
+		f := renewalFixture(t)
 		var wg sync.WaitGroup
 		wg.Add(2)
 		var renewErr, revokeErr error
@@ -240,7 +246,7 @@ func TestRenewalDisabledTenantAndRacingRevocation(t *testing.T) {
 		_, err := f.service.RenewServiceKey(f.ctx, f.principal, "race-renewal-operation-7fa80ae8624b448ea9d85a3d0ac1ccaa")
 		requireCode(t, err, "SERVICE_AUTH_INVALID")
 	}
-	f := setup(t)
+	f := renewalFixture(t)
 	r, err := f.service.RenewServiceKey(f.ctx, f.principal, "tenant-disable-operation-7fa80ae8624b448ea9d85a3d0ac1ccaa")
 	if err != nil {
 		t.Fatal(err)
@@ -252,4 +258,60 @@ func TestRenewalDisabledTenantAndRacingRevocation(t *testing.T) {
 	requireCode(t, err, "SERVICE_AUTH_INVALID")
 	_, err = f.service.Authenticate(f.ctx, r.ServiceCredential)
 	requireCode(t, err, "SERVICE_AUTH_INVALID")
+}
+
+func renewalFixture(t *testing.T) fixture {
+	f := setup(t)
+	if err := SetSubjectRenewal(f.ctx, f.pool, f.credential.TenantID, f.credential.SubjectID, true); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestRenewalRequiresExplicitOfflineGrantAndDisableBlocksReplay(t *testing.T) {
+	f := setup(t)
+	const op = "8c2e9f410def4472916fa035301eec4c"
+	info, err := f.service.ServiceKeySelf(f.ctx, f.principal)
+	if err != nil || info.RenewalEnabled {
+		t.Fatal("finite bootstrap implicitly renewable", err)
+	}
+	_, err = f.service.RenewServiceKey(f.ctx, f.principal, op)
+	requireCode(t, err, "RENEWAL_DISABLED")
+	if err = SetSubjectRenewal(f.ctx, f.pool, f.credential.TenantID, f.credential.SubjectID, true); err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.service.RenewServiceKey(f.ctx, f.principal, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.RenewalEnabled {
+		t.Fatal("renew metadata missing enabled state")
+	}
+	if err = SetSubjectRenewal(f.ctx, f.pool, f.credential.TenantID, f.credential.SubjectID, false); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.service.RenewServiceKey(f.ctx, f.principal, op)
+	requireCode(t, err, "RENEWAL_DISABLED")
+	if _, err = f.service.Authenticate(f.ctx, r.ServiceCredential); err != nil {
+		t.Fatal("disable revoked current key", err)
+	}
+	if err = RevokeSubject(f.ctx, f.pool, f.credential.TenantID, f.credential.SubjectID); err != nil {
+		t.Fatal(err)
+	}
+	err = SetSubjectRenewal(f.ctx, f.pool, f.credential.TenantID, f.credential.SubjectID, true)
+	requireCode(t, err, "SERVICE_SUBJECT_NOT_ACTIVE")
+}
+
+func TestRenewalOperationHashIsAuthenticated(t *testing.T) {
+	f := renewalFixture(t)
+	const original = "57801c17304440faaafcddfa2e6774ac"
+	const substituted = "d3e32724dcde48bfaf138124e11a56ad"
+	if _, err := f.service.RenewServiceKey(f.ctx, f.principal, original); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, "UPDATE service_key_renewals SET operation_hash=$1 WHERE previous_credential_id=$2", hash(substituted), f.principal.CredentialID()); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.service.RenewServiceKey(f.ctx, f.principal, substituted)
+	requireCode(t, err, "RENEWAL_UNAVAILABLE")
 }

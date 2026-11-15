@@ -17,6 +17,7 @@ const serviceKeyRenewWindow = 7 * 24 * time.Hour
 const serviceKeyOverlap = 24 * time.Hour
 
 type ServiceKeySelf struct {
+	RenewalEnabled       bool      `json:"renewal_enabled"`
 	SubjectID            string    `json:"subject_id"`
 	TenantID             string    `json:"tenant_id"`
 	CredentialID         string    `json:"credential_id"`
@@ -34,7 +35,7 @@ type ServiceKeyRenewal struct {
 
 func keySelf(ctx context.Context, tx pgx.Tx, p Principal) (ServiceKeySelf, error) {
 	r := ServiceKeySelf{SubjectID: p.subjectID, TenantID: p.tenantID, CredentialID: p.credentialID, Scope: p.scope}
-	err := tx.QueryRow(ctx, `SELECT expires_at,LEAST(expires_at,COALESCE(accept_until,expires_at)) FROM tenant_service_credentials WHERE id=$1`, p.credentialID).Scan(&r.ExpiresAt, &r.EffectiveAcceptUntil)
+	err := tx.QueryRow(ctx, `SELECT c.expires_at,LEAST(c.expires_at,COALESCE(c.accept_until,c.expires_at)),ss.renewal_enabled FROM tenant_service_credentials c JOIN service_subjects ss ON ss.id=c.subject_id WHERE c.id=$1`, p.credentialID).Scan(&r.ExpiresAt, &r.EffectiveAcceptUntil, &r.RenewalEnabled)
 	r.RenewAfter = r.ExpiresAt.Add(-serviceKeyRenewWindow)
 	return r, err
 }
@@ -53,8 +54,8 @@ func (s *Service) ServiceKeySelf(ctx context.Context, p Principal) (ServiceKeySe
 	}
 	return r, commit(ctx, tx)
 }
-func renewalAAD(subject, previous, next string) []byte {
-	b, _ := json.Marshal([]string{"peerloom-service-renewal-v1", subject, previous, next})
+func renewalAAD(subject, previous, next string, operationHash []byte) []byte {
+	b, _ := json.Marshal([]any{"peerloom-service-renewal-v1", subject, previous, next, operationHash})
 	return b
 }
 func (s *Service) RenewServiceKey(ctx context.Context, p Principal, operation string) (ServiceKeyRenewal, error) {
@@ -77,8 +78,12 @@ func (s *Service) RenewServiceKeyPersisted(ctx context.Context, p Principal, ope
 	}
 	defer rollback(tx)
 	var current string
-	if err = tx.QueryRow(ctx, "SELECT current_credential_id::text FROM service_subjects WHERE id=$1", p.subjectID).Scan(&current); err != nil {
+	var enabled bool
+	if err = tx.QueryRow(ctx, "SELECT current_credential_id::text,renewal_enabled FROM service_subjects WHERE id=$1", p.subjectID).Scan(&current, &enabled); err != nil {
 		return r, fail("DATABASE_UNAVAILABLE", 503)
+	}
+	if !enabled {
+		return r, fail("RENEWAL_DISABLED", 403)
 	}
 	var next string
 	var opHash, nonce, ciphertext []byte
@@ -95,7 +100,7 @@ func (s *Service) RenewServiceKeyPersisted(ctx context.Context, p Principal, ope
 		if !usable || len(nonce) != s.aead.NonceSize() || len(ciphertext) == 0 {
 			return r, fail("RENEWAL_UNAVAILABLE", 409)
 		}
-		plain, err := s.aead.Open(nil, nonce, ciphertext, renewalAAD(p.subjectID, p.credentialID, next))
+		plain, err := s.aead.Open(nil, nonce, ciphertext, renewalAAD(p.subjectID, p.credentialID, next, hash(operation)))
 		if err != nil {
 			return r, fail("RENEWAL_UNAVAILABLE", 409)
 		}
@@ -135,7 +140,7 @@ func (s *Service) RenewServiceKeyPersisted(ctx context.Context, p Principal, ope
 		until = self.EffectiveAcceptUntil
 	}
 	expiry := now.Add(serviceKeyLifetime)
-	r = ServiceKeyRenewal{ServiceKeySelf: ServiceKeySelf{SubjectID: p.subjectID, TenantID: p.tenantID, Scope: self.Scope, ExpiresAt: expiry, RenewAfter: expiry.Add(-serviceKeyRenewWindow), EffectiveAcceptUntil: expiry}, ServiceCredential: secret, PreviousCredentialID: p.credentialID, PreviousAcceptUntil: until}
+	r = ServiceKeyRenewal{ServiceKeySelf: ServiceKeySelf{RenewalEnabled: true, SubjectID: p.subjectID, TenantID: p.tenantID, Scope: self.Scope, ExpiresAt: expiry, RenewAfter: expiry.Add(-serviceKeyRenewWindow), EffectiveAcceptUntil: expiry}, ServiceCredential: secret, PreviousCredentialID: p.credentialID, PreviousAcceptUntil: until}
 	err = tx.QueryRow(ctx, `INSERT INTO tenant_service_credentials(tenant_id,subject_id,credential_hash,scope,label,expires_at) VALUES($1,$2,$3,$4,'automatic-renewal',$5) RETURNING id::text`, p.tenantID, p.subjectID, hash(secret), self.Scope, expiry).Scan(&r.CredentialID)
 	if err != nil {
 		return r, fail("DATABASE_UNAVAILABLE", 503)
@@ -154,7 +159,7 @@ func (s *Service) RenewServiceKeyPersisted(ctx context.Context, p Principal, ope
 	if _, err = rand.Read(nonce); err != nil {
 		return r, err
 	}
-	ciphertext = s.aead.Seal(nil, nonce, plain, renewalAAD(p.subjectID, p.credentialID, r.CredentialID))
+	ciphertext = s.aead.Seal(nil, nonce, plain, renewalAAD(p.subjectID, p.credentialID, r.CredentialID, hash(operation)))
 	if _, err = tx.Exec(ctx, `INSERT INTO service_key_renewals(previous_credential_id,next_credential_id,subject_id,operation_hash,response_nonce,response_ciphertext,replay_until) VALUES($1,$2,$3,$4,$5,$6,$7)`, p.credentialID, r.CredentialID, p.subjectID, hash(operation), nonce, ciphertext, until); err != nil {
 		return r, fail("DATABASE_UNAVAILABLE", 503)
 	}

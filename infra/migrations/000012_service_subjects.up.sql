@@ -3,6 +3,7 @@ CREATE TABLE service_subjects (
  tenant_id uuid NOT NULL REFERENCES tenants(id),
  scope text NOT NULL CHECK(scope IN ('read','admin')),
  revoked_at timestamptz,
+ renewal_enabled boolean NOT NULL DEFAULT false,
  current_credential_id uuid NOT NULL,
  created_at timestamptz NOT NULL DEFAULT now(),
  UNIQUE(id,tenant_id,scope)

@@ -26,7 +26,7 @@ func run(args []string) error {
 		return errors.New("usage: device-admin setup|bootstrap|issue-key|revoke-key|key-status --offline [options]; key output is secret")
 	}
 	command := args[0]
-	if command == "renew-key" || command == "revoke-subject" {
+	if command == "renew-key" || command == "revoke-subject" || command == "enable-renewal" || command == "disable-renewal" {
 		return runRenewalCommand(command, args[1:])
 	}
 	if command == "setup-verify" {

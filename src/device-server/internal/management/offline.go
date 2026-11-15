@@ -197,3 +197,41 @@ func RevokeSubject(ctx context.Context, pool *pgxpool.Pool, tenant, subject stri
 	}
 	return commit(ctx, tx)
 }
+
+// SetSubjectRenewal is trusted offline administration only. A finite service
+// credential cannot grant itself renewal authority through any HTTP endpoint.
+func SetSubjectRenewal(ctx context.Context, pool *pgxpool.Pool, tenant, subject string, enabled bool) error {
+	if !uuidPattern.MatchString(tenant) || !uuidPattern.MatchString(subject) {
+		return fail("INVALID_INPUT", 422)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	if err = authorization.LockTenant(ctx, tx, tenant); err != nil {
+		return err
+	}
+	var active bool
+	if err = tx.QueryRow(ctx, "SELECT status='active' FROM tenants WHERE id=$1 FOR SHARE", tenant).Scan(&active); err != nil {
+		return err
+	}
+	if !active {
+		return fail("TENANT_DISABLED", 403)
+	}
+	tag, err := tx.Exec(ctx, "UPDATE service_subjects SET renewal_enabled=$3 WHERE id=$1 AND tenant_id=$2 AND revoked_at IS NULL", subject, tenant, enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fail("SERVICE_SUBJECT_NOT_ACTIVE", 403)
+	}
+	var operator string
+	if err = tx.QueryRow(ctx, "SELECT current_user").Scan(&operator); err != nil {
+		return err
+	}
+	if err = recordAudit(ctx, tx, tenant, "offline_operator", operator, "service_subject.renewal_policy", "service_subject", subject, map[string]any{"renewal_enabled": enabled}); err != nil {
+		return err
+	}
+	return commit(ctx, tx)
+}

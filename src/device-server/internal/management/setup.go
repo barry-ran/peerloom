@@ -58,12 +58,18 @@ func SetupEmpty(ctx context.Context, pool *pgxpool.Pool, name, application strin
 	if err != nil {
 		return SetupResult{}, err
 	}
+	if _, err = tx.Exec(ctx, "UPDATE service_subjects SET renewal_enabled=true WHERE id=$1", key.SubjectID); err != nil {
+		return SetupResult{}, err
+	}
 	result := SetupResult{KeyResult: key, TenantName: name, ApplicationName: application}
 	if err = tx.QueryRow(ctx, `INSERT INTO applications(tenant_id,name,registration_mode,require_target_approval,max_connections) VALUES($1,$2,'grant',false,-1) RETURNING id::text`, tenant, application).Scan(&result.ApplicationID); err != nil {
 		return SetupResult{}, err
 	}
 	var operator string
 	if err = tx.QueryRow(ctx, "SELECT current_user").Scan(&operator); err != nil {
+		return SetupResult{}, err
+	}
+	if err = recordAudit(ctx, tx, tenant, "offline_operator", operator, "service_subject.renewal_enable", "service_subject", key.SubjectID, map[string]any{"source": "selfhost-setup"}); err != nil {
 		return SetupResult{}, err
 	}
 	if err = recordAudit(ctx, tx, tenant, "offline_operator", operator, "application.create", "application", result.ApplicationID, map[string]any{}); err != nil {
