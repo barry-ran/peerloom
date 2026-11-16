@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'third_party/rust/webrtc-0.21.1'
-MANIFEST_SHA = 'ddf3f2c6e4f9cfa6b03e8e518d994c7339ce5d6ffe55afd9079169ea669bba56'
+MANIFEST_SHA = '1f318fd1adfb81b496f5788078256562c2d3135f2cb150001d7836ab97239bc2'
 ARCHIVE_SHA = 'b621e736302bef784948cc8d8099fd0a8fdb5757693c80a344ffbe38c49387d2'
 
 

@@ -612,7 +612,7 @@
 @@ -2162 +2276 @@
 -        Ok(())
 +        Ok(turn_read)
-@@ -2541,0 +2656,1265 @@
+@@ -2541,0 +2656,1362 @@
 +
 +#[cfg(all(test, feature = "runtime-tokio", feature = "crypto-ring"))]
 +mod turn_flush_regression {
@@ -1878,6 +1878,103 @@
 +        }));
 +    }
 +}
++
++#[cfg(all(test, feature = "runtime-mock", any(feature = "crypto-ring", feature = "crypto-aws-lc-rs")))]
++mod trickle_park_wake_regression {
++    use super::*;
++    use super::super::{PeerConnection, PeerConnectionImpl};
++    use crate::runtime::{Runtime, Mutex, mock::{MockRuntime, MockUDPNetwork}};
++    use rtc::peer_connection::RTCPeerConnectionBuilder;
++    use std::sync::atomic::AtomicUsize;
++    struct WakeCount(AtomicUsize);
++    impl futures::task::ArcWake for WakeCount {
++        fn wake_by_ref(this: &Arc<Self>) { this.0.fetch_add(1, Ordering::SeqCst); }
++    }
++    #[test]
++    fn parked_ack_wakes_without_udp_or_time_advance() { run_case(0); }
++    #[test]
++    fn parked_remote_candidate_wakes_without_udp_or_time_advance() { run_case(1); }
++    #[test]
++    fn parked_remote_eoc_wakes_without_udp_or_time_advance() { run_case(2); }
++    fn run_case(kind: u8) {
++        let runtime = crate::runtime::default_runtime().unwrap();
++        runtime.block_on(Box::pin(async move {
++            let network = Arc::new(MockUDPNetwork::new());
++            let mock = Arc::new(MockRuntime::with_network(network.clone()));
++            let (mut inner, receiver) = super::super::tests::new_test_peer_connection().await;
++            Arc::get_mut(&mut inner).unwrap().runtime = mock.clone();
++            let local: SocketAddr = "127.0.0.1:55200".parse().unwrap();
++            let remote_addr: SocketAddr = "127.0.0.1:55201".parse().unwrap();
++            let socket = network.bind(local).unwrap();
++            let _remote_socket = network.bind(remote_addr).unwrap();
++            let candidate = |addr: SocketAddr| RTCIceCandidateInit {
++                candidate: format!("candidate:1 1 udp 2130706431 {} {} typ host", addr.ip(), addr.port()),
++                ..Default::default()
++            };
++            let now = mock.now();
++            let mut remote = RTCPeerConnectionBuilder::new().build(now).unwrap();
++            let mut core = inner.core.lock().await;
++            core.enable_trickle_convey().unwrap();
++            core.create_data_channel("wake", None).unwrap();
++            let offer = core.create_offer(None).unwrap();
++            core.set_local_description(now, offer.clone()).unwrap();
++            remote.set_remote_description(now, offer).unwrap();
++            let answer = remote.create_answer(None).unwrap();
++            remote.set_local_description(now, answer.clone()).unwrap();
++            core.set_remote_description(now, answer).unwrap();
++            let ticket = if kind != 2 {
++                core.add_local_candidate(candidate(local)).unwrap();
++                let ticket = core.begin_local_ice_convey(&candidate(local).candidate).unwrap().unwrap();
++                if kind == 1 { core.ack_local_ice_convey(ticket).unwrap(); }
++                if kind == 0 { core.add_remote_candidate(candidate(remote_addr)).unwrap(); }
++                Some(ticket)
++            } else {
++                core.add_local_candidate(RTCIceCandidateInit::default()).unwrap();
++                None
++            };
++            drop(core);
++            let pc = PeerConnectionImpl {
++                inner: inner.clone(), driver_handle: Mutex::new(None),
++                driver_stopped: Mutex::new(None), dedicated_reactor: false,
++            };
++            let mut driver = PeerConnectionDriver::new(inner.clone(), Vec::<SocketAddr>::new(),
++                Vec::new(), MulticastDnsMode::Disabled, Vec::new(), RTCIceTransportPolicy::All,
++                rtc::crypto::default_provider().unwrap(), false, None);
++            driver.udp_sockets.insert(local, socket);
++            driver.test_prebound_transports = true;
++            let (init, mut initialized) = crate::runtime::channel(1);
++            let count = Arc::new(WakeCount(AtomicUsize::new(0)));
++            let waker = futures::task::waker(count.clone());
++            let mut cx = std::task::Context::from_waker(&waker);
++            let mut task = Box::pin(driver.event_loop(DriverInbox::new(receiver), init));
++            assert!(task.as_mut().poll(&mut cx).is_pending());
++            assert!(initialized.try_recv().unwrap().is_ok());
++            assert!(task.as_mut().poll(&mut cx).is_pending());
++            count.0.store(0, Ordering::SeqCst);
++            for _ in 0..8 { assert!(task.as_mut().poll(&mut cx).is_pending()); }
++            assert_eq!(count.0.load(Ordering::SeqCst), 0, "fixture is genuinely parked");
++            if kind == 0 {
++                assert!(pc.ack_local_ice_convey(u64::MAX).await.is_err());
++                assert_eq!(count.0.load(Ordering::SeqCst), 0, "invalid ACK must not schedule work");
++            }
++            match kind {
++                0 => pc.ack_local_ice_convey(ticket.unwrap()).await.unwrap(),
++                1 => pc.add_ice_candidate(candidate(remote_addr)).await.unwrap(),
++                _ => pc.add_ice_candidate(RTCIceCandidateInit::default()).await.unwrap(),
++            }
++            assert!(count.0.load(Ordering::SeqCst) > 0, "actual API must wake parked select without UDP or timer");
++            assert!(task.as_mut().poll(&mut cx).is_pending());
++            assert_eq!(mock.now(), now);
++            assert!(task.as_mut().poll(&mut cx).is_pending());
++            count.0.store(0, Ordering::SeqCst);
++            for _ in 0..32 { assert!(task.as_mut().poll(&mut cx).is_pending()); }
++            assert_eq!(count.0.load(Ordering::SeqCst), 0, "no idle self spin");
++            inner.driver_event_tx.try_send(PeerConnectionDriverEvent::Close).unwrap();
++            assert!(matches!(task.as_mut().poll(&mut cx), std::task::Poll::Ready(Ok(()))), "close remains prompt");
++            assert_eq!(mock.now(), now);
++        }));
++    }
++}
 --- a/src/peer_connection/mod.rs
 +++ b/src/peer_connection/mod.rs
 @@ -188,0 +189 @@
@@ -1913,17 +2010,68 @@
 +    async fn build_inner(mut self) -> Result<PeerConnectionImpl>
 @@ -403,0 +429 @@
 +            self.data_channel_buffered_amount_events,
-@@ -785,0 +812,3 @@
+@@ -576,0 +603,11 @@
++    /// Enable deferred local pairing before initial negotiation.
++    async fn enable_trickle_convey(&self) -> Result<()>;
++    /// Reserve a single convey operation at the actual signalling writer slot.
++    async fn begin_local_ice_convey(&self, candidate: &str) -> Result<Option<u64>>;
++    /// Commit a successful signalling-write reservation.
++    async fn ack_local_ice_convey(&self, ticket: u64) -> Result<()>;
++    /// Read actual ICE local gather, remote EOC, nomination and remote candidate count.
++    async fn trickle_ice_state(&self) -> (bool, bool, bool, usize);
++    /// Read actual native remote candidate and EOC delivery counters.
++    async fn remote_ice_delivery_counts(&self) -> (u64, u64);
++
+@@ -785,0 +823,3 @@
 +    /// Immutable delivery policy for Low/High advisories only; defaults to true.
 +    /// Independent of send-buffer accounting, limits, and wakeups.
 +    pub(crate) data_channel_buffered_amount_events: bool,
-@@ -991,0 +1021 @@
+@@ -991,0 +1032 @@
 +        data_channel_buffered_amount_events: bool,
-@@ -1014,0 +1045 @@
+@@ -1014,0 +1056 @@
 +                data_channel_buffered_amount_events,
-@@ -1039,0 +1071 @@
+@@ -1039,0 +1082 @@
 +        let driver_event_rx = driver::DriverInbox::new(driver_event_rx);
-@@ -1621,0 +1654 @@
+@@ -1286,0 +1330,30 @@
++    async fn enable_trickle_convey(&self) -> Result<()> {
++        self.inner.core.lock().await.enable_trickle_convey()
++    }
++
++    async fn begin_local_ice_convey(&self, candidate: &str) -> Result<Option<u64>> {
++        self.inner
++            .core
++            .lock()
++            .await
++            .begin_local_ice_convey(candidate)
++    }
++
++    async fn ack_local_ice_convey(&self, ticket: u64) -> Result<()> {
++        self.inner.core.lock().await.ack_local_ice_convey(ticket)?;
++        // Recompute ICE's timer/checklist even when the driver is parked without UDP input.
++        self.inner
++            .driver_event_tx
++            .send(PeerConnectionDriverEvent::WriteNotify)
++            .await
++            .map_err(|_| Error::Other("peer connection driver stopped".into()))
++    }
++
++    async fn trickle_ice_state(&self) -> (bool, bool, bool, usize) {
++        self.inner.core.lock().await.trickle_ice_state()
++    }
++
++    async fn remote_ice_delivery_counts(&self) -> (u64, u64) {
++        self.inner.core.lock().await.remote_ice_delivery_counts()
++    }
++
+@@ -1308 +1381,6 @@
+-            Ok(())
++            // UDP candidates and remote EOC also change the ICE checklist/timer.
++            self.inner
++                .driver_event_tx
++                .send(PeerConnectionDriverEvent::WriteNotify)
++                .await
++                .map_err(|_| Error::Other("peer connection driver stopped".into()))
+@@ -1621,0 +1700 @@
 +            data_channel_buffered_amount_events: true,
 --- a/src/peer_connection/transport/tcp_transport.rs
 +++ b/src/peer_connection/transport/tcp_transport.rs

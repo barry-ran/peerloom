@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'third_party/rust/rtc-ice-0.21.1'
-MANIFEST_SHA = '6d617d3efee0a414713b72e53c7ef92d0a8f0c7793e9dcaf75f88179b58e3dfc'
+MANIFEST_SHA = 'fdf84b26f90097f8dbe2d6effa77b82f08deb7519cbc9ab214b25dad11003ec1'
 ARCHIVE_SHA = '099984f1be120b2e5692f232f8cbb82e53f6b4261c5c2eeda5be6223ba1adaa9'
 
 

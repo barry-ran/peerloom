@@ -11,7 +11,7 @@
   },
   "patch": {
     "file": "应用补丁.patch",
-    "sha256": "d2941319ebb2c69a29a78f90a030e824f5972a02bb6e1cefbdd55112f8280ef7",
+    "sha256": "e0084954896656fe1201647956a3ca33694da4e3160bad6801a4d3dc2455e038",
     "modified_files": [
       "Cargo.toml",
       "src/peer_connection/driver.rs",
@@ -85,12 +85,12 @@
     },
     {
       "path": "src/peer_connection/driver.rs",
-      "sha256": "87529396e178934581a84031fde68054f24628286ef180942c7b904b96d802ef",
+      "sha256": "c2a6f7946236724df1e1130cd1e15b5f172d87caaea16b6dd3b1dc0c1a9cd43e",
       "upstream_sha256": "0edb347b10805852911709b15ce21af2682f9f0580765834ca2b3b1adb7b8292"
     },
     {
       "path": "src/peer_connection/mod.rs",
-      "sha256": "6b17277fda3754578feedef44c427962f0a12d168c549e4095144a2d5bf16faf",
+      "sha256": "c756ffb9f03e53fb6c7f626064f7e3db92425322a7c473e5bc5f47a993fcb348",
       "upstream_sha256": "360c56d83f7f52b84f04a762105327af1733d4b2177b1d824d7708f73113ee61"
     },
     {

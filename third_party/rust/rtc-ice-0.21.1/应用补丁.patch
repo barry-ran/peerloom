@@ -1,6 +1,6 @@
 --- a/src/agent/agent_test.rs
 +++ b/src/agent/agent_test.rs
-@@ -3388,0 +3389,112 @@
+@@ -3388,0 +3389,152 @@
 +
 +#[test]
 +fn trickle_eoc_is_directional_and_restart_resets() -> Result<()> {
@@ -113,22 +113,64 @@
 +    }
 +    Ok(())
 +}
++
++#[test]
++fn trickle_generation_fences_reused_candidate_and_credentials() -> Result<()> {
++    let now = Instant::now();
++    let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
++    a.set_trickle_mode(true);
++    let local = trickle_test_host(10000);
++    a.add_local_candidate(local.clone())?;
++    assert!(a.begin_local_candidate_convey(&local));
++    let old_epoch = a.generation_id();
++    let old_ufrag = a.ufrag_pwd.local_credentials.ufrag.clone();
++    a.apply_restart(now, true)?;
++    assert_eq!(a.generation_id(), old_epoch + 1);
++    assert_eq!(a.ufrag_pwd.local_credentials.ufrag, old_ufrag);
++    a.add_remote_candidate(trickle_test_host(10001))?;
++    assert!(a.begin_local_candidate_convey(&local));
++    // Same lock contract used by the native ticket owner. A stale ticket must
++    // not consume the new generation's identical candidate permit.
++    assert!(!(old_epoch == a.generation_id() && a.ack_local_candidate_conveyed(&local)));
++    assert_eq!(a.conveying_local_candidates.len(), 1);
++    assert!(a.candidate_pairs.is_empty());
++    assert!(a.ack_local_candidate_conveyed(&local));
++    assert_eq!(a.candidate_pairs.len(), 1);
++    Ok(())
++}
++
++#[test]
++fn trickle_generation_exhaustion_does_not_wrap_or_mutate_restart_state() -> Result<()> {
++    let now = Instant::now();
++    let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
++    a.set_trickle_mode(true);
++    a.mark_remote_gathering_complete();
++    a.generation_id = u64::MAX;
++    let credentials = a.ufrag_pwd.local_credentials.ufrag.clone();
++    assert!(a.apply_restart(now, false).is_err());
++    assert_eq!(a.generation_id(), u64::MAX);
++    assert!(a.remote_gathering_complete());
++    assert_eq!(a.ufrag_pwd.local_credentials.ufrag, credentials);
++    Ok(())
++}
 --- a/src/agent/mod.rs
 +++ b/src/agent/mod.rs
-@@ -148,0 +149,6 @@
+@@ -148,0 +149,7 @@
 +    // Opt-in Trickle ICE lifecycle; legacy Agent users retain their timeout policy.
 +    trickle_mode: bool,
++    generation_id: u64,
 +    local_gathering_complete: bool,
 +    remote_gathering_complete: bool,
 +    unconveyed_local_candidates: Vec<usize>,
 +    conveying_local_candidates: Vec<usize>,
-@@ -268,0 +275,5 @@
+@@ -268,0 +276,6 @@
 +            trickle_mode: false,
++            generation_id: 0,
 +            local_gathering_complete: false,
 +            remote_gathering_complete: false,
 +            unconveyed_local_candidates: Vec::new(),
 +            conveying_local_candidates: Vec::new(),
-@@ -387,0 +399,72 @@
+@@ -387,0 +401,78 @@
 +    /// Enable before candidate gathering. Candidates must be acknowledged after
 +    /// ordered signaling admission before they may form connectivity-check pairs.
 +    pub fn set_trickle_mode(&mut self, enabled: bool) {
@@ -138,6 +180,11 @@
 +            self.conveying_local_candidates.clear();
 +        }
 +    }
++
++    /// Monotonic lifetime-local ICE generation, including credential-reusing restarts.
++    /// Convey tickets must retain this value and recheck it under the same Agent
++    /// lock before acknowledging; candidate equality alone does not fence restarts.
++    pub fn generation_id(&self) -> u64 { self.generation_id }
 +
 +    /// Record actual local gathering completion; pending convey acknowledgements still gate failure.
 +    pub fn mark_local_gathering_complete(&mut self) {
@@ -167,6 +214,7 @@
 +    }
 +
 +    /// Acknowledge only this generation's successfully conveyed candidate.
++    /// Caller must fence the ticket with generation_id() under this same Agent lock.
 +    /// Duplicate acknowledgements are harmless; unknown candidates are not added.
 +    pub fn ack_local_candidate_conveyed(&mut self, candidate: &Candidate) -> bool {
 +        let Some(index) = self.local_candidates.iter().position(|c| c.equal(candidate)) else {
@@ -201,9 +249,9 @@
 +    }
 +
 +    /// Register a local candidate; Trickle mode defers pairing until convey acknowledgement.
-@@ -434,0 +518 @@
+@@ -434,0 +526 @@
 +        if self.trickle_mode { self.unconveyed_local_candidates.push(local_index); }
-@@ -450,0 +535,7 @@
+@@ -450,0 +543,7 @@
 +        if self.trickle_mode && self.remote_gathering_complete { return Ok(false); }
 +        self.add_remote_candidate_inner(c)
 +    }
@@ -211,25 +259,31 @@
 +    // Also used by authenticated peer-reflexive discovery, which is not trickled
 +    // signaling and must not be rejected by the remote EOC marker.
 +    fn add_remote_candidate_inner(&mut self, c: Candidate) -> Result<bool> {
-@@ -721,0 +813,6 @@
+@@ -710,0 +810,5 @@
++        // Fail before changing credentials, candidates or lifecycle state. Never
++        // recycle a ticket generation, even when the caller reuses credentials.
++        let next_generation = self.generation_id.checked_add(1)
++            .ok_or_else(|| Error::Other("ICE generation exhausted".into()))?;
++        self.generation_id = next_generation;
+@@ -721,0 +826,6 @@
 +        self.local_gathering_complete = false;
 +        self.remote_gathering_complete = false;
 +        self.conveying_local_candidates.clear();
 +        self.unconveyed_local_candidates = if self.trickle_mode {
 +            (0..self.local_candidates.len()).collect()
 +        } else { Vec::new() };
-@@ -779 +876 @@
+@@ -779 +889 @@
 -            if self.failed_timeout != ZERO_DURATION
 +            if !self.trickle_mode && self.failed_timeout != ZERO_DURATION
-@@ -791,0 +889,3 @@
+@@ -791,0 +902,3 @@
 +        if self.connection_state == ConnectionState::Checking && self.trickle_checklist_failed() {
 +            self.update_connection_state(Some(now), ConnectionState::Failed);
 +        }
-@@ -900,0 +1001 @@
+@@ -900,0 +1014 @@
 +        if self.trickle_mode && self.unconveyed_local_candidates.contains(&local_index) { return; }
-@@ -1005,0 +1107,2 @@
+@@ -1005,0 +1120,2 @@
 +        self.unconveyed_local_candidates.clear();
 +        self.conveying_local_candidates.clear();
-@@ -1441 +1544 @@
+@@ -1441 +1557 @@
 -                        if let Ok(added) = self.add_remote_candidate(prflx_candidate)
 +                        if let Ok(added) = self.add_remote_candidate_inner(prflx_candidate)
