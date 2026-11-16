@@ -124,6 +124,14 @@ class ContractTests(unittest.TestCase):
         for case in cases:
             self.assertFalse(check.is_valid(case))
 
+    def test_trickle_sdp_forbids_inline_candidate_attributes(self):
+        check = validator('signal-envelope.schema.json')
+        e = {'v': 1, 'type': 'session.offer', 'id': UUID, 'session_id': UUID, 'seq': 1, 'sent_at': '2026-01-01T00:00:00Z', 'connection_generation': 1, 'fencing_token': 'f'*16, 'negotiation_generation': 1}
+        for sdp in ('v=0\r\na=candidate:1\r\n', 'a=end-of-candidates', 'a=Candidate:1'):
+            self.assertFalse(check.is_valid(dict(e, payload={'sdp': sdp})))
+        for sdp in ('v=0\r\na=ice-ufrag:test\r\n', 's=a=candidate: text', 'a=x-candidate:test'):
+            self.assertTrue(check.is_valid(dict(e, payload={'sdp': sdp})))
+
     def test_trickle_ice_payload(self):
         check = validator('signal-envelope.schema.json')
         c = {'candidate': 'candidate:1 1 udp 1 127.0.0.1 9 typ host', 'sdp_mid': '0', 'sdp_mline_index': 0, 'username_fragment': 'uf'}

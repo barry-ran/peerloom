@@ -46,3 +46,23 @@ func decodeICE(data json.RawMessage) (iceBatch, int, error) {
 	}
 	return batch, size, nil
 }
+
+// Initial descriptions carry ICE credentials, never candidate inventory. Parse
+// attribute names per line rather than matching text inside session names or
+// unrelated attributes. Bare CR and whitespace are handled conservatively.
+func trickleDescription(sdp string) bool {
+	for _, line := range strings.FieldsFunc(sdp, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		line = strings.TrimSpace(line)
+		if len(line) < 2 || !strings.EqualFold(line[:2], "a=") {
+			continue
+		}
+		attribute := strings.TrimSpace(line[2:])
+		if at := strings.IndexAny(attribute, ": \t"); at >= 0 {
+			attribute = attribute[:at]
+		}
+		if strings.EqualFold(attribute, "candidate") || strings.EqualFold(attribute, "end-of-candidates") {
+			return false
+		}
+	}
+	return true
+}

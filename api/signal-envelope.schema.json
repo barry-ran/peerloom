@@ -154,7 +154,11 @@
               "sdp": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 65536
+                "maxLength": 65536,
+                "description": "早期 SDP 仅含 ICE credentials；禁止 a=candidate / a=end-of-candidates 属性行，所有候选和真实 gathering 终态仅经 session.ice。服务端按属性行解析校验，内嵌文本不受影响。",
+                "not": {
+                  "pattern": "(^|[\\r\\n])[ \\t]*[aA]=[ \\t]*([cC][aA][nN][dD][iI][dD][aA][tT][eE]|[eE][nN][dD]-[oO][fF]-[cC][aA][nN][dD][iI][dD][aA][tT][eE][sS])(:|[ \\t\\r\\n]|$)"
+                }
               }
             }
           }

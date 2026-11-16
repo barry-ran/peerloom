@@ -65,7 +65,7 @@ func AuthorizationDispatch(service *authorization.Service) Dispatch {
 			var description struct {
 				SDP string `json:"sdp"`
 			}
-			if decodePayload(e.Payload, &description) != nil || len(description.SDP) == 0 || len(description.SDP) > 65536 {
+			if decodePayload(e.Payload, &description) != nil || len(description.SDP) == 0 || len(description.SDP) > 65536 || !trickleDescription(description.SDP) {
 				return closedDeliveries(session, e.ID), errors.New("invalid description")
 			}
 			session, err = service.AuthorizeDescriptionGeneration(ctx, actor, e.SessionID, e.Type, e.Negotiation)
