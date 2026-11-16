@@ -890,9 +890,7 @@ where
             // data: a send that set the flag is either already enqueued (drained
             // this iteration) or enqueues a fresh `WriteNotify` for the next one.
             self.inner.write_pending.store(false, Ordering::Release);
-            self.poll_writes().await?;
-            self.poll_events().await;
-            self.poll_reads().await?;
+            self.poll_protocol_pass().await?;
 
             // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
             // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
@@ -2000,6 +1998,24 @@ where
         }
     }
 
+    /// One normal pass plus at most one TURN-read tail pass. This bounds the
+    /// number of passes, not the size of the existing drained protocol queues.
+    /// Never re-drain media/data or self-notify: a full consumer must still park.
+    async fn poll_protocol_pass(&mut self) -> Result<bool> {
+        self.poll_writes().await?;
+        self.poll_events().await;
+        let turn_read = self.poll_reads().await?;
+        if turn_read && !self.inner.closing.load(Ordering::Acquire) {
+            // Reading TURN can generate core lifecycle events and authenticated
+            // replies after the initial writes/events passes. Handle events first
+            // so any output they produce is included in the single final flush.
+            self.poll_events().await;
+            self.poll_writes().await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     async fn poll_writes(&mut self) -> Result<()> {
         // 1.a stun_gatherer poll_write()
         while let Some(msg) = self.stun_gatherer.poll_write() {
@@ -2208,14 +2224,15 @@ where
         }
     }
 
-    async fn poll_reads(&mut self) -> Result<()> {
+    async fn poll_reads(&mut self) -> Result<bool> {
         // 3.a turn_relayer poll_read() - deliver decapsulated relay data,
         // but no need for stun_gatherer poll_read()
         let mut turn_messages = Vec::new();
         while let Some(message) = self.turn_relayer.poll_read() {
             turn_messages.push(message);
         }
-        if !turn_messages.is_empty() {
+        let turn_read = !turn_messages.is_empty();
+        if turn_read {
             let mut core = self.inner.core.lock().await;
             for message in turn_messages {
                 core.handle_read(message)?;
@@ -2236,14 +2253,14 @@ where
         // `a_rwnd` falls, and the peer slows down. Draining regardless would move the backlog
         // into this process's heap and throttle nobody.
         if self.flush_pending_data_channel_events().await {
-            return Ok(());
+            return Ok(turn_read);
         }
 
         for message in Self::drain_core_data(self.inner.clone()).await {
             self.handle_rtc_message(message).await;
         }
 
-        Ok(())
+        Ok(turn_read)
     }
 
     async fn poll_timeout(&mut self) -> Instant {
@@ -3580,5 +3597,265 @@ mod owned_tcp_regression {
             1,
             "rejected late payload dropped with its error"
         );
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "runtime-tokio",
+    feature = "crypto-ring",
+    feature = "runtime-mock"
+))]
+mod turn_read_tail_regression {
+    use super::*;
+    use bytes::BytesMut;
+    use rtc::stun::attributes::{ATTR_NONCE, ATTR_REALM};
+    use rtc::stun::error_code::CODE_UNAUTHORIZED;
+    use rtc::stun::message::{
+        CLASS_ERROR_RESPONSE, CLASS_SUCCESS_RESPONSE, METHOD_ALLOCATE, METHOD_CREATE_PERMISSION,
+        Message, MessageType,
+    };
+    use rtc::stun::textattrs::{Nonce, Realm};
+    use rtc::turn::proto::{lifetime::Lifetime, relayaddr::RelayedAddress};
+
+    fn packet(local: SocketAddr, remote: SocketAddr, bytes: &[u8]) -> TaggedBytesMut {
+        TaggedBytesMut {
+            now: Instant::now(),
+            transport: TransportContext {
+                local_addr: local,
+                peer_addr: remote,
+                ecn: None,
+                transport_protocol: TransportProtocol::UDP,
+            },
+            message: BytesMut::from(bytes),
+        }
+    }
+    fn decode(msg: TaggedBytesMut) -> Message {
+        let mut value = Message::new();
+        value.raw = msg.message.to_vec();
+        value.decode().unwrap();
+        value
+    }
+
+    #[test]
+    fn real_turn_binding_reply_must_not_wait_for_another_iteration() {
+        run_case(false, false);
+    }
+
+    #[test]
+    fn full_consumer_keeps_backpressure_without_parking_turn_reply() {
+        run_case(true, false);
+    }
+
+    #[test]
+    fn closing_turn_input_does_not_run_tail_or_emit_reply() {
+        run_case(false, true);
+    }
+
+    fn run_case(full_consumer: bool, closing: bool) {
+        let runtime = crate::runtime::default_runtime().unwrap();
+        runtime.block_on(Box::pin(async move {
+            use crate::runtime::{Runtime, mock::{MockRuntime, MockUDPNetwork}};
+            use rtc::peer_connection::RTCPeerConnectionBuilder;
+            use rtc::stun::message::{CLASS_INDICATION, METHOD_DATA};
+            use rtc::turn::proto::{data::Data, peeraddr::PeerAddress};
+            let network = Arc::new(MockUDPNetwork::new());
+            let mock = Arc::new(MockRuntime::with_network(network.clone()));
+            let (mut inner, mut wakes) = super::super::tests::new_test_peer_connection().await;
+            Arc::get_mut(&mut inner).unwrap().runtime = mock.clone();
+            let server_addr: SocketAddr = "127.0.0.1:55000".parse().unwrap();
+            let local: SocketAddr = "127.0.0.1:55003".parse().unwrap();
+            let relay: SocketAddr = "127.0.0.1:55001".parse().unwrap();
+            let peer: SocketAddr = "127.0.0.1:55002".parse().unwrap();
+            let server = network.bind(server_addr).unwrap();
+            let local_socket = network.bind(local).unwrap();
+            let receive_all = || {
+                let mut packets = Vec::new();
+                let mut bytes = [0u8; 4096];
+                let mut meta = [RecvMeta::default(); 1];
+                let waker = futures::task::noop_waker();
+                let mut cx = std::task::Context::from_waker(&waker);
+                loop {
+                    let mut buffers = [IoSliceMut::new(&mut bytes)];
+                    match server.poll_recv(&mut cx, &mut buffers, &mut meta) {
+                        std::task::Poll::Ready(Ok(_)) => packets.push(bytes[..meta[0].len].to_vec()),
+                        std::task::Poll::Pending => break,
+                        other => panic!("unexpected in-memory UDP receive: {other:?}"),
+                    }
+                }
+                packets
+            };
+            let provider = rtc::crypto::default_provider().unwrap();
+            let mut driver = PeerConnectionDriver::new(
+                inner.clone(),
+                Vec::<SocketAddr>::new(),
+                Vec::new(),
+                MulticastDnsMode::Disabled,
+                Vec::new(),
+                RTCIceTransportPolicy::Relay,
+                provider.clone(),
+                false,
+                None,
+            );
+            driver
+                .udp_sockets
+                .insert(local, local_socket);
+            driver.turn_relayer = RTCTurnRelayer::new(
+                vec![local],
+                vec![RTCIceServer {
+                    urls: vec![format!("turn:{server_addr}?transport=udp")],
+                    username: "test".into(),
+                    credential: "test".into(),
+                }],
+                RTCIceTransportPolicy::Relay,
+                None,
+                inner.runtime.clone(),
+                provider,
+            );
+            driver.turn_relayer.gather().await.unwrap();
+            let initial = decode(driver.turn_relayer.poll_write().unwrap());
+            let mut challenge = Message::new();
+            challenge
+                .build(&[
+                    Box::new(initial.transaction_id),
+                    Box::new(MessageType::new(METHOD_ALLOCATE, CLASS_ERROR_RESPONSE)),
+                    Box::new(CODE_UNAUTHORIZED),
+                    Box::new(Realm::new(ATTR_REALM, "test".into())),
+                    Box::new(Nonce::new(ATTR_NONCE, "test".into())),
+                ])
+                .unwrap();
+            driver
+                .turn_relayer
+                .handle_read(packet(local, server_addr, &challenge.raw))
+                .unwrap();
+            let authenticated = decode(driver.turn_relayer.poll_write().unwrap());
+            let mut allocated = Message::new();
+            allocated
+                .build(&[
+                    Box::new(authenticated.transaction_id),
+                    Box::new(MessageType::new(METHOD_ALLOCATE, CLASS_SUCCESS_RESPONSE)),
+                    Box::new(RelayedAddress {
+                        ip: relay.ip(),
+                        port: relay.port(),
+                    }),
+                    Box::new(Lifetime(Duration::from_secs(600))),
+                ])
+                .unwrap();
+            driver
+                .turn_relayer
+                .handle_read(packet(local, server_addr, &allocated.raw))
+                .unwrap();
+            while driver.turn_relayer.poll_event().is_some() {}
+            assert!(driver.turn_relayer.contains_local_addr(relay));
+            // Establish permission before the isolated hot write. No live TURN daemon or timers.
+            driver
+                .turn_relayer
+                .handle_write(packet(relay, peer, b"setup"))
+                .unwrap();
+            let permission = decode(driver.turn_relayer.poll_write().unwrap());
+            assert_eq!(permission.typ.method, METHOD_CREATE_PERMISSION);
+            let mut permitted = Message::new();
+            permitted
+                .build(&[
+                    Box::new(permission.transaction_id),
+                    Box::new(MessageType::new(
+                        METHOD_CREATE_PERMISSION,
+                        CLASS_SUCCESS_RESPONSE,
+                    )),
+                ])
+                .unwrap();
+            driver
+                .turn_relayer
+                .handle_read(packet(local, server_addr, &permitted.raw))
+                .unwrap();
+            while driver.turn_relayer.poll_event().is_some() {}
+            while driver.turn_relayer.poll_write().is_some() {}
+            assert!(wakes.try_recv().is_err());
+            // Establish two real sans-I/O RTC cores with valid ICE credentials.
+            let now = mock.now();
+            let mut remote = RTCPeerConnectionBuilder::new().build(now).unwrap();
+            let candidate = |addr: SocketAddr, kind: &str| RTCIceCandidateInit {
+                candidate: format!("candidate:1 1 udp 2130706431 {} {} typ {}{}", addr.ip(), addr.port(), kind, if kind == "relay" { " raddr 127.0.0.1 rport 55003" } else { "" }),
+                ..Default::default()
+            };
+            let mut core = inner.core.lock().await;
+            core.create_data_channel("diagnostic", None).unwrap();
+            core.add_local_candidate(candidate(relay, "relay")).unwrap();
+            remote.add_local_candidate(candidate(peer, "host")).unwrap();
+            let offer = core.create_offer(None).unwrap();
+            core.set_local_description(now, offer.clone()).unwrap();
+            remote.set_remote_description(now, offer).unwrap();
+            let answer = remote.create_answer(None).unwrap();
+            remote.set_local_description(now, answer.clone()).unwrap();
+            core.set_remote_description(now, answer).unwrap();
+            core.add_remote_candidate(candidate(peer, "host")).unwrap();
+            remote.add_remote_candidate(candidate(relay, "relay")).unwrap();
+            // The remote ICE agent, not the test, constructs authenticated STUN bytes.
+            mock.clock().advance(Duration::from_secs(3));
+            remote.handle_timeout(mock.now()).unwrap();
+            let check = remote.poll_write().expect("real ICE connectivity check");
+            let check_message = decode(packet(relay, peer, &check.message));
+            assert_eq!(check_message.typ, rtc::stun::message::BINDING_REQUEST);
+            drop(core);
+            driver.handle_timeout(mock.now()).await.unwrap();
+            let mut inbound = Message::new();
+            inbound.build(&[
+                Box::new(rtc::stun::message::TransactionId::default()),
+                Box::new(MessageType::new(METHOD_DATA, CLASS_INDICATION)),
+                Box::new(PeerAddress { ip: peer.ip(), port: peer.port() }),
+                Box::new(Data(check.message.to_vec())),
+            ]).unwrap();
+            let (blocked_tx, mut blocked_rx) = crate::runtime::channel(1);
+            if full_consumer {
+                blocked_tx.try_send(DataChannelEvent::OnOpen).unwrap();
+                inner.data_channel_events_tx.lock().await.insert(999, blocked_tx);
+                driver.pending_data_channel_events.insert(999, VecDeque::from([DataChannelEvent::OnClose]));
+            }
+            // Invoke the same helper as event_loop, not an extra test-only flush.
+            driver.handle_read(packet(local, server_addr, &inbound.raw)).await.unwrap();
+            inner.closing.store(closing, Ordering::Release);
+            assert_eq!(driver.poll_protocol_pass().await.unwrap(), !closing);
+            let emitted_before_park = receive_all();
+            let application_wake = wakes.try_recv().is_ok();
+            let timeout = driver.poll_timeout().await;
+            let would_wait = timeout > mock.now();
+            use rtc::stun::message::Getter;
+            let contains_reply = |packets: &[Vec<u8>]| packets.iter().any(|packet| {
+                let mut envelope = Message::new();
+                envelope.raw = packet.clone();
+                if envelope.decode().is_err() { return false; }
+                let mut data = Data::default();
+                if data.get_from(&envelope).is_err() { return false; }
+                let mut reply = Message::new();
+                reply.raw = data.0;
+                reply.decode().is_ok()
+                    && reply.typ == rtc::stun::message::BINDING_SUCCESS
+                    && reply.transaction_id == check_message.transaction_id
+            });
+            if closing {
+                assert!(!contains_reply(&emitted_before_park), "closing skips the new tail reply");
+                assert!(!application_wake);
+                return;
+            }
+            // No timer advancement or new input: idle/full queue does not schedule
+            // another tail pass or self-wake, and cannot duplicate the reply.
+            assert!(!driver.poll_protocol_pass().await.unwrap());
+            let emitted_next_pass = receive_all();
+            let current_matches = contains_reply(&emitted_before_park);
+            let next_matches = contains_reply(&emitted_next_pass);
+            assert!(!next_matches, "the same transaction must not be emitted twice");
+            assert!(wakes.try_recv().is_err(), "idle/full consumer must not self-wake");
+            if full_consumer {
+                assert!(matches!(blocked_rx.try_recv(), Ok(DataChannelEvent::OnOpen)));
+                assert!(matches!(driver.pending_data_channel_events[&999].front(), Some(DataChannelEvent::OnClose)));
+                assert_eq!(driver.pending_data_channel_events[&999].len(), 1);
+            }
+            assert!(!application_wake, "no application write notify should mask the scheduling gap");
+            assert!(would_wait, "the driver would park on a future protocol deadline");
+            assert_eq!(timeout.duration_since(mock.now()), Duration::from_millis(200));
+            assert!(current_matches,
+                "TURN read generated a real reply but driver parks before draining it: current={}, next={}, future_deadline={}, delay_ms={}, app_wake={}",
+                emitted_before_park.len(), emitted_next_pass.len(), would_wait, timeout.saturating_duration_since(mock.now()).as_millis(), application_wake);
+        }));
     }
 }
