@@ -1080,3 +1080,18 @@ async fn pre_ready_publish_success_queue_failure_and_late_ready_are_distinct() {
         );
     }
 }
+
+#[tokio::test]
+async fn pre_ready_transport_ready_without_published_event_stays_request_on_replacement() {
+    let (mut actor, mut events, id, _, request_id) = pre_ready_actor().await;
+    actor.sessions.get_mut(&id).unwrap().ready = true;
+    actor.replace_generation(&id, 2).await.unwrap();
+    assert!(events.try_recv().is_err());
+    actor
+        .close_session(&id, SdkError::Closed, false)
+        .await
+        .unwrap();
+    assert!(
+        matches!(events.try_recv().unwrap(), SdkEvent::ConnectionRequestFailed { request_id: got, .. } if got == request_id)
+    );
+}
