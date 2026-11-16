@@ -312,6 +312,28 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(archive.extractfile(name).read(), data)
             self.assertEqual(sums[name], checksum)
 
+    def test_modified_rtc_turn_provenance_and_original_license_are_checksummed(self):
+        import shutil
+        original = Path(__file__).resolve().parents[1]
+        vendor = original/'third_party/rust/rtc-turn-0.21.1'
+        shutil.copytree(vendor, self.root/'third_party/rust/rtc-turn-0.21.1')
+        data = (vendor/'crate/LICENSE-MIT').read_bytes()
+        checksum = m.hashlib.sha256(data).hexdigest()
+        notice = self.proof/'licenses'/f'{checksum}.txt'
+        notice.parent.mkdir(); notice.write_bytes(data)
+        producer.append_owned_manifest(self.proof, {notice.relative_to(self.proof).as_posix():checksum})
+        self.finish()
+        with tarfile.open(self.output/'peerloom-linux-x86_64.tar.gz', 'r:gz') as archive:
+            sums = dict(line.split('  ', 1)[::-1] for line in archive.extractfile('SHA256SUMS').read().decode('utf-8').splitlines())
+            for relative in ('来源.json', '应用补丁.patch', '补丁说明.md'):
+                name = 'third-party/vendor/rtc-turn-0.21.1/'+relative
+                actual = archive.extractfile(name).read()
+                self.assertEqual(actual, (vendor/relative).read_bytes())
+                self.assertEqual(m.hashlib.sha256(actual).hexdigest(), sums[name])
+            name = 'third-party/cargo-go-all-lock-candidates/licenses/'+checksum+'.txt'
+            self.assertEqual(archive.extractfile(name).read(), data)
+            self.assertEqual(sums[name], checksum)
+
     def test_wrong_commit_rejected(self):
         with self.assertRaisesRegex(m.PackageError, 'COMMIT'):
             m.finish(self.root,self.output,'linux-x86_64','branch',[])

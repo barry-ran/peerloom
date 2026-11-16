@@ -28,6 +28,7 @@ python3 scripts/test-tls-compose-script.py
 python3 scripts/test-windows-service-script.py
 python3 scripts/test-vendor-evidence.py
 python3 scripts/test-vendored-webrtc.py
+python3 scripts/test-vendored-rtc-turn.py
 python3 bindings/android/scripts/test-maven-evidence.py
 (
   cd src/device-server
@@ -42,6 +43,7 @@ python3 bindings/android/scripts/test-maven-evidence.py
   cargo fmt --all -- --check
   cargo clippy --workspace --all-targets --locked -- -D warnings
   cargo test --workspace --locked
+  cargo test --manifest-path ../../third_party/rust/rtc-turn-0.21.1/crate/Cargo.toml --lib --locked
   if [[ "$(uname -s)" == Linux ]]; then
     # 真实 UDP worker 回归不属于默认单测；只跳过显式性能测量。
     timeout --signal=TERM --kill-after=10s 180s \
