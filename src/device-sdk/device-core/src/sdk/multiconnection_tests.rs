@@ -1268,3 +1268,79 @@ async fn pending_authority_ice_overflow_refuses_locally_without_remote_close() {
     actor.signal.take().unwrap().close().await;
     server.await.unwrap();
 }
+
+#[cfg(feature = "test-diagnostics")]
+#[tokio::test]
+async fn replacement_generation_ignores_late_ice_before_real_agent_delivery() {
+    use device_transport_webrtc::LocalIceEvent;
+    let (mut actor, _events, server, authority) = capacity_actor(0).await;
+    let id = uuid::Uuid::new_v4().to_string();
+    let initial = capacity_snapshot(&actor, &id, false);
+    let mut live = initial.clone();
+    live.payload["state"] = json!("connecting");
+    live.payload["negotiation_generation"] = json!(2);
+    live.payload["lease_generation"] = json!(2);
+    authority.lock().unwrap().insert(id.clone(), live);
+    actor.message(initial.clone()).await.unwrap();
+    apply_authority_reply(&mut actor).await;
+    let config = TransportConfig {
+        include_loopback: true,
+        bind_address: "127.0.0.1:0".parse().unwrap(),
+        ..TransportConfig::default()
+    };
+    let remote = Arc::new(PeerTransport::new(config.clone()).await.unwrap());
+    let local = Arc::new(PeerTransport::new(config).await.unwrap());
+    let _channel = remote
+        .create_channel("test", ChannelMode::ReliableMessage)
+        .await
+        .unwrap();
+    let offer = remote.create_offer_trickle().await.unwrap();
+    let answer = local.answer_offer_trickle(offer).await.unwrap();
+    let LocalIceEvent::Candidate(candidate) = remote.next_local_ice().await.unwrap() else {
+        panic!("host candidate");
+    };
+    let batch = serde_json::to_value(IceBatch::local(Some(candidate))).unwrap();
+    let (control, received) = mpsc::channel(258);
+    let (ready, _ready_rx) = oneshot::channel();
+    let gate = actor.sessions.get(&id).unwrap().gate.clone();
+    let peer = local.clone();
+    let task =
+        tokio::spawn(async move { trickle::receive(peer, received, true, ready, gate).await });
+    actor.sessions.get_mut(&id).unwrap().worker = Some(Worker {
+        control: control.clone(),
+        stop: None,
+        task,
+    });
+    let mut message = initial.clone();
+    message.kind = "session.ice".into();
+    message.payload = batch.clone();
+    message.negotiation_generation = Some(1);
+    for _ in 0..300 {
+        actor.message(message.clone()).await.unwrap();
+    }
+    message.negotiation_generation = Some(2);
+    for _ in 0..3 {
+        actor.message(message.clone()).await.unwrap();
+    }
+    message.payload = json!({"candidates":[],"complete":true});
+    for _ in 0..2 {
+        actor.message(message.clone()).await.unwrap();
+    }
+    message.payload = batch;
+    actor.message(message).await.unwrap();
+    // Ordered terminal barrier lets us inspect real Agent calls without sleeps.
+    control
+        .send(RemoteSignal::Answer(Box::new(answer)))
+        .await
+        .unwrap();
+    let mut worker = actor.sessions.get_mut(&id).unwrap().worker.take().unwrap();
+    assert_eq!(
+        (&mut worker.task).await.unwrap(),
+        Err(SdkError::Signal(SignalError::InvalidMessage))
+    );
+    assert_eq!(local.remote_ice_delivery_counts().await, (1, 1));
+    local.close().await.unwrap();
+    remote.close().await.unwrap();
+    actor.signal.take().unwrap().close().await;
+    server.await.unwrap();
+}

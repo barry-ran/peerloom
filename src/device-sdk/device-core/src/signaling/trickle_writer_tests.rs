@@ -40,8 +40,8 @@ async fn cancelled_generation_does_not_close_shared_signal_writer() {
         ice.session_id = Some(uuid::Uuid::new_v4().to_string());
         ice.negotiation_generation = Some(1);
         let (commands, received) = mpsc::channel(8);
-        let (events, _event_rx) = mpsc::channel(8);
-        let (stop, stopped) = oneshot::channel();
+        let (events, mut event_rx) = mpsc::channel(8);
+        let (_stop, stopped) = oneshot::channel();
         let ack = Envelope::new("hello.ack", json!({})).unwrap();
         let task = tokio::spawn(async move {
             drive(&mut socket, ack, 60, 60, received, &events, stopped).await
@@ -102,8 +102,18 @@ async fn cancelled_generation_does_not_close_shared_signal_writer() {
         assert_eq!(frame.seq, 2);
         assert_eq!(frame.kind, "session.renew");
         assert!(result.await.unwrap().is_ok());
-        stop.send(()).unwrap();
-        task.await.unwrap().unwrap();
+        // Out-of-order incoming signalling cannot reach the ICE consumer.
+        let mut wrong_order =
+            Envelope::new("session.ice", json!({"candidates":[],"complete":true})).unwrap();
+        wrong_order.seq = 2; // the receiving sequence still expects 1
+        server
+            .send(Message::Text(
+                serde_json::to_string(&wrong_order).unwrap().into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(task.await.unwrap(), Err(SignalError::InvalidMessage));
+        assert!(event_rx.try_recv().is_err());
         peer.close().await.unwrap();
     })
     .await

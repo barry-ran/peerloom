@@ -29,7 +29,7 @@ sequenceDiagram
 - 传输层负责真实 SDP 的 mid、媒体索引和 ICE ufrag 校验、候选语法、DirectOnly/RelayOnly 的既有策略和资源边界。
 - 当前只支持一个 application 媒体区段的 DataChannel 连接；不假装底层空 mid 是有效上下文，不接受歧义媒体区段。
 - 每批最多 16 个候选，每代每方向最多 256 个候选、256 KiB 字段预算；重复候选也计入接收预算。队列溢出是显式错误，不静默丢候选。
-- Complete 只表示全部收集工作已结束，不代表每个 TURN 成功。完成后拒绝新远端候选，重复空完成标记幂等。
+- Complete 只表示全部收集工作已结束，不代表每个 TURN 成功。接收完成标记会真实传达给底层 ICE Agent；其后的合法候选继续受鉴权、代次和累计预算检查，但被忽略而不再进入 Agent，重复空完成标记也不重复交付。
 - 结束会话时取消候选收发 future，再显式关闭 peer。原始候选、地址、SDP 与 ufrag 不输出日志。
 
 `create_offer`、`answer_offer` 等完整 SDP 底层接口仍可用于独立传输测试；产品新信令使用增量接口，不通过旧协议兼容分支降级。
@@ -37,3 +37,11 @@ sequenceDiagram
 ## 验证
 
 `cargo test -p device-transport-webrtc --lib` 覆盖上下文错误、注入、资源上限和完成顺序；`cargo test -p device-transport-webrtc --test trickle_pair -- --ignored` 使用仅本机 UDP 黑洞验证慢 TURN 未终态时已经通过可用 host 候选双向传输，并继续接收真实收集完成通知。这不替代真实双端、中继及业务授权的整合验收。
+
+## 传达与取消语义
+
+本地候选先由底层暂存；实际 WebSocket 写槽在同一个 native 锁下检查 nomination 并预留一次性 ticket，写成功后由会话 worker 复核授权和代次并消费 ticket，才允许参与配对。该成功仅表示 sent-to-signalling，不是对端 ACK。nomination 后不开始新的候选传达；已预留的在途写可以完成，但其 ACK 不再创建新的候选对。Nominated 与真实 gathering Complete 是不同事件，不用 nomination 伪造收集完成。
+
+未消费 ticket、ACK 丢失或发送取消只失败所属 peer 代次；其他会话共用的信令连接继续服务。实际 WebSocket 写失败或半写状态不确定时才丢弃该共享连接并走恢复。完成后的 worker 仍监控持久失败状态，不能因 candidate pump 已进入等待而漏掉 ticket Drop。
+
+诊断特性下的 core 回归读取真实 rtc→ICE Agent 的候选/EOC 交付计数，覆盖 pre-SDP 排队、重复候选、重复 EOC、EOC 后候选及旧代迟到消息。该计数不包含候选地址或凭据，不用于产品 UI 或日志。

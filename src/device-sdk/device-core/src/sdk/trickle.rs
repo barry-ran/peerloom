@@ -156,6 +156,61 @@ mod tests {
                 .is_ok()
         );
     }
+    #[cfg(feature = "test-diagnostics")]
+    #[tokio::test]
+    async fn reordered_pre_sdp_duplicates_and_eoc_reach_real_ice_once() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let config = TransportConfig {
+                include_loopback: true,
+                bind_address: "127.0.0.1:0".parse().unwrap(),
+                ..TransportConfig::default()
+            };
+            let a = Arc::new(PeerTransport::new(config.clone()).await.unwrap());
+            let b = Arc::new(PeerTransport::new(config).await.unwrap());
+            let _channel = a
+                .create_channel("test", ChannelMode::ReliableMessage)
+                .await
+                .unwrap();
+            let offer = a.create_offer_trickle().await.unwrap();
+            let answer = b.answer_offer_trickle(offer).await.unwrap();
+            let LocalIceEvent::Candidate(candidate) = b.next_local_ice().await.unwrap() else {
+                panic!("host candidate");
+            };
+            let batch = IceBatch::local(Some(candidate));
+            let (tx, rx) = mpsc::channel(16);
+            let (answer_ready, _answered) = oneshot::channel();
+            let gate = Arc::new(Gate::default());
+            gate.update(Some(Instant::now() + Duration::from_secs(30)));
+            for _ in 0..3 {
+                tx.send(RemoteSignal::Ice(batch.clone())).await.unwrap();
+            }
+            for _ in 0..2 {
+                tx.send(RemoteSignal::Ice(IceBatch::local(None)))
+                    .await
+                    .unwrap();
+            }
+            tx.send(RemoteSignal::Answer(Box::new(answer.clone())))
+                .await
+                .unwrap();
+            tx.send(RemoteSignal::Ice(batch)).await.unwrap();
+            tx.send(RemoteSignal::Ice(IceBatch::local(None)))
+                .await
+                .unwrap();
+            // This terminal protocol error is an ordered processing barrier, not a timer.
+            tx.send(RemoteSignal::Answer(Box::new(answer)))
+                .await
+                .unwrap();
+            assert_eq!(
+                receive(a.clone(), rx, false, answer_ready, gate).await,
+                Err(SdkError::Signal(SignalError::InvalidMessage))
+            );
+            assert_eq!(a.remote_ice_delivery_counts().await, (1, 1));
+            a.close().await.unwrap();
+            b.close().await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
     fn worker(offer: Option<SessionDescription>, turn_port: u16) -> TestWorker {
         let gate = Arc::new(Gate::default());
         gate.update(Some(Instant::now() + Duration::from_secs(60)));
