@@ -539,6 +539,8 @@ pub(crate) struct PeerConnectionDriver<A = SocketAddr> {
     turn_relayer: RTCTurnRelayer,
     #[cfg(test)]
     test_core_writes: Vec<TaggedBytesMut>,
+    #[cfg(test)]
+    test_prebound_transports: bool,
     tcp_transport: RTCTcpTransport,
     mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
     udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
@@ -607,6 +609,8 @@ where
         Self {
             #[cfg(test)]
             test_core_writes: Vec::new(),
+            #[cfg(test)]
+            test_prebound_transports: false,
             inner,
             // Placeholders until `bind_transports` runs; constructing them costs no I/O.
             stun_gatherer: RTCStunGatherer::new(
@@ -779,7 +783,16 @@ where
         // Build the transports before reporting init, so `build()` sees a bind or wrap failure
         // as an error instead of returning a healthy-looking connection in front of a dead
         // driver. Capacity-1 channel, sent exactly once → `try_send` never fails as Full.
-        if let Err(err) = self.bind_transports().await {
+        // Tests may supply in-memory transports; all loop/select logic remains unchanged.
+        #[cfg(test)]
+        let bind_result = if std::mem::take(&mut self.test_prebound_transports) {
+            Ok(())
+        } else {
+            self.bind_transports().await
+        };
+        #[cfg(not(test))]
+        let bind_result = self.bind_transports().await;
+        if let Err(err) = bind_result {
             let _ = init_tx.try_send(Err(Error::Other(err.to_string())));
             return Err(err);
         }
@@ -3639,20 +3652,30 @@ mod turn_read_tail_regression {
 
     #[test]
     fn real_turn_binding_reply_must_not_wait_for_another_iteration() {
-        run_case(false, false);
+        run_case(false, false, false);
     }
 
     #[test]
     fn full_consumer_keeps_backpressure_without_parking_turn_reply() {
-        run_case(true, false);
+        run_case(true, false, false);
     }
 
     #[test]
     fn closing_turn_input_does_not_run_tail_or_emit_reply() {
-        run_case(false, true);
+        run_case(false, true, false);
     }
 
-    fn run_case(full_consumer: bool, closing: bool) {
+    #[test]
+    fn event_loop_turn_reply_idle_and_close() {
+        run_case(false, false, true);
+    }
+
+    #[test]
+    fn event_loop_turn_reply_full_consumer_and_close() {
+        run_case(true, false, true);
+    }
+
+    fn run_case(full_consumer: bool, closing: bool, complete_loop: bool) {
         let runtime = crate::runtime::default_runtime().unwrap();
         runtime.block_on(Box::pin(async move {
             use crate::runtime::{Runtime, mock::{MockRuntime, MockUDPNetwork}};
@@ -3811,14 +3834,6 @@ mod turn_read_tail_regression {
                 inner.data_channel_events_tx.lock().await.insert(999, blocked_tx);
                 driver.pending_data_channel_events.insert(999, VecDeque::from([DataChannelEvent::OnClose]));
             }
-            // Invoke the same helper as event_loop, not an extra test-only flush.
-            driver.handle_read(packet(local, server_addr, &inbound.raw)).await.unwrap();
-            inner.closing.store(closing, Ordering::Release);
-            assert_eq!(driver.poll_protocol_pass().await.unwrap(), !closing);
-            let emitted_before_park = receive_all();
-            let application_wake = wakes.try_recv().is_ok();
-            let timeout = driver.poll_timeout().await;
-            let would_wait = timeout > mock.now();
             use rtc::stun::message::Getter;
             let contains_reply = |packets: &[Vec<u8>]| packets.iter().any(|packet| {
                 let mut envelope = Message::new();
@@ -3832,6 +3847,50 @@ mod turn_read_tail_regression {
                     && reply.typ == rtc::stun::message::BINDING_SUCCESS
                     && reply.transaction_id == check_message.transaction_id
             });
+            if complete_loop {
+                use std::sync::atomic::AtomicUsize;
+                struct WakeCount(AtomicUsize);
+                impl futures::task::ArcWake for WakeCount {
+                    fn wake_by_ref(this: &Arc<Self>) { this.0.fetch_add(1, Ordering::SeqCst); }
+                }
+                let count = Arc::new(WakeCount(AtomicUsize::new(0)));
+                let waker = futures::task::waker(count.clone());
+                let mut cx = std::task::Context::from_waker(&waker);
+                let (events, receiver) = crate::runtime::channel(8);
+                let (init, mut initialized) = crate::runtime::channel(1);
+                driver.test_prebound_transports = true;
+                let before = mock.now();
+                let mut task = Box::pin(driver.event_loop(DriverInbox::new(receiver), init));
+                assert!(task.as_mut().poll(&mut cx).is_pending());
+                assert!(initialized.try_recv().unwrap().is_ok());
+                receive_all(); // Discard only startup output, before the tested request exists.
+                send_datagrams(server.as_ref(), &inbound.raw, 0, local, None).await.unwrap();
+                assert!(task.as_mut().poll(&mut cx).is_pending());
+                assert!(contains_reply(&receive_all()), "full event_loop must flush exact TURN transaction before parking");
+                assert_eq!(mock.now(), before, "no virtual timer advance masks the gap");
+                // Settle executor bookkeeping, then repeated external polls of the
+                // parked future must neither self-wake nor emit another response.
+                assert!(task.as_mut().poll(&mut cx).is_pending());
+                count.0.store(0, Ordering::SeqCst);
+                for _ in 0..32 { assert!(task.as_mut().poll(&mut cx).is_pending()); }
+                assert_eq!(count.0.load(Ordering::SeqCst), 0, "idle/full consumer must not self-schedule");
+                assert!(!contains_reply(&receive_all()));
+                events.try_send(PeerConnectionDriverEvent::Close).unwrap();
+                assert!(matches!(task.as_mut().poll(&mut cx), std::task::Poll::Ready(Ok(()))), "Close must complete without advancing timer or consuming blocked data");
+                drop(task);
+                if full_consumer {
+                    assert!(matches!(blocked_rx.try_recv(), Ok(DataChannelEvent::OnOpen)));
+                }
+                return;
+            }
+            // Invoke the same helper as event_loop, not an extra test-only flush.
+            driver.handle_read(packet(local, server_addr, &inbound.raw)).await.unwrap();
+            inner.closing.store(closing, Ordering::Release);
+            assert_eq!(driver.poll_protocol_pass().await.unwrap(), !closing);
+            let emitted_before_park = receive_all();
+            let application_wake = wakes.try_recv().is_ok();
+            let timeout = driver.poll_timeout().await;
+            let would_wait = timeout > mock.now();
             if closing {
                 assert!(!contains_reply(&emitted_before_park), "closing skips the new tail reply");
                 assert!(!application_wake);
