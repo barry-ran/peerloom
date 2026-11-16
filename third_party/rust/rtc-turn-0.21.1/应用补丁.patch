@@ -1,0 +1,130 @@
+--- a/src/client/binding.rs
++++ b/src/client/binding.rs
+@@ -26,6 +26,7 @@
+     pub(crate) st: BindingState,
+     pub(crate) addr: SocketAddr,
+     pub(crate) refreshed_at: Instant,
++    pub(crate) stale_nonce_retries: u16,
+ }
+ 
+ impl Binding {
+@@ -78,6 +79,7 @@
+             st: BindingState::Idle,
+             addr,
+             refreshed_at: now,
++            stale_nonce_retries: 0,
+         };
+ 
+         self.chan_map.insert(b.number, b.addr.to_string());
+--- a/src/client/relay.rs
++++ b/src/client/relay.rs
+@@ -546,6 +546,29 @@
+         res: Message,
+         bind_addr: SocketAddr,
+     ) -> Result<()> {
++        if res.typ.class == CLASS_ERROR_RESPONSE {
++            let mut code = ErrorCodeAttribute::default();
++            if code.get_from(&res).is_ok() && code.code == CODE_STALE_NONCE {
++                // RFC 8656 section 12: retain the live peer/channel association.
++                // Reassigning a number after 438 conflicts with the server's binding.
++                let nonce = Nonce::get_from_as(&res, ATTR_NONCE)?;
++                if nonce.text.is_empty() { return Err(Error::ErrTryAgain); }
++                let relay = self.client.relays.get_mut(&self.relayed_addr)
++                    .ok_or(Error::ErrConnClosed)?;
++                relay.nonce = nonce.clone();
++                let key = relay.long_term_integrity_key.clone();
++                let binding = self.client.binding_mgr.get_by_addr(&bind_addr)
++                    .ok_or(Error::ErrConnClosed)?;
++                if binding.stale_nonce_retries >= MAX_RETRY_ATTEMPTS {
++                    binding.set_state(BindingState::Failed);
++                    return Err(Error::ErrTryAgain);
++                }
++                binding.stale_nonce_retries += 1;
++                let number = binding.number;
++                binding.set_state(BindingState::Request);
++                return self.channel_bind(now, self.relayed_addr, bind_addr, number, nonce, key);
++            }
++        }
+         if let Some(relay) = self.client.relays.get_mut(&self.relayed_addr) {
+             let result = if res.typ.class == CLASS_ERROR_RESPONSE {
+                 let mut code = ErrorCodeAttribute::default();
+@@ -574,6 +597,7 @@
+                 // keep going...
+                 warn!("bind() failed: {}", err);
+             } else if let Some(b) = self.client.binding_mgr.get_by_addr(&bind_addr) {
++                b.stale_nonce_retries = 0;
+                 b.set_refreshed_at(now);
+                 b.set_state(BindingState::Ready);
+                 debug!("channel binding successful: {}", bind_addr);
+--- a/src/client/client_test.rs
++++ b/src/client/client_test.rs
+@@ -812,3 +812,69 @@
+     assert!(client.poll_write().is_some(), "UDP retransmits");
+     Ok(())
+ }
++
++#[test]
++fn channel_refresh_438_preserves_existing_number() -> Result<()> {
++    use crate::client::binding::BindingState;
++    use stun::error_code::{ErrorCodeAttribute, CODE_STALE_NONCE};
++    let now = Instant::now();
++    let (_socket, mut client) = create_listening_test_client(0)?;
++    let relay_addr: RelayedAddr = "127.0.0.1:50000".parse().unwrap();
++    let peer = "127.0.0.1:50001".parse().unwrap();
++    client.relays.insert(relay_addr, RelayState::new(now, relay_addr, vec![0;16], Nonce::new(ATTR_NONCE, "old".to_owned()), Duration::from_secs(600), None));
++    client.turn_serv_addr = Some("127.0.0.1:3478".parse().unwrap());
++    let original = client.binding_mgr.create(now, peer).unwrap().number;
++    client.binding_mgr.get_by_addr(&peer).unwrap().set_state(BindingState::Refresh);
++    let mut response = Message::new();
++    response.build(&[
++        Box::new(TransactionId::new()),
++        Box::new(MessageType::new(METHOD_CHANNEL_BIND, CLASS_ERROR_RESPONSE)),
++        Box::new(ErrorCodeAttribute { code: CODE_STALE_NONCE, reason: vec![] }),
++        Box::new(Nonce::new(ATTR_NONCE, "new".to_owned())),
++    ])?;
++    client.relay(relay_addr)?.handle_channel_bind_response(now, response, peer)?;
++    let binding = client.binding_mgr.find_by_addr(&peer).expect("438 must not delete live server binding");
++    assert_eq!(binding.number, original, "new number conflicts with existing server peer binding (400)");
++    assert_eq!(binding.state(), BindingState::Request, "438 must retry old number");
++    let mut sent = Message::new();
++    sent.raw = client.poll_write().expect("immediate retry").message.to_vec();
++    sent.decode()?;
++    let mut number = crate::proto::channum::ChannelNumber::default();
++    number.get_from(&sent)?;
++    assert_eq!(number.0, original);
++    assert_eq!(Nonce::get_from_as(&sent, ATTR_NONCE)?.text, "new");
++    // Simulated server association accepts the old number, rejects reassignment with 400.
++    let server_result = if number.0 == original { 200 } else { 400 };
++    assert_eq!(server_result, 200);
++    for attempt in 2..=4 {
++        let mut stale = Message::new();
++        stale.build(&[
++            Box::new(TransactionId::new()),
++            Box::new(MessageType::new(METHOD_CHANNEL_BIND, CLASS_ERROR_RESPONSE)),
++            Box::new(ErrorCodeAttribute { code: CODE_STALE_NONCE, reason: vec![] }),
++            Box::new(Nonce::new(ATTR_NONCE, format!("nonce-{attempt}"))),
++        ])?;
++        let result = client.relay(relay_addr)?.handle_channel_bind_response(now, stale, peer);
++        assert_eq!(result.is_ok(), attempt <= 3);
++        assert_eq!(client.binding_mgr.find_by_addr(&peer).unwrap().number, original);
++        let output = client.poll_write();
++        assert_eq!(output.is_some(), attempt <= 3, "bounded retry");
++    }
++    let mut success = Message::new();
++    success.build(&[Box::new(TransactionId::new()), Box::new(MessageType::new(METHOD_CHANNEL_BIND, CLASS_SUCCESS_RESPONSE))])?;
++    client.relay(relay_addr)?.handle_channel_bind_response(now, success, peer)?;
++    let binding = client.binding_mgr.find_by_addr(&peer).unwrap();
++    assert_eq!(binding.stale_nonce_retries, 0);
++    assert_eq!(binding.state(), BindingState::Ready);
++    for missing in [true, false] {
++        let mut malformed = Message::new();
++        let mut attrs: Vec<Box<dyn Setter>> = vec![Box::new(TransactionId::new()), Box::new(MessageType::new(METHOD_CHANNEL_BIND, CLASS_ERROR_RESPONSE)), Box::new(ErrorCodeAttribute { code: CODE_STALE_NONCE, reason: vec![] })];
++        if !missing { attrs.push(Box::new(Nonce::new(ATTR_NONCE, String::new()))); }
++        malformed.build(&attrs)?;
++        assert!(client.relay(relay_addr)?.handle_channel_bind_response(now, malformed, peer).is_err());
++        assert_eq!(client.binding_mgr.find_by_addr(&peer).unwrap().number, original);
++        assert!(client.poll_write().is_none());
++    }
++
++    Ok(())
++}
