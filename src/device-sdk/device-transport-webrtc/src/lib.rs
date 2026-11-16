@@ -8,7 +8,7 @@ mod diagnostics;
 use diagnostics::{Phase, Trace};
 
 mod trickle;
-pub use trickle::{IceCandidate, LocalIceEvent};
+pub use trickle::{IceCandidate, LocalIceConveyTicket, LocalIceEvent};
 
 mod gathering;
 pub use gathering::GatheringOutcome;
@@ -343,6 +343,16 @@ impl PeerConnectionEventHandler for Handler {
                 .map_err(classify_backend),
         );
         self.candidates.send_replace(());
+    }
+
+    async fn on_ice_connection_state_change(
+        &self,
+        state: rtc::peer_connection::state::RTCIceConnectionState,
+    ) {
+        // rtc Agent emits Connected only when a successful nominated pair is selected.
+        if state == rtc::peer_connection::state::RTCIceConnectionState::Connected {
+            self.local_ice.nominate();
+        }
     }
 
     async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {

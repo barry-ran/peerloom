@@ -7,7 +7,13 @@ use std::{sync::Arc, time::Duration};
 async fn pump(from: Arc<PeerTransport>, to: Arc<PeerTransport>) -> Result<(), TransportError> {
     loop {
         match from.next_local_ice().await? {
-            LocalIceEvent::Candidate(candidate) => to.add_remote_ice(&[candidate], false).await?,
+            LocalIceEvent::Candidate(candidate) => {
+                if let Some(ticket) = from.begin_local_ice_convey(&candidate).await? {
+                    to.add_remote_ice(&[candidate], false).await?;
+                    from.ack_local_ice_convey(ticket).await?;
+                }
+            }
+            LocalIceEvent::Nominated => {}
             LocalIceEvent::Complete => {
                 to.add_remote_ice(&[], true).await?;
                 return Ok(());
@@ -81,6 +87,14 @@ async fn trickle_connects_before_unresponsive_turn_finishes() {
                 .is_ok()
         );
         a.add_remote_ice(&[], true).await.unwrap(); // repeated completion is idempotent
+        #[cfg(feature = "test-diagnostics")]
+        {
+            let left = a.trickle_ice_state().await;
+            let right = b.trickle_ice_state().await;
+            assert!(left.0 && left.1 && left.2 && left.3 > 0);
+            assert!(right.0 && right.1 && right.2 && right.3 > 0);
+        }
+
         assert_eq!(
             a.gathering_outcome(),
             device_transport_webrtc::GatheringOutcome::Complete
@@ -171,4 +185,43 @@ async fn trickle_relay_only_never_falls_back_and_close_wakes_pending_event() {
     b.close().await.unwrap();
     blackhole.abort();
     let _ = blackhole.await;
+}
+
+#[tokio::test]
+#[ignore = "real owned loopback UDP; explicit acceptance gate"]
+async fn abandoned_convey_ticket_fails_monitor_without_faking_gather_completion() {
+    let config = TransportConfig {
+        policy: ConnectionPolicy::Auto,
+        include_loopback: true,
+        bind_address: "127.0.0.1:0".parse().unwrap(),
+        ..Default::default()
+    };
+    let peer = PeerTransport::new(config).await.unwrap();
+    let _channel = peer
+        .create_channel("ticket", ChannelMode::ReliableMessage)
+        .await
+        .unwrap();
+    peer.create_offer_trickle().await.unwrap();
+    let candidate = match tokio::time::timeout(Duration::from_secs(3), peer.next_local_ice())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        LocalIceEvent::Candidate(c) => c,
+        _ => panic!("host candidate expected"),
+    };
+    let ticket = peer
+        .begin_local_ice_convey(&candidate)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(peer.begin_local_ice_convey(&candidate).await.is_err());
+    drop(ticket);
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(1), peer.wait_trickle_failure())
+            .await
+            .unwrap(),
+        Err(TransportError::Closed)
+    ));
+    peer.close().await.unwrap();
 }

@@ -754,6 +754,8 @@ pub struct RTCPeerConnection {
     last_answer: String,
 
     ice_restart_requested: Option<RTCOfferOptions>,
+    local_convey_sequence: u64,
+    local_convey_inflight: Option<(u64, Candidate, String)>,
     negotiation_needed_state: NegotiationNeededState,
     is_negotiation_ongoing: bool,
 }
@@ -1711,6 +1713,92 @@ impl RTCPeerConnection {
     /// # Specification
     ///
     /// See [addIceCandidate](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addicecandidate!overload-1)
+    /// Enable RFC 8838 candidate pairing only after signalling has conveyed the local candidate.
+    /// Must be called before descriptions or candidate gathering begin.
+    pub fn enable_trickle_convey(&mut self) -> Result<()> {
+        if self.local_description().is_some() || self.remote_description().is_some() {
+            return Err(Error::Other("trickle mode already negotiated".into()));
+        }
+        self.ice_transport_mut().agent.set_trickle_mode(true);
+        Ok(())
+    }
+
+    /// Called in the actual signalling writer slot. The caller serializes this method with
+    /// ICE input by the same core lock; reservation is the convey-start linearization point.
+    /// In-flight writes may finish after nomination, but no new reservation is then issued.
+    pub fn begin_local_ice_convey(&mut self, value: &str) -> Result<Option<u64>> {
+        if self.peer_connection_state == RTCPeerConnectionState::Closed {
+            return Err(Error::ErrConnectionClosed);
+        }
+        if self.local_convey_inflight.is_some() {
+            return Err(Error::Other("local convey already in flight".into()));
+        }
+        if self
+            .ice_transport()
+            .agent
+            .get_selected_candidate_pair()
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let candidate = unmarshal_candidate(value.strip_prefix("candidate:").unwrap_or(value))?;
+        if !self
+            .ice_transport_mut()
+            .agent
+            .begin_local_candidate_convey(&candidate)
+        {
+            return Err(Error::Other("local candidate not pending convey".into()));
+        }
+        self.local_convey_sequence = self
+            .local_convey_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Other("local convey sequence exhausted".into()))?;
+        let ticket = self.local_convey_sequence;
+        let ufrag = self
+            .ice_transport()
+            .get_local_user_credentials()
+            .0
+            .to_owned();
+        self.local_convey_inflight = Some((ticket, candidate, ufrag));
+        Ok(Some(ticket))
+    }
+
+    /// Commit only an owned successful signalling-write ticket. Nomination is checked again
+    /// by the agent, so a completed in-flight write cannot create another pair after selection.
+    pub fn ack_local_ice_convey(&mut self, ticket: u64) -> Result<()> {
+        if self.peer_connection_state == RTCPeerConnectionState::Closed {
+            return Err(Error::ErrConnectionClosed);
+        }
+        if self.local_convey_inflight.as_ref().map(|(id, _, _)| *id) != Some(ticket) {
+            return Err(Error::Other("invalid local convey ticket".into()));
+        }
+        let current_ufrag = self.ice_transport().get_local_user_credentials().0;
+        if self
+            .local_convey_inflight
+            .as_ref()
+            .map(|(_, _, ufrag)| ufrag.as_str())
+            != Some(current_ufrag)
+        {
+            return Err(Error::Other("stale local convey generation".into()));
+        }
+        let (_, candidate, _) = self.local_convey_inflight.take().expect("checked ticket");
+        self.ice_transport_mut()
+            .agent
+            .ack_local_candidate_conveyed(&candidate);
+        Ok(())
+    }
+
+    /// Diagnostic state read from the real ICE agent, not the signalling wrapper.
+    pub fn trickle_ice_state(&self) -> (bool, bool, bool, usize) {
+        let agent = &self.ice_transport().agent;
+        (
+            agent.local_gathering_complete(),
+            agent.remote_gathering_complete(),
+            agent.get_selected_candidate_pair().is_some(),
+            agent.get_remote_candidates().len(),
+        )
+    }
+
     pub fn add_remote_candidate(&mut self, remote_candidate: RTCIceCandidateInit) -> Result<()> {
         if self.remote_description().is_none() {
             return Err(Error::ErrNoRemoteDescription);
@@ -1723,6 +1811,10 @@ impl RTCPeerConnection {
 
         if !candidate_value.is_empty() {
             self.add_ice_remote_candidate(candidate_value)?;
+        } else {
+            self.ice_transport_mut()
+                .agent
+                .mark_remote_gathering_complete();
         }
 
         Ok(())
@@ -1777,6 +1869,9 @@ impl RTCPeerConnection {
         if !candidate_value.is_empty() {
             self.add_ice_local_candidate(candidate_value, local_candidate.url.as_deref())?;
         } else {
+            self.ice_transport_mut()
+                .agent
+                .mark_local_gathering_complete();
             self.ice_transport_mut().ice_gathering_state = RTCIceGatheringState::Complete;
             // Emit OnIceGatheringStateChangeEvent
             self.pipeline_context.event_outs.push_back(
@@ -2486,6 +2581,101 @@ mod tests {
     use crate::peer_connection::transport::RTCIceComponent;
     use crate::peer_connection::transport::dtls::state::RTCDtlsTransportState;
     use sctp::AssociationHandle;
+
+    fn convey_peer() -> RTCPeerConnection {
+        let mut peer = RTCPeerConnectionBuilder::new()
+            .build(Instant::now())
+            .unwrap();
+        peer.enable_trickle_convey().unwrap();
+        peer.add_local_candidate(RTCIceCandidateInit {
+            candidate: "candidate:local 1 udp 2130706431 127.0.0.1 41001 typ host".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        peer.ice_transport_mut()
+            .agent
+            .add_remote_candidate(
+                unmarshal_candidate("remote 1 udp 2130706431 127.0.0.1 41002 typ host").unwrap(),
+            )
+            .unwrap();
+        peer
+    }
+
+    #[test]
+    fn convey_ticket_delays_pairing_and_is_single_use() {
+        let mut peer = convey_peer();
+        let candidate = "candidate:local 1 udp 2130706431 127.0.0.1 41001 typ host";
+        assert!(
+            peer.ice_transport()
+                .agent
+                .get_candidate_pairs_stats(Instant::now())
+                .is_empty()
+        );
+        let ticket = peer.begin_local_ice_convey(candidate).unwrap().unwrap();
+        assert!(peer.begin_local_ice_convey(candidate).is_err());
+        assert!(peer.ack_local_ice_convey(ticket + 1).is_err());
+        assert!(
+            peer.ice_transport()
+                .agent
+                .get_candidate_pairs_stats(Instant::now())
+                .is_empty()
+        );
+        peer.ack_local_ice_convey(ticket).unwrap();
+        assert_eq!(
+            peer.ice_transport()
+                .agent
+                .get_candidate_pairs_stats(Instant::now())
+                .len(),
+            1
+        );
+        assert!(peer.ack_local_ice_convey(ticket).is_err());
+    }
+
+    #[test]
+    fn convey_ticket_rejects_closed_peer_and_changed_ice_generation() {
+        let candidate = "candidate:local 1 udp 2130706431 127.0.0.1 41001 typ host";
+        let mut peer = convey_peer();
+        let ticket = peer.begin_local_ice_convey(candidate).unwrap().unwrap();
+        peer.peer_connection_state = RTCPeerConnectionState::Closed;
+        assert!(peer.ack_local_ice_convey(ticket).is_err());
+        let mut peer = convey_peer();
+        let ticket = peer.begin_local_ice_convey(candidate).unwrap().unwrap();
+        peer.ice_transport_mut()
+            .agent
+            .restart(
+                Instant::now(),
+                "newGeneration".into(),
+                "newPasswordForGenerationTest".into(),
+                true,
+            )
+            .unwrap();
+        assert!(peer.ack_local_ice_convey(ticket).is_err());
+        assert!(
+            peer.ice_transport()
+                .agent
+                .get_candidate_pairs_stats(Instant::now())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn convey_eoc_reaches_real_agent_and_directions_are_independent() {
+        let mut peer = convey_peer();
+        peer.current_remote_description = Some(
+            RTCSessionDescription::offer(
+                "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n".into(),
+            )
+            .unwrap(),
+        );
+        assert!(!peer.trickle_ice_state().0 && !peer.trickle_ice_state().1);
+        peer.add_remote_candidate(RTCIceCandidateInit::default())
+            .unwrap();
+        assert!(!peer.trickle_ice_state().0 && peer.trickle_ice_state().1);
+        peer.add_local_candidate(RTCIceCandidateInit::default())
+            .unwrap();
+        assert!(peer.trickle_ice_state().0 && peer.trickle_ice_state().1);
+        assert!(!peer.trickle_ice_state().2);
+    }
 
     #[test]
     fn with_sctp_receive_buffer_size_sets_and_clamps() {

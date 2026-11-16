@@ -21,6 +21,23 @@ pub struct IceCandidate {
 pub enum LocalIceEvent {
     Candidate(IceCandidate),
     Complete,
+    /// A real selected pair ends new local sends, independently of gathering.
+    Nominated,
+}
+
+/// One successful writer-slot reservation for this transport instance. Not Clone:
+/// losing an uncommitted ticket invalidates the generation; its owner must close it.
+pub struct LocalIceConveyTicket {
+    id: u64,
+    owner: Arc<LocalIce>,
+    consumed: bool,
+}
+impl Drop for LocalIceConveyTicket {
+    fn drop(&mut self) {
+        if !self.consumed {
+            self.owner.fail();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -129,17 +146,23 @@ struct Pending {
     complete: bool,
     delivered_complete: bool,
     failed: bool,
+    nominated: bool,
+    delivered_nomination: bool,
 }
 
 #[derive(Default)]
 pub(super) struct LocalIce {
     pending: SyncMutex<Pending>,
     changed: Notify,
+    failed_signal: Notify,
 }
 
 impl LocalIce {
     pub(super) fn candidate(&self, candidate: Result<String, TransportError>) {
         if let Ok(mut pending) = self.pending.lock() {
+            if pending.nominated {
+                return;
+            }
             match candidate {
                 Ok(candidate)
                     if !pending.complete
@@ -155,6 +178,22 @@ impl LocalIce {
                 }
                 _ => pending.failed = true,
             }
+        }
+        self.changed.notify_one();
+    }
+
+    fn fail(&self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.failed = true;
+        }
+        self.changed.notify_one();
+        self.failed_signal.notify_one();
+    }
+
+    pub(super) fn nominate(&self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.nominated = true;
+            pending.candidates.clear();
         }
         self.changed.notify_one();
     }
@@ -229,6 +268,7 @@ impl PeerTransport {
         self.negotiation
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| TransportError::NegotiationAlreadyStarted)?;
+        self.bounded(self.peer.enable_trickle_convey()).await?;
         let offer = self.bounded(self.peer.create_offer(None)).await?;
         self.bounded(self.peer.set_local_description(offer)).await?;
         let description = self.initial_description(true).await?;
@@ -247,6 +287,7 @@ impl PeerTransport {
         self.negotiation
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| TransportError::NegotiationAlreadyStarted)?;
+        self.bounded(self.peer.enable_trickle_convey()).await?;
         self.bounded(self.peer.set_remote_description(offer))
             .await?;
         self.remote_ice.lock().await.context = Some(remote_context);
@@ -295,6 +336,10 @@ impl PeerTransport {
                 if pending.failed {
                     return Err(TransportError::InvalidCandidate);
                 }
+                if pending.nominated && !pending.delivered_nomination {
+                    pending.delivered_nomination = true;
+                    return Ok(LocalIceEvent::Nominated);
+                }
                 if let Some(candidate) = pending.candidates.pop_front() {
                     return Ok(LocalIceEvent::Candidate(IceCandidate {
                         candidate,
@@ -316,6 +361,84 @@ impl PeerTransport {
         }
     }
 
+    /// Invoke only in the actual signalling writer slot, not before queueing.
+    /// A returned ticket linearizes the start of convey with native ICE nomination.
+    pub async fn begin_local_ice_convey(
+        &self,
+        candidate: &IceCandidate,
+    ) -> Result<Option<LocalIceConveyTicket>, TransportError> {
+        self.ensure_open()?;
+        let context = self
+            .local_ice_context
+            .lock()
+            .await
+            .clone()
+            .ok_or(TransportError::Negotiation)?;
+        validate(candidate, &context, self.config.policy)?;
+        if self
+            .local_ice
+            .pending
+            .lock()
+            .map_err(|_| TransportError::WebRtc)?
+            .failed
+        {
+            return Err(TransportError::Closed);
+        }
+        let id = self
+            .bounded(self.peer.begin_local_ice_convey(&candidate.candidate))
+            .await?;
+        Ok(id.map(|id| LocalIceConveyTicket {
+            id,
+            owner: self.local_ice.clone(),
+            consumed: false,
+        }))
+    }
+
+    /// Acknowledge only an actual successful signalling write from the same authorized
+    /// generation. Cancellation/write failure/abandoned ticket requires closing that generation.
+    pub async fn ack_local_ice_convey(
+        &self,
+        mut ticket: LocalIceConveyTicket,
+    ) -> Result<(), TransportError> {
+        self.ensure_open()?;
+        if !Arc::ptr_eq(&ticket.owner, &self.local_ice) {
+            return Err(TransportError::InvalidCandidate);
+        }
+        self.bounded(self.peer.ack_local_ice_convey(ticket.id))
+            .await?;
+        ticket.consumed = true;
+        Ok(())
+    }
+
+    /// Keep this scoped monitor alive for the entire generation, including after gathering
+    /// completes. Dropping an uncommitted ticket fails this future; the owner must close the peer.
+    pub async fn wait_trickle_failure(&self) -> Result<(), TransportError> {
+        let mut closed = self.close_signal.subscribe();
+        loop {
+            self.ensure_open()?;
+            let notified = self.local_ice.failed_signal.notified();
+            if self
+                .local_ice
+                .pending
+                .lock()
+                .map_err(|_| TransportError::WebRtc)?
+                .failed
+            {
+                return Err(TransportError::Closed);
+            }
+            tokio::select! {
+                _ = notified => {},
+                _ = closed.changed() => return Err(TransportError::Closed),
+            }
+        }
+    }
+
+    /// Read real ICE-agent state (local gather, remote EOC, nomination, remote count).
+    #[cfg(feature = "test-diagnostics")]
+    pub async fn trickle_ice_state(&self) -> (bool, bool, bool, usize) {
+        self.peer.trickle_ice_state().await
+    }
+
     /// core 负责会话授权/代次及 pre-SDP 有界暂存；本层验证真实远端 SDP 上下文。
     /// 取消应用 future 后，调用方必须关闭本代连接，不能在同一连接重放此批候选。
     pub async fn add_remote_ice(
@@ -329,9 +452,6 @@ impl PeerTransport {
         }
         let mut state = self.remote_ice.lock().await;
         let expected = state.context.clone().ok_or(TransportError::Negotiation)?;
-        if state.complete && !candidates.is_empty() {
-            return Err(TransportError::InvalidCandidate);
-        }
         let bytes: usize = candidates
             .iter()
             .map(|c| c.candidate.len() + c.sdp_mid.len() + c.username_fragment.len())
@@ -347,6 +467,9 @@ impl PeerTransport {
         // 整批校验后再应用；重复也计入接收预算，不能用重放绕过资源上限。
         state.count += candidates.len();
         state.bytes += bytes;
+        if state.complete {
+            return Ok(()); // RFC 8838: ignore after EOC, retaining validation and budgets.
+        }
         for candidate in candidates {
             if !state.seen.insert(candidate.candidate.clone()) {
                 continue;
@@ -361,8 +484,8 @@ impl PeerTransport {
             .await?;
         }
         if complete {
-            // rtc 0.21.1 的空 remote candidate 是 no-op，并无远端 EOC 状态入口。
-            // 本层保持完整性/后续拒绝规则；不得将本地 gather 标记提前完成。
+            self.bounded(self.peer.add_ice_candidate(RTCIceCandidateInit::default()))
+                .await?;
             state.complete = true;
         }
         Ok(())
@@ -487,6 +610,42 @@ mod tests {
         assert!(value.complete);
         assert!(!value.failed);
     }
+    #[test]
+    fn nomination_closes_new_sends_without_forging_either_gather_or_remote_eoc() {
+        let queue = LocalIce::default();
+        queue.candidate(Ok("queued".into()));
+        queue.nominate();
+        queue.candidate(Ok("late".into()));
+        let state = queue.pending.lock().unwrap();
+        assert!(state.nominated);
+        assert!(!state.complete);
+        assert!(!state.failed);
+        assert!(state.candidates.is_empty());
+        drop(state);
+        queue.complete();
+        assert!(queue.pending.lock().unwrap().complete);
+        assert!(!RemoteIce::default().complete);
+    }
+
+    #[test]
+    fn dropped_ticket_invalidates_only_its_owner_and_consumed_ticket_is_inert() {
+        let owner = Arc::new(LocalIce::default());
+        let other = Arc::new(LocalIce::default());
+        drop(LocalIceConveyTicket {
+            id: 1,
+            owner: owner.clone(),
+            consumed: false,
+        });
+        assert!(owner.pending.lock().unwrap().failed);
+        assert!(!other.pending.lock().unwrap().failed);
+        drop(LocalIceConveyTicket {
+            id: 2,
+            owner: other.clone(),
+            consumed: true,
+        });
+        assert!(!other.pending.lock().unwrap().failed);
+    }
+
     #[test]
     fn direct_only_rejects_relay_candidates() {
         let mut value = candidate();

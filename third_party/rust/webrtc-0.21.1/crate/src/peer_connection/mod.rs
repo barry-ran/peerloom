@@ -600,6 +600,15 @@ pub trait PeerConnection: crate::sealed::Sealed + Send + Sync + 'static {
     /// See [addIceCandidate](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addicecandidate!overload-1)
     async fn add_ice_candidate(&self, candidate: RTCIceCandidateInit) -> Result<()>;
 
+    /// Enable deferred local pairing before initial negotiation.
+    async fn enable_trickle_convey(&self) -> Result<()>;
+    /// Reserve a single convey operation at the actual signalling writer slot.
+    async fn begin_local_ice_convey(&self, candidate: &str) -> Result<Option<u64>>;
+    /// Commit a successful signalling-write reservation.
+    async fn ack_local_ice_convey(&self, ticket: u64) -> Result<()>;
+    /// Read actual ICE local gather, remote EOC, nomination and remote candidate count.
+    async fn trickle_ice_state(&self) -> (bool, bool, bool, usize);
+
     /// Requests that the next offer restart ICE.
     ///
     /// Takes effect on the next [`create_offer`](Self::create_offer), which advertises fresh ICE
@@ -1314,6 +1323,26 @@ impl PeerConnection for PeerConnectionImpl {
     async fn pending_remote_description(&self) -> Option<RTCSessionDescription> {
         let core = self.inner.core.lock().await;
         core.pending_remote_description().cloned()
+    }
+
+    async fn enable_trickle_convey(&self) -> Result<()> {
+        self.inner.core.lock().await.enable_trickle_convey()
+    }
+
+    async fn begin_local_ice_convey(&self, candidate: &str) -> Result<Option<u64>> {
+        self.inner
+            .core
+            .lock()
+            .await
+            .begin_local_ice_convey(candidate)
+    }
+
+    async fn ack_local_ice_convey(&self, ticket: u64) -> Result<()> {
+        self.inner.core.lock().await.ack_local_ice_convey(ticket)
+    }
+
+    async fn trickle_ice_state(&self) -> (bool, bool, bool, usize) {
+        self.inner.core.lock().await.trickle_ice_state()
     }
 
     async fn add_ice_candidate(&self, candidate: RTCIceCandidateInit) -> Result<()> {

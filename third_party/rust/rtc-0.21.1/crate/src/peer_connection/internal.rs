@@ -193,6 +193,8 @@ impl RTCPeerConnection {
             last_offer: String::new(),
             last_answer: String::new(),
             ice_restart_requested: None,
+            local_convey_sequence: 0,
+            local_convey_inflight: None,
             negotiation_needed_state: NegotiationNeededState::Empty,
             is_negotiation_ongoing: false,
         })
