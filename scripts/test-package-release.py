@@ -139,6 +139,12 @@ class PackageTests(unittest.TestCase):
         with self.assertRaisesRegex(m.PackageError, 'MIGRATION'):
             self.finish_server()
 
+    def test_server_missing_trickle_migration_rejected(self):
+        self.server_fixture()
+        (self.root/'infra/migrations/000014_trickle_ice.up.sql').unlink()
+        with self.assertRaisesRegex(m.PackageError, 'MIGRATION'):
+            self.finish_server()
+
     def test_server_missing_deployment_rejected(self):
         self.server_fixture();(self.root/'deploy/server/Dockerfile.dockerignore').unlink()
         with self.assertRaisesRegex(m.PackageError,'INPUT_MISSING'):self.finish_server()

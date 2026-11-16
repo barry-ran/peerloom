@@ -36,3 +36,5 @@
 !deploy/
 !deploy/Dockerfile
 !deploy/Dockerfile.dockerignore
+!infra/migrations/000014_trickle_ice.down.sql
+!infra/migrations/000014_trickle_ice.up.sql

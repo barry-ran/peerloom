@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BINS = ('device-server', 'device-migrate', 'device-bootstrap', 'device-admin', 'device-admin-user')
 MIGRATIONS = ('initial', 'identity_replay', 'session_authorization', 'tenant_management',
               'managed_relay', 'browser_administration', 'direct_registration',
-              'session_recovery', 'webhook_delivery', 'optional_capacity', 'installation_identity', 'service_subjects', 'managed_relay_secrets')
+              'session_recovery', 'webhook_delivery', 'optional_capacity', 'installation_identity', 'service_subjects', 'managed_relay_secrets', 'trickle_ice')
 SQL = tuple(f'infra/migrations/{i:06}_{name}.{direction}.sql'
             for i, name in enumerate(MIGRATIONS, 1) for direction in ('up', 'down'))
 
@@ -260,7 +260,7 @@ def execute(payload, client=None):
             oneoff('migrate', [])
             versions = run(compose + ['exec', '-T', 'postgres', 'psql', '-U', 'peerloom', '-d', 'peerloom',
                            '-Atc', 'SELECT string_agg(version::text,\',\' ORDER BY version) FROM schema_migrations'], capture=True)
-            if versions.strip() != b'1,2,3,4,5,6,7,8,9,10,11,12,13':
+            if versions.strip() != b'1,2,3,4,5,6,7,8,9,10,11,12,13,14':
                 raise Failure('migration versions mismatch')
             stage = 'explicit isolated fixture accounts'
             pair = json.loads(oneoff('device-server', ['--development', '--pair'], entrypoint='device-bootstrap', capture=True))

@@ -61,6 +61,21 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(m.Failure):
                 m.extract(root / 'missing.tar.gz', target)
 
+    def test_trickle_migration_is_required(self):
+        required = 'infra/migrations/000014_trickle_ice.up.sql'
+        self.assertIn(required, m.SQL)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw); target = root / 'out'; target.mkdir()
+            good = root / 'good.tar.gz'; fixture(good)
+            entries = []
+            with tarfile.open(good, 'r:gz') as source:
+                for entry in source:
+                    if entry.name != required:
+                        entries.append((entry.name, source.extractfile(entry).read(), entry.mode, entry.type))
+            archive(root / 'missing.tar.gz', entries)
+            with self.assertRaises(m.Failure):
+                m.extract(root / 'missing.tar.gz', target)
+
     def test_reject_path_links_modes_and_source(self):
         cases = [('../escape', tarfile.REGTYPE, 0o644), ('/absolute', tarfile.REGTYPE, 0o644),
                  ('bin/alias', tarfile.SYMTYPE, 0o644), ('bin/hard', tarfile.LNKTYPE, 0o644),
