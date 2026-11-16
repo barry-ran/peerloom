@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'third_party/rust/rtc-ice-0.21.1'
-MANIFEST_SHA = 'fdf84b26f90097f8dbe2d6effa77b82f08deb7519cbc9ab214b25dad11003ec1'
+MANIFEST_SHA = 'e6eb2ca2f0588a2eee5a182d1812718d3fe1bba88ba0d3e5ec6782c6131d9b0f'
 ARCHIVE_SHA = '099984f1be120b2e5692f232f8cbb82e53f6b4261c5c2eeda5be6223ba1adaa9'
 
 
@@ -24,7 +24,7 @@ def verify(base):
     manifest = json.loads(encoded)
     assert manifest['archive']['sha256'] == ARCHIVE_SHA
     assert manifest['package'] == {'name': 'rtc-ice', 'version': '0.21.1', 'declared_license': 'MIT/Apache-2.0'}
-    assert manifest['patch']['modified_files'] == ['src/agent/agent_test.rs', 'src/agent/mod.rs']
+    assert manifest['patch']['modified_files'] == ['src/agent/agent_config.rs', 'src/agent/agent_proto.rs', 'src/agent/agent_test.rs', 'src/agent/mod.rs']
     patch = base / '应用补丁.patch'
     assert sha(patch.read_bytes()) == manifest['patch']['sha256']
     crate = base / 'crate'

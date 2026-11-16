@@ -11,8 +11,10 @@
   },
   "patch": {
     "file": "应用补丁.patch",
-    "sha256": "d08692495f4fdafcfadd26399f0eb2ed51bcfb1eb69eaa18b912f4e45e67071f",
+    "sha256": "6fb5c740338d06a45eb55237f0f214699304d805c88ef3a3606b7c6c19a5217c",
     "modified_files": [
+      "src/agent/agent_config.rs",
+      "src/agent/agent_proto.rs",
       "src/agent/agent_test.rs",
       "src/agent/mod.rs"
     ],
@@ -65,12 +67,12 @@
     },
     {
       "path": "src/agent/agent_config.rs",
-      "sha256": "cfd1cc9804de978d7ea9b67c7a0961273f5aec63c218ba1a5008c77e5e849e8a",
+      "sha256": "ac19b3714a0e93247e3bb64097733c8625ad59311fa0cb20dd54d2c26593ffea",
       "upstream_sha256": "cfd1cc9804de978d7ea9b67c7a0961273f5aec63c218ba1a5008c77e5e849e8a"
     },
     {
       "path": "src/agent/agent_proto.rs",
-      "sha256": "d5e30bce63720a034bfe00bfd5c8a8d76b485a81b85967955b24c8f821345fbe",
+      "sha256": "9bc36c65546b2c20a1a043f7313e03b7b52d556b2be2cb3237cee8823e56e8eb",
       "upstream_sha256": "d5e30bce63720a034bfe00bfd5c8a8d76b485a81b85967955b24c8f821345fbe"
     },
     {
@@ -85,12 +87,12 @@
     },
     {
       "path": "src/agent/agent_test.rs",
-      "sha256": "6e114677fd6c8e9eb41b8add745f4bace619c8469c36b3c97cb23b5d2dbd9915",
+      "sha256": "d284f1675ffc780a91822827acf3ee405814353f3f8d1bee3d0fef635a04e865",
       "upstream_sha256": "f47d267fbb373a2678967fbd7af3b72ba5b557efa31428617f67be498297face"
     },
     {
       "path": "src/agent/mod.rs",
-      "sha256": "8cf32a47da77e4c95d0cb62352b127f1d7b9bfbde8e37cd91f215270c689c592",
+      "sha256": "e3d7af984d65f0c97989ab88a3c325e96385bb8ed4aa07ec4f087beaae8b1382",
       "upstream_sha256": "de2c56736899a199551eaabd759a3c87bf19d1814fd9a2b66312c2b1b5a46135"
     },
     {
