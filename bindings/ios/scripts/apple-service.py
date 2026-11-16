@@ -60,6 +60,46 @@ def build_failure_category(output, error_output):
     return ','.join(categories) if categories else 'unclassified-build-failure'
 
 
+
+def redis_build_failure_detail(output, error_output):
+    # Only checksum-pinned Redis builds call this. Names are fixed public labels,
+    # never arbitrary basenames extracted from potentially secret diagnostics.
+    allowed = frozenset(('assert.h', 'errno.h', 'inttypes.h', 'limits.h',
+                         'math.h', 'pthread.h', 'stdatomic.h', 'stdbool.h',
+                         'stddef.h', 'stdint.h', 'stdio.h', 'stdlib.h', 'string.h',
+                         'strings.h', 'time.h', 'unistd.h', 'types.h', 'socket.h',
+                         'jemalloc.h', 'hiredis.h', 'lua.h', 'lauxlib.h', 'lualib.h',
+                         'fpconv.h', 'fast_float.h', 'fast_float_strtod.h',
+                         'hdr_histogram.h', 'xxhash.h', 'config.h', 'release.h'))
+    data = ((output or b'') + (error_output or b''))[-1024 * 1024:]
+    missing = set()
+    unknown = False
+    for line in data.splitlines():
+        if len(line) > 4096:
+            continue
+        # GCC and Clang only. No echo of complete diagnostics, paths or source.
+        match = re.search(rb"fatal error: ([^\r\n]+): No such file or directory$", line)
+        if match is None:
+            match = re.search(rb"fatal error: ['\"]([^'\"\r\n]+)['\"] file not found$", line)
+        if match is None:
+            continue
+        name = match.group(1).replace(b'\\', b'/').rsplit(b'/', 1)[-1]
+        try:
+            name = name.decode('ascii')
+        except UnicodeDecodeError:
+            unknown = True
+            continue
+        if name in allowed:
+            missing.add(name)
+        else:
+            unknown = True
+    detail = build_failure_category(output, error_output)
+    if missing:
+        detail += '; missing-headers=' + ','.join(sorted(missing)[:8])
+    if unknown:
+        detail += '; missing-header=unlisted'
+    return detail
+
 def run(args, *, cwd=None, env=None, timeout=180, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         build_diagnostics=False):
     process = subprocess.Popen(args, cwd=cwd, env=env, stdout=stdout, stderr=stderr,
@@ -81,7 +121,7 @@ def run(args, *, cwd=None, env=None, timeout=180, stdout=subprocess.PIPE, stderr
             raise Failure(Path(args[0]).name + ': timeout') from None
         raise
     if process.returncode:
-        diagnostic = ('; build=' + build_failure_category(output, error_output)) if build_diagnostics else ''
+        diagnostic = ('; build=' + redis_build_failure_detail(output, error_output)) if build_diagnostics else ''
         raise Failure(Path(args[0]).name + ': exit ' + str(process.returncode) + diagnostic)
     return output
 

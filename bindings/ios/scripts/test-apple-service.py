@@ -81,6 +81,35 @@ class ServiceSafety(unittest.TestCase):
                 self.assertNotIn('source-code', result)
         self.assertEqual(SERVICE.build_failure_category(None, None), 'unclassified-build-failure')
 
+    def test_redis_header_diagnostics_are_fixed_bounded_labels(self):
+        output = (b'/secret/path/source.c:5: fatal error: /secret/include/stdlib.h: No such file or directory\n'
+                  b"source.c:1: fatal error: 'private/root/lua.h' file not found\n"
+                  b'fatal error: token-DO-NOT-PUBLISH.h: No such file or directory\n'
+                  b'ENV_TOKEN=DO-NOT-PUBLISH source-code stderr-private\n')
+        result = SERVICE.redis_build_failure_detail(None, output)
+        self.assertEqual(result, 'missing-input,compiler-error; missing-headers=lua.h,stdlib.h; missing-header=unlisted')
+        for forbidden in ('secret', 'private', 'DO-NOT-PUBLISH', 'source.c', 'ENV_TOKEN'):
+            self.assertNotIn(forbidden, result)
+        self.assertNotIn('stdlib.h', SERVICE.redis_build_failure_detail(
+            None, b'x' * 4097 + b' fatal error: stdlib.h: No such file or directory'))
+        self.assertNotIn('stdlib.h', SERVICE.redis_build_failure_detail(
+            b'fatal error: stdlib.h: No such file or directory\n', b'x' * (1024 * 1024)))
+        self.assertEqual(SERVICE.redis_build_failure_detail(None, None), 'unclassified-build-failure')
+
+    def test_redis_failure_detail_is_opt_in_and_never_echoes_output(self):
+        for enabled in (False, True):
+            process = unittest.mock.Mock()
+            process.returncode = 2
+            process.communicate.return_value = (b'ENV_SECRET=private',
+                b'fatal error: /private/stdlib.h: No such file or directory\n')
+            with patch.object(SERVICE.subprocess, 'Popen', return_value=process):
+                with self.assertRaises(SERVICE.Failure) as raised:
+                    SERVICE.run(['make'], build_diagnostics=enabled)
+            result = str(raised.exception)
+            self.assertNotIn('private', result)
+            self.assertNotIn('ENV_SECRET', result)
+            self.assertEqual('missing-headers=stdlib.h' in result, enabled)
+
     def test_download_http_error_discloses_status_only(self):
         secret = 'synthetic-private-query-header-body'
         error = SERVICE.urllib.error.HTTPError('https://download.redis.io/?' + secret, 403,
