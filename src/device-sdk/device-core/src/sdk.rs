@@ -1967,6 +1967,8 @@ async fn transport_worker(
             return Ok(());
         }
     };
+    // No SDK channel workers exist until this exact ownership boundary.
+    let channels_started = AtomicBool::new(false);
     let operation = async {
         gate.check()?;
         let mut channel: MessageChannel = if let Some(offer) = offer {
@@ -2047,6 +2049,7 @@ async fn transport_worker(
         gate.check()?;
         #[cfg(feature = "test-diagnostics")]
         diagnostic.enter("channels-ready");
+        channels_started.store(true, Ordering::Release);
         channels::run(
             peer.clone(),
             channel,
@@ -2068,11 +2071,10 @@ async fn transport_worker(
             biased;
             _ = &mut stop => {
                 gate.close();
-                // Let established channel workers perform their owned cleanup.
-                // Negotiation may not observe the gate, so keep this bounded.
-                if tokio::time::timeout(Duration::from_secs(3), &mut operation).await.is_err() {
-                    gate.cleanup.record(Err(SdkError::RequestOutcomeUnknown));
-                }
+                wait_established_cleanup(operation.as_mut(), &gate, &channels_started).await;
+                // The pinned operation is dropped at this scope boundary before
+                // peer.close below. Cancelled negotiation owns no SDK channel
+                // workers; native cleanup and worker join are still mandatory.
                 None
             },
             result = &mut operation => Some(result),
@@ -2096,6 +2098,24 @@ async fn transport_worker(
         .await;
     }
     gate.cleanup.merge_result(cleanup)
+}
+
+async fn wait_established_cleanup<F>(
+    operation: std::pin::Pin<&mut F>,
+    gate: &Gate,
+    channels_started: &AtomicBool,
+) where
+    F: std::future::Future<Output = Result<(), SdkError>>,
+{
+    if channels_started.load(Ordering::Acquire)
+        && tokio::time::timeout(Duration::from_secs(3), operation)
+            .await
+            .is_err()
+    {
+        // Only established SDK channel workers require the cooperative drain.
+        // Preserve the unknown-outcome barrier if those workers fail to finish.
+        gate.cleanup.record(Err(SdkError::RequestOutcomeUnknown));
+    }
 }
 
 async fn report_worker_closed(

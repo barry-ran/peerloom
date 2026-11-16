@@ -1095,3 +1095,71 @@ async fn pre_ready_transport_ready_without_published_event_stays_request_on_repl
         matches!(events.try_recv().unwrap(), SdkEvent::ConnectionRequestFailed { request_id: got, .. } if got == request_id)
     );
 }
+
+#[tokio::test]
+async fn pre_ready_stop_cancels_negotiation_without_unknown_drain() {
+    let gate = Gate::default();
+    let started = AtomicBool::new(false);
+    struct DropMarker(Arc<AtomicBool>);
+    impl Drop for DropMarker {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let dropped = Arc::new(AtomicBool::new(false));
+    let marker = DropMarker(dropped.clone());
+    let operation = async move {
+        let _marker = marker;
+        std::future::pending::<Result<(), SdkError>>().await
+    };
+    {
+        tokio::pin!(operation);
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_established_cleanup(operation.as_mut(), &gate, &started),
+        )
+        .await
+        .expect("negotiation cancellation must not wait for an unanswered SDP");
+    }
+    assert!(
+        dropped.load(Ordering::Acquire),
+        "cancel before native peer close"
+    );
+    assert_eq!(gate.cleanup.merge_result(Ok(())), Ok(()));
+    // A later native close failure still blocks success, even without workers.
+    assert_eq!(
+        gate.cleanup
+            .merge_result(Err(SdkError::RequestOutcomeUnknown)),
+        Err(SdkError::RequestOutcomeUnknown)
+    );
+}
+
+#[tokio::test]
+async fn pre_ready_stop_preserves_started_channel_cleanup_barrier() {
+    let gate = Gate::default();
+    let started = AtomicBool::new(true);
+    let operation = std::future::pending::<Result<(), SdkError>>();
+    tokio::pin!(operation);
+    wait_established_cleanup(operation.as_mut(), &gate, &started).await;
+    assert_eq!(
+        gate.cleanup.merge_result(Ok(())),
+        Err(SdkError::RequestOutcomeUnknown),
+        "successful peer close cannot hide unfinished SDK channel workers"
+    );
+}
+
+#[tokio::test]
+async fn pre_ready_stop_waits_for_started_channel_cleanup() {
+    let gate = Gate::default();
+    let started = AtomicBool::new(true);
+    let finished = AtomicBool::new(false);
+    let operation = async {
+        tokio::task::yield_now().await;
+        finished.store(true, Ordering::Release);
+        Ok(())
+    };
+    tokio::pin!(operation);
+    wait_established_cleanup(operation.as_mut(), &gate, &started).await;
+    assert!(finished.load(Ordering::Acquire));
+    assert_eq!(gate.cleanup.merge_result(Ok(())), Ok(()));
+}
