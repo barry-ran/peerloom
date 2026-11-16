@@ -608,6 +608,8 @@ pub trait PeerConnection: crate::sealed::Sealed + Send + Sync + 'static {
     async fn ack_local_ice_convey(&self, ticket: u64) -> Result<()>;
     /// Read actual ICE local gather, remote EOC, nomination and remote candidate count.
     async fn trickle_ice_state(&self) -> (bool, bool, bool, usize);
+    /// Read actual native remote candidate and EOC delivery counters.
+    async fn remote_ice_delivery_counts(&self) -> (u64, u64);
 
     /// Requests that the next offer restart ICE.
     ///
@@ -1338,11 +1340,21 @@ impl PeerConnection for PeerConnectionImpl {
     }
 
     async fn ack_local_ice_convey(&self, ticket: u64) -> Result<()> {
-        self.inner.core.lock().await.ack_local_ice_convey(ticket)
+        self.inner.core.lock().await.ack_local_ice_convey(ticket)?;
+        // Recompute ICE's timer/checklist even when the driver is parked without UDP input.
+        self.inner
+            .driver_event_tx
+            .send(PeerConnectionDriverEvent::WriteNotify)
+            .await
+            .map_err(|_| Error::Other("peer connection driver stopped".into()))
     }
 
     async fn trickle_ice_state(&self) -> (bool, bool, bool, usize) {
         self.inner.core.lock().await.trickle_ice_state()
+    }
+
+    async fn remote_ice_delivery_counts(&self) -> (u64, u64) {
+        self.inner.core.lock().await.remote_ice_delivery_counts()
     }
 
     async fn add_ice_candidate(&self, candidate: RTCIceCandidateInit) -> Result<()> {

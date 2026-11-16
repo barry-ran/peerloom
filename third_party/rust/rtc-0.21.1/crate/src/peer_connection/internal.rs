@@ -194,6 +194,7 @@ impl RTCPeerConnection {
             last_answer: String::new(),
             ice_restart_requested: None,
             local_convey_sequence: 0,
+            remote_ice_delivery_counts: (0, 0),
             local_convey_inflight: None,
             negotiation_needed_state: NegotiationNeededState::Empty,
             is_negotiation_ongoing: false,
@@ -1358,6 +1359,7 @@ impl RTCPeerConnection {
         self.stats_mut()
             .register_remote_candidate(candidate_id, accumulator);
 
+        self.remote_ice_delivery_counts.0 = self.remote_ice_delivery_counts.0.saturating_add(1);
         self.ice_transport_mut().add_remote_candidate(candidate)?;
         Ok(())
     }

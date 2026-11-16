@@ -755,7 +755,8 @@ pub struct RTCPeerConnection {
 
     ice_restart_requested: Option<RTCOfferOptions>,
     local_convey_sequence: u64,
-    local_convey_inflight: Option<(u64, Candidate, String)>,
+    remote_ice_delivery_counts: (u64, u64),
+    local_convey_inflight: Option<(u64, Candidate, String, u64)>,
     negotiation_needed_state: NegotiationNeededState,
     is_negotiation_ongoing: bool,
 }
@@ -1694,25 +1695,6 @@ impl RTCPeerConnection {
         self.pending_remote_description.as_ref()
     }
 
-    /// Adds a remote ICE candidate to the peer connection.
-    ///
-    /// This method provides a remote candidate to the ICE agent. When the remote peer
-    /// gathers ICE candidates and sends them over the signaling channel, this method
-    /// should be called to add each candidate.
-    ///
-    /// # Parameters
-    ///
-    /// * `remote_candidate` - The ICE candidate initialization data.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - No remote description has been set
-    /// - The candidate string is invalid
-    ///
-    /// # Specification
-    ///
-    /// See [addIceCandidate](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addicecandidate!overload-1)
     /// Enable RFC 8838 candidate pairing only after signalling has conveyed the local candidate.
     /// Must be called before descriptions or candidate gathering begin.
     pub fn enable_trickle_convey(&mut self) -> Result<()> {
@@ -1759,7 +1741,8 @@ impl RTCPeerConnection {
             .get_local_user_credentials()
             .0
             .to_owned();
-        self.local_convey_inflight = Some((ticket, candidate, ufrag));
+        let epoch = self.ice_transport().agent.generation_id();
+        self.local_convey_inflight = Some((ticket, candidate, ufrag, epoch));
         Ok(Some(ticket))
     }
 
@@ -1769,22 +1752,34 @@ impl RTCPeerConnection {
         if self.peer_connection_state == RTCPeerConnectionState::Closed {
             return Err(Error::ErrConnectionClosed);
         }
-        if self.local_convey_inflight.as_ref().map(|(id, _, _)| *id) != Some(ticket) {
+        if self.local_convey_inflight.as_ref().map(|(id, _, _, _)| *id) != Some(ticket) {
             return Err(Error::Other("invalid local convey ticket".into()));
         }
         let current_ufrag = self.ice_transport().get_local_user_credentials().0;
         if self
             .local_convey_inflight
             .as_ref()
-            .map(|(_, _, ufrag)| ufrag.as_str())
+            .map(|(_, _, ufrag, _)| ufrag.as_str())
             != Some(current_ufrag)
         {
             return Err(Error::Other("stale local convey generation".into()));
         }
-        let (_, candidate, _) = self.local_convey_inflight.take().expect("checked ticket");
-        self.ice_transport_mut()
+        if self
+            .local_convey_inflight
+            .as_ref()
+            .map(|(_, _, _, epoch)| *epoch)
+            != Some(self.ice_transport().agent.generation_id())
+        {
+            return Err(Error::Other("stale local convey epoch".into()));
+        }
+        let (_, candidate, _, _) = self.local_convey_inflight.take().expect("checked ticket");
+        if !self
+            .ice_transport_mut()
             .agent
-            .ack_local_candidate_conveyed(&candidate);
+            .ack_local_candidate_conveyed(&candidate)
+        {
+            return Err(Error::Other("local convey permit no longer valid".into()));
+        }
         Ok(())
     }
 
@@ -1799,6 +1794,31 @@ impl RTCPeerConnection {
         )
     }
 
+    /// Counts actual remote-candidate applications and remote EOC deliveries to native ICE.
+    /// No candidate, credential or address data is retained in these diagnostics.
+    pub fn remote_ice_delivery_counts(&self) -> (u64, u64) {
+        self.remote_ice_delivery_counts
+    }
+
+    /// Adds a remote ICE candidate to the peer connection.
+    ///
+    /// This method provides a remote candidate to the ICE agent. When the remote peer
+    /// gathers ICE candidates and sends them over the signaling channel, this method
+    /// should be called to add each candidate.
+    ///
+    /// # Parameters
+    ///
+    /// * `remote_candidate` - The ICE candidate initialization data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No remote description has been set
+    /// - The candidate string is invalid
+    ///
+    /// # Specification
+    ///
+    /// See [addIceCandidate](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addicecandidate!overload-1)
     pub fn add_remote_candidate(&mut self, remote_candidate: RTCIceCandidateInit) -> Result<()> {
         if self.remote_description().is_none() {
             return Err(Error::ErrNoRemoteDescription);
@@ -1812,6 +1832,7 @@ impl RTCPeerConnection {
         if !candidate_value.is_empty() {
             self.add_ice_remote_candidate(candidate_value)?;
         } else {
+            self.remote_ice_delivery_counts.1 = self.remote_ice_delivery_counts.1.saturating_add(1);
             self.ice_transport_mut()
                 .agent
                 .mark_remote_gathering_complete();
@@ -2655,6 +2676,32 @@ mod tests {
                 .agent
                 .get_candidate_pairs_stats(Instant::now())
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn convey_ticket_rejects_restart_even_with_identical_candidate_and_credentials() {
+        let mut peer = convey_peer();
+        let value = "candidate:local 1 udp 2130706431 127.0.0.1 41001 typ host";
+        let ticket = peer.begin_local_ice_convey(value).unwrap().unwrap();
+        let (ufrag, pwd) = peer.ice_transport().get_local_user_credentials();
+        let (ufrag, pwd) = (ufrag.to_owned(), pwd.to_owned());
+        peer.ice_transport_mut()
+            .agent
+            .restart(Instant::now(), ufrag, pwd, true)
+            .unwrap();
+        let candidate = unmarshal_candidate(value.strip_prefix("candidate:").unwrap()).unwrap();
+        assert!(
+            peer.ice_transport_mut()
+                .agent
+                .begin_local_candidate_convey(&candidate)
+        );
+        assert!(peer.ack_local_ice_convey(ticket).is_err());
+        // The rejected old ticket must not consume the new generation's exact same permit.
+        assert!(
+            peer.ice_transport_mut()
+                .agent
+                .ack_local_candidate_conveyed(&candidate)
         );
     }
 

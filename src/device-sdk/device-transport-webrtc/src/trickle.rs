@@ -180,6 +180,7 @@ impl LocalIce {
             }
         }
         self.changed.notify_one();
+        self.failed_signal.notify_one();
     }
 
     fn fail(&self) {
@@ -439,6 +440,12 @@ impl PeerTransport {
         self.peer.trickle_ice_state().await
     }
 
+    /// Actual native delivery call counts, available only to explicit acceptance tests.
+    #[cfg(feature = "test-diagnostics")]
+    pub async fn remote_ice_delivery_counts(&self) -> (u64, u64) {
+        self.peer.remote_ice_delivery_counts().await
+    }
+
     /// core 负责会话授权/代次及 pre-SDP 有界暂存；本层验证真实远端 SDP 上下文。
     /// 取消应用 future 后，调用方必须关闭本代连接，不能在同一连接重放此批候选。
     pub async fn add_remote_ice(
@@ -597,6 +604,18 @@ mod tests {
         queue.candidate(Ok("late".into()));
         assert!(queue.pending.lock().unwrap().failed);
     }
+    #[tokio::test]
+    async fn late_callback_failure_wakes_lifetime_monitor_after_complete() {
+        let queue = LocalIce::default();
+        queue.complete();
+        let notified = queue.failed_signal.notified();
+        queue.candidate(Ok("late".into()));
+        tokio::time::timeout(std::time::Duration::from_secs(1), notified)
+            .await
+            .unwrap();
+        assert!(queue.pending.lock().unwrap().failed);
+    }
+
     #[test]
     fn complete_preserves_all_queued_candidates_and_is_idempotent() {
         let queue = LocalIce::default();
