@@ -81,12 +81,12 @@
     },
     {
       "path": "src/client/binding.rs",
-      "sha256": "01d9f601926e3d0366b7dc8a4e15784ac023677e2d54f9dc30604da5decb90be",
+      "sha256": "65f5ac7a048fb14d4157c388d9324b3dfde43f9c51d690df009151fa25d05d75",
       "upstream_sha256": "e098eafeb84bb8556fa7210204fe8ea55d5ba2847b2665ad5d398d8d534b7f92"
     },
     {
       "path": "src/client/client_test.rs",
-      "sha256": "2b118845ec30ea806383aa22a2d1cf2cc201057b7654128ee9918c674a95f4aa",
+      "sha256": "32e50794197b4aa0ff9eb16676456e923b43a148a9da4ebd4a2a47d6981f48aa",
       "upstream_sha256": "948dcd67c8893f67fd30344226a133f672219fbc9d5a1d46034bdb9d2714b3f8"
     },
     {
@@ -106,7 +106,7 @@
     },
     {
       "path": "src/client/relay.rs",
-      "sha256": "9332d07c114af4dce637a0b53d8114a1416dda62b704a9f1830fbc3fbe64d221",
+      "sha256": "0bf1d88505365f074608048befa36eade3dc3033bac0c3590ea966dc92acd363",
       "upstream_sha256": "3f4cd041e3e6a55a7eab48501c8744aaec8cc1dcb48598f44872d004c3d360d0"
     },
     {
