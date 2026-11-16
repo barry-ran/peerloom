@@ -177,10 +177,11 @@ async fn exercise_pair(expire_after_disconnect: bool) {
             let local = if side==0 { peer_a.clone() } else { peer_b.clone() };
             let (_, outcome) = from.send_ice_generation(&session,payload,1,local.clone()).await.unwrap();
             match outcome {
-                device_core::signaling::IceConveyOutcome::SuppressedNomination => continue,
-                device_core::signaling::IceConveyOutcome::Sent {generation, ticket} => {
+                device_core::signaling::IceConveyOutcome::SuppressedNomination {receipt} => {receipt.acknowledge(); continue;},
+                device_core::signaling::IceConveyOutcome::Sent {generation, ticket, receipt} => {
                     assert_eq!(generation,1);
                     if let Some(ticket)=ticket { local.ack_local_ice_convey(ticket).await.unwrap(); }
+                    if let Some(receipt)=receipt {receipt.acknowledge();}
                 }
             }
             let routed=event(to,"session.ice").await;

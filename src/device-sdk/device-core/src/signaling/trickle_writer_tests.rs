@@ -48,11 +48,19 @@ async fn cancelled_generation_does_not_close_shared_signal_writer() {
         });
         let (completion, cancelled) = oneshot::channel();
         drop(cancelled);
+        let cancelled_peer = Arc::new(
+            PeerTransport::new(TransportConfig::default())
+                .await
+                .unwrap(),
+        );
+        let mut cancelled_eoc = ice.clone();
+        cancelled_eoc.payload = json!({"candidates":[],"complete":true});
         commands
             .send(Command {
-                envelope: ice.clone(),
+                envelope: cancelled_eoc,
                 completion,
-                ice_peer: Some(peer.clone()),
+                ice_peer: Some(cancelled_peer.clone()),
+                receipt: Some(IceConveyReceipt::new(cancelled_peer.clone())),
             })
             .await
             .unwrap();
@@ -62,6 +70,7 @@ async fn cancelled_generation_does_not_close_shared_signal_writer() {
                 envelope: ice,
                 completion,
                 ice_peer: Some(peer.clone()),
+                receipt: Some(IceConveyReceipt::new(peer.clone())),
             })
             .await
             .unwrap();
@@ -74,12 +83,14 @@ async fn cancelled_generation_does_not_close_shared_signal_writer() {
             frame.seq, 1,
             "cancelled generation must not consume sequence"
         );
+        assert!(cancelled_peer.wait_trickle_failure().await.is_err());
         let outcome = result.await.unwrap().unwrap();
         assert!(matches!(
             &outcome,
             IceConveyOutcome::Sent {
                 generation: 1,
-                ticket: Some(_)
+                ticket: Some(_),
+                ..
             }
         ));
         // Losing the ticket after successful WSS delivery fails only this peer.
@@ -92,6 +103,7 @@ async fn cancelled_generation_does_not_close_shared_signal_writer() {
                 envelope: other,
                 completion,
                 ice_peer: None,
+                receipt: None,
             })
             .await
             .unwrap();
@@ -115,7 +127,70 @@ async fn cancelled_generation_does_not_close_shared_signal_writer() {
         assert_eq!(task.await.unwrap(), Err(SignalError::InvalidMessage));
         assert!(event_rx.try_recv().is_err());
         peer.close().await.unwrap();
+        cancelled_peer.close().await.unwrap();
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn completed_eoc_write_with_lost_receiver_fails_only_its_peer() {
+    let peer = PeerTransport::new(TransportConfig::default())
+        .await
+        .unwrap();
+    let other = PeerTransport::new(TransportConfig::default())
+        .await
+        .unwrap();
+    let (completion, received) = oneshot::channel();
+    drop(received);
+    // Exercise the exact writer completion path after a successful EOC write;
+    // EOC has no candidate ticket, so its owner must explicitly be failed.
+    deliver_completion(
+        completion,
+        Ok(IceConveyOutcome::Sent {
+            generation: 1,
+            ticket: None,
+            receipt: None,
+        }),
+        Some(&peer),
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), peer.wait_trickle_failure())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), other.wait_trickle_failure())
+            .await
+            .is_err()
+    );
+    peer.close().await.unwrap();
+    other.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn eoc_receipt_dropped_after_oneshot_enqueue_fails_owner() {
+    let peer = Arc::new(
+        PeerTransport::new(TransportConfig::default())
+            .await
+            .unwrap(),
+    );
+    let (tx, rx) = oneshot::channel();
+    assert!(
+        tx.send(IceConveyOutcome::Sent {
+            generation: 1,
+            ticket: None,
+            receipt: Some(IceConveyReceipt::new(peer.clone()))
+        })
+        .is_ok()
+    );
+    drop(rx); // sender succeeded, consumer future never took its receipt
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), peer.wait_trickle_failure())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    peer.close().await.unwrap();
 }

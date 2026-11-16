@@ -45,6 +45,7 @@ pub(super) async fn send(
             crate::signaling::IceConveyOutcome::Sent {
                 generation: sent_generation,
                 ticket,
+                receipt,
             } => {
                 gate.check()?;
                 if sent_generation != generation {
@@ -55,8 +56,15 @@ pub(super) async fn send(
                         .await
                         .map_err(SdkError::Transport)?;
                 }
+                gate.check()?;
+                if let Some(receipt) = receipt {
+                    receipt.acknowledge();
+                }
             }
-            crate::signaling::IceConveyOutcome::SuppressedNomination => {}
+            crate::signaling::IceConveyOutcome::SuppressedNomination { receipt } => {
+                gate.check()?;
+                receipt.acknowledge();
+            }
         }
         if complete {
             // Gathering completion is not a connection-close event.
@@ -137,7 +145,11 @@ mod tests {
                 None => {
                     assert!(
                         completion
-                            .send(Ok(crate::signaling::IceConveyOutcome::SuppressedNomination))
+                            .send(Ok(
+                                crate::signaling::IceConveyOutcome::SuppressedNomination {
+                                    receipt: crate::signaling::IceConveyReceipt::new(peer.clone())
+                                }
+                            ))
                             .is_ok()
                     );
                     return;
@@ -151,7 +163,8 @@ mod tests {
             completion
                 .send(Ok(crate::signaling::IceConveyOutcome::Sent {
                     generation: 1,
-                    ticket
+                    ticket,
+                    receipt: Some(crate::signaling::IceConveyReceipt::new(peer)),
                 }))
                 .is_ok()
         );
