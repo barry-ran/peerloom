@@ -1,11 +1,14 @@
 //! 真实 webrtc-rs 数据通道适配层。只负责传输，不代表已通过平台注册或会话授权。
 //! 使用前必须由控制面验证 SDP 对端身份和会话权限；此处不实现业务授权。
-//! 目前采用完整 ICE 收集的 SDP 交换；trickle ICE、重协商和自动重连尚未集成。
+//! 支持增量 ICE 候选与完整 SDP 两种底层接口；业务授权和代次由控制面维护。
 
 #[cfg(feature = "test-diagnostics")]
 mod diagnostics;
 #[cfg(feature = "test-diagnostics")]
 use diagnostics::{Phase, Trace};
+
+mod trickle;
+pub use trickle::{IceCandidate, LocalIceEvent};
 
 mod gathering;
 pub use gathering::GatheringOutcome;
@@ -305,6 +308,7 @@ pub struct TransportDiagnostics {
 struct Handler {
     #[cfg(feature = "test-diagnostics")]
     diagnostics: Arc<IncomingDiagnostics>,
+    local_ice: Arc<trickle::LocalIce>,
     gathered: watch::Sender<bool>,
     candidates: watch::Sender<()>,
     states: watch::Sender<RTCPeerConnectionState>,
@@ -328,9 +332,16 @@ fn reserve_channel(count: &AtomicUsize, max: usize) -> Result<(), TransportError
 
 #[async_trait]
 impl PeerConnectionEventHandler for Handler {
-    async fn on_ice_candidate(&self, _event: webrtc::peer_connection::RTCPeerConnectionIceEvent) {
+    async fn on_ice_candidate(&self, event: webrtc::peer_connection::RTCPeerConnectionIceEvent) {
         // Upstream registers this candidate before emitting the callback. Never
         // await the peer core from its event handler; wake the external waiter.
+        self.local_ice.candidate(
+            event
+                .candidate
+                .to_json()
+                .map(|c| c.candidate)
+                .map_err(classify_backend),
+        );
         self.candidates.send_replace(());
     }
 
@@ -338,6 +349,7 @@ impl PeerConnectionEventHandler for Handler {
         #[cfg(feature = "test-diagnostics")]
         eprintln!("PeerloomTestDiag gathering state={state:?}");
         if state == RTCIceGatheringState::Complete {
+            self.local_ice.complete();
             self.gathered.send_replace(true);
         }
     }
@@ -376,6 +388,9 @@ impl PeerConnectionEventHandler for Handler {
 pub struct PeerTransport {
     #[cfg(feature = "test-diagnostics")]
     diagnostics: Arc<IncomingDiagnostics>,
+    local_ice: Arc<trickle::LocalIce>,
+    local_ice_context: Mutex<Option<trickle::IceContext>>,
+    remote_ice: Mutex<trickle::RemoteIce>,
     peer: Arc<dyn PeerConnection>,
     config: TransportConfig,
     gathered: Mutex<watch::Receiver<bool>>,
@@ -442,7 +457,9 @@ impl PeerTransport {
         let count = Arc::new(AtomicUsize::new(0));
         #[cfg(feature = "test-diagnostics")]
         let diagnostics = Arc::new(IncomingDiagnostics::default());
+        let local_ice = Arc::new(trickle::LocalIce::default());
         let handler = Handler {
+            local_ice: local_ice.clone(),
             #[cfg(feature = "test-diagnostics")]
             diagnostics: diagnostics.clone(),
             gathered: gather_tx,
@@ -490,6 +507,9 @@ impl PeerTransport {
         Ok(Self {
             #[cfg(feature = "test-diagnostics")]
             diagnostics,
+            local_ice,
+            local_ice_context: Mutex::new(None),
+            remote_ice: Mutex::new(trickle::RemoteIce::default()),
             peer: Arc::new(peer),
             config,
             gathered: Mutex::new(gather_rx),
