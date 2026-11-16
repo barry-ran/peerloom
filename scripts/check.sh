@@ -30,6 +30,7 @@ python3 scripts/test-vendor-evidence.py
 python3 scripts/test-vendored-webrtc.py
 python3 scripts/test-vendored-rtc-turn.py
 python3 scripts/test-vendored-rtc-ice.py
+python3 scripts/test-rtc-convey-runner.py
 python3 bindings/android/scripts/test-maven-evidence.py
 (
   cd src/device-server
@@ -47,9 +48,9 @@ python3 bindings/android/scripts/test-maven-evidence.py
   # Trickle RFC regressions must run with real Agent delivery counters enabled.
   cargo clippy -p device-core -p device-transport-webrtc --all-targets --features device-core/test-diagnostics --locked -- -D warnings
   cargo test -p device-core --lib --features test-diagnostics --locked
-  cargo test -p rtc-ice --lib --locked
-  cargo test -p rtc --lib --locked convey_
-  cargo test -p webrtc --lib --features runtime-mock --locked trickle_park_wake_regression
+  cargo test --manifest-path ../../third_party/rust/rtc-ice-0.21.1/crate/Cargo.toml --lib --locked
+  python3 ../../scripts/run-rtc-convey-tests.py
+  cargo test -p device-transport-webrtc -p webrtc --lib --features webrtc/runtime-mock --locked trickle_park_wake_regression
   cargo test --manifest-path ../../third_party/rust/rtc-turn-0.21.1/crate/Cargo.toml --lib --locked
   if [[ "$(uname -s)" == Linux ]]; then
     # 真实 UDP worker 回归不属于默认单测；只跳过显式性能测量。
