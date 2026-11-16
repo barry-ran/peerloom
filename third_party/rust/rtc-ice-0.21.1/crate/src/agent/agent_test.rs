@@ -3498,3 +3498,43 @@ fn trickle_checking_waits_for_eoc_without_changing_legacy_timeout() -> Result<()
     }
     Ok(())
 }
+
+#[test]
+fn trickle_generation_fences_reused_candidate_and_credentials() -> Result<()> {
+    let now = Instant::now();
+    let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
+    a.set_trickle_mode(true);
+    let local = trickle_test_host(10000);
+    a.add_local_candidate(local.clone())?;
+    assert!(a.begin_local_candidate_convey(&local));
+    let old_epoch = a.generation_id();
+    let old_ufrag = a.ufrag_pwd.local_credentials.ufrag.clone();
+    a.apply_restart(now, true)?;
+    assert_eq!(a.generation_id(), old_epoch + 1);
+    assert_eq!(a.ufrag_pwd.local_credentials.ufrag, old_ufrag);
+    a.add_remote_candidate(trickle_test_host(10001))?;
+    assert!(a.begin_local_candidate_convey(&local));
+    // Same lock contract used by the native ticket owner. A stale ticket must
+    // not consume the new generation's identical candidate permit.
+    assert!(!(old_epoch == a.generation_id() && a.ack_local_candidate_conveyed(&local)));
+    assert_eq!(a.conveying_local_candidates.len(), 1);
+    assert!(a.candidate_pairs.is_empty());
+    assert!(a.ack_local_candidate_conveyed(&local));
+    assert_eq!(a.candidate_pairs.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn trickle_generation_exhaustion_does_not_wrap_or_mutate_restart_state() -> Result<()> {
+    let now = Instant::now();
+    let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
+    a.set_trickle_mode(true);
+    a.mark_remote_gathering_complete();
+    a.generation_id = u64::MAX;
+    let credentials = a.ufrag_pwd.local_credentials.ufrag.clone();
+    assert!(a.apply_restart(now, false).is_err());
+    assert_eq!(a.generation_id(), u64::MAX);
+    assert!(a.remote_gathering_complete());
+    assert_eq!(a.ufrag_pwd.local_credentials.ufrag, credentials);
+    Ok(())
+}

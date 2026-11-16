@@ -148,6 +148,7 @@ pub struct Agent {
 
     // Opt-in Trickle ICE lifecycle; legacy Agent users retain their timeout policy.
     trickle_mode: bool,
+    generation_id: u64,
     local_gathering_complete: bool,
     remote_gathering_complete: bool,
     unconveyed_local_candidates: Vec<usize>,
@@ -273,6 +274,7 @@ impl Agent {
             start_time: now,
 
             trickle_mode: false,
+            generation_id: 0,
             local_gathering_complete: false,
             remote_gathering_complete: false,
             unconveyed_local_candidates: Vec::new(),
@@ -406,6 +408,11 @@ impl Agent {
         }
     }
 
+    /// Monotonic lifetime-local ICE generation, including credential-reusing restarts.
+    /// Convey tickets must retain this value and recheck it under the same Agent
+    /// lock before acknowledging; candidate equality alone does not fence restarts.
+    pub fn generation_id(&self) -> u64 { self.generation_id }
+
     /// Record actual local gathering completion; pending convey acknowledgements still gate failure.
     pub fn mark_local_gathering_complete(&mut self) {
         self.local_gathering_complete = true;
@@ -434,6 +441,7 @@ impl Agent {
     }
 
     /// Acknowledge only this generation's successfully conveyed candidate.
+    /// Caller must fence the ticket with generation_id() under this same Agent lock.
     /// Duplicate acknowledgements are harmless; unknown candidates are not added.
     pub fn ack_local_candidate_conveyed(&mut self, candidate: &Candidate) -> bool {
         let Some(index) = self.local_candidates.iter().position(|c| c.equal(candidate)) else {
@@ -799,6 +807,11 @@ impl Agent {
     /// pair, and restarts the agent's timers. With nothing staged, the current credentials are
     /// kept and only the session is restarted.
     pub fn apply_restart(&mut self, now: Instant, keep_local_candidates: bool) -> Result<()> {
+        // Fail before changing credentials, candidates or lifecycle state. Never
+        // recycle a ticket generation, even when the caller reuses credentials.
+        let next_generation = self.generation_id.checked_add(1)
+            .ok_or_else(|| Error::Other("ICE generation exhausted".into()))?;
+        self.generation_id = next_generation;
         if let Some(credentials) = self.ufrag_pwd.pending_local_credentials.take() {
             self.ufrag_pwd.local_credentials = credentials;
         }
