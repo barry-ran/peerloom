@@ -127,7 +127,7 @@ class NativeVendorInputs(unittest.TestCase):
         for name, value in patches.items():
             vendor = value['path'].removesuffix('/crate')
             self.assertIn('inputs.files(fileTree(rootProject.projectDir.resolve("'+vendor+'")))', script, name)
-        self.assertEqual(set(patches), {'nix', 'rtc', 'rtc-turn', 'webrtc'})
+        self.assertEqual(set(patches), {'nix', 'rtc', 'rtc-turn', 'rtc-ice', 'webrtc'})
 
     def test_missing_webrtc_input_is_rejected(self):
         from unittest.mock import patch
@@ -137,6 +137,19 @@ class NativeVendorInputs(unittest.TestCase):
             text = original(path, *args, **kwargs)
             if path == target:
                 text = '\n'.join(line for line in text.splitlines() if 'third_party/rust/webrtc-' not in line)
+            return text
+        # Call the same contract against an actual omitted input, not a permissive fallback.
+        with patch.object(Path, 'read_text', missing), self.assertRaises(AssertionError):
+            self.test_every_workspace_path_patch_invalidates_native_build()
+
+    def test_missing_rtc_ice_input_is_rejected(self):
+        from unittest.mock import patch
+        original = Path.read_text
+        target = ROOT.parent/'library/build.gradle.kts'
+        def missing(path, *args, **kwargs):
+            text = original(path, *args, **kwargs)
+            if path == target:
+                text = '\n'.join(line for line in text.splitlines() if 'third_party/rust/rtc-ice-' not in line)
             return text
         # Call the same contract against an actual omitted input, not a permissive fallback.
         with patch.object(Path, 'read_text', missing), self.assertRaises(AssertionError):

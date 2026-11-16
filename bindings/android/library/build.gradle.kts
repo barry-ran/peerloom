@@ -28,6 +28,7 @@ val buildRust by
         inputs.files(fileTree(rootProject.projectDir.resolve("../../third_party/rust/nix-0.31.3")))
         inputs.files(fileTree(rootProject.projectDir.resolve("../../third_party/rust/rtc-0.21.1")))
         inputs.files(fileTree(rootProject.projectDir.resolve("../../third_party/rust/rtc-turn-0.21.1")))
+        inputs.files(fileTree(rootProject.projectDir.resolve("../../third_party/rust/rtc-ice-0.21.1")))
         inputs.files(fileTree(rootProject.projectDir.resolve("../../third_party/rust/webrtc-0.21.1")))
         outputs.files(
             rustTarget.resolve("aarch64-linux-android/release/libdevice_ffi.a"),
