@@ -411,6 +411,12 @@ impl PeerTransport {
         Ok(())
     }
 
+    /// Invalidate this generation when a signalling convey is cancelled or its result lost.
+    /// Applies to EOC as well as candidate tickets; the scoped owner must close the peer.
+    pub fn fail_trickle_convey(&self) {
+        self.local_ice.fail();
+    }
+
     /// Keep this scoped monitor alive for the entire generation, including after gathering
     /// completes. Dropping an uncommitted ticket fails this future; the owner must close the peer.
     pub async fn wait_trickle_failure(&self) -> Result<(), TransportError> {

@@ -1378,7 +1378,12 @@ impl PeerConnection for PeerConnectionImpl {
                 .await
                 .map_err(|e| Error::Other(format!("{:?}", e)))
         } else {
-            Ok(())
+            // UDP candidates and remote EOC also change the ICE checklist/timer.
+            self.inner
+                .driver_event_tx
+                .send(PeerConnectionDriverEvent::WriteNotify)
+                .await
+                .map_err(|_| Error::Other("peer connection driver stopped".into()))
         }
     }
 
