@@ -89,6 +89,10 @@ jobs:
         timeout-minutes: 5
         working-directory: src/device-sdk
         run: cargo test -p device-transport-webrtc --test native_pair --locked -- --ignored --nocapture
+      - name: 增量 ICE 提前就绪与失效关闭回归
+        timeout-minutes: 5
+        working-directory: src/device-sdk
+        run: cargo test -p device-transport-webrtc --test trickle_pair --locked -- --ignored --nocapture
       - name: Auto 不可达 TURN 的有界直连与 RelayOnly 失效关闭
         timeout-minutes: 5
         working-directory: src/device-sdk
