@@ -127,7 +127,7 @@ class NativeVendorInputs(unittest.TestCase):
         for name, value in patches.items():
             vendor = value['path'].removesuffix('/crate')
             self.assertIn('inputs.files(fileTree(rootProject.projectDir.resolve("'+vendor+'")))', script, name)
-        self.assertEqual(set(patches), {'nix', 'rtc', 'webrtc'})
+        self.assertEqual(set(patches), {'nix', 'rtc', 'rtc-turn', 'webrtc'})
 
     def test_missing_webrtc_input_is_rejected(self):
         from unittest.mock import patch
