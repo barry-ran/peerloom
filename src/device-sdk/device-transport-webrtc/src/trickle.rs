@@ -56,10 +56,10 @@ fn context(description: &SessionDescription) -> Result<IceContext, TransportErro
             if !token(value) || slot.replace(value.to_owned()).is_some() {
                 return Err(TransportError::Negotiation);
             }
-        } else if let Some(value) = line.strip_prefix("a=mid:") {
-            if !media || !token(value) || mid.replace(value.to_owned()).is_some() {
-                return Err(TransportError::Negotiation);
-            }
+        } else if let Some(value) = line.strip_prefix("a=mid:")
+            && (!media || !token(value) || mid.replace(value.to_owned()).is_some())
+        {
+            return Err(TransportError::Negotiation);
         }
     }
     Ok(IceContext {
@@ -69,6 +69,19 @@ fn context(description: &SessionDescription) -> Result<IceContext, TransportErro
             .or(session_ufrag)
             .ok_or(TransportError::Negotiation)?,
     })
+}
+
+// 新信令路径的候选只能进入有界增量入口，不能混用完整 SDP 绕过累计预算。
+fn validate_initial_sdp(description: &SessionDescription) -> Result<(), TransportError> {
+    for line in description.sdp.lines() {
+        if let Some(attribute) = line.trim().strip_prefix("a=") {
+            let name = attribute.split(':').next().unwrap_or("").trim();
+            if matches!(name, "candidate" | "end-of-candidates") {
+                return Err(TransportError::InvalidCandidate);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn initial_sdp(
@@ -229,6 +242,7 @@ impl PeerTransport {
     ) -> Result<SessionDescription, TransportError> {
         self.ensure_open()?;
         validate_remote_sdp(&self.config, &offer)?;
+        validate_initial_sdp(&offer)?;
         let remote_context = context(&offer)?;
         self.negotiation
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
@@ -248,6 +262,7 @@ impl PeerTransport {
     ) -> Result<(), TransportError> {
         self.ensure_open()?;
         validate_remote_sdp(&self.config, &answer)?;
+        validate_initial_sdp(&answer)?;
         let remote_context = context(&answer)?;
         self.negotiation
             .compare_exchange(2, 3, Ordering::AcqRel, Ordering::Acquire)
@@ -302,6 +317,7 @@ impl PeerTransport {
     }
 
     /// core 负责会话授权/代次及 pre-SDP 有界暂存；本层验证真实远端 SDP 上下文。
+    /// 取消应用 future 后，调用方必须关闭本代连接，不能在同一连接重放此批候选。
     pub async fn add_remote_ice(
         &self,
         candidates: &[IceCandidate],
@@ -345,6 +361,8 @@ impl PeerTransport {
             .await?;
         }
         if complete {
+            // rtc 0.21.1 的空 remote candidate 是 no-op，并无远端 EOC 状态入口。
+            // 本层保持完整性/后续拒绝规则；不得将本地 gather 标记提前完成。
             state.complete = true;
         }
         Ok(())
@@ -375,6 +393,26 @@ mod tests {
             username_fragment: "media123".into(),
         }
     }
+    #[test]
+    fn initial_sdp_rejects_inline_candidates_and_completion() {
+        let clean = initial_sdp(&description(), true).unwrap();
+        assert_eq!(validate_initial_sdp(&clean), Ok(()));
+        for attribute in [
+            "a=candidate:1 1 udp 2130706431 127.0.0.1 1234 typ host",
+            "a=end-of-candidates",
+            "a=end-of-candidates:unexpected",
+            "a=candidate",
+        ] {
+            let mut mixed = clean.clone();
+            mixed.sdp.push_str(attribute);
+            mixed.sdp.push_str("\r\n");
+            assert_eq!(
+                validate_initial_sdp(&mixed),
+                Err(TransportError::InvalidCandidate)
+            );
+        }
+    }
+
     #[test]
     fn uses_actual_mid_and_media_ufrag() {
         let value = context(&description()).unwrap();
