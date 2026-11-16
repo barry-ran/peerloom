@@ -61,6 +61,29 @@ class VendorTests(unittest.TestCase):
         self.assertFalse(issues)
         self.assertTrue(all(not item['issues'] and item['vendor_provenance'] for item in records))
 
+    def test_reviewed_supplement_does_not_reclassify_vendored_packages(self):
+        import hashlib
+        root = Path(__file__).resolve().parents[1]
+        directory = root / 'third_party/license-evidence'
+        content = (directory / 'manifest.json').read_bytes()
+        expected = hashlib.sha256(content).hexdigest()
+        self.assertIn('"--supplement-sha256", "' + expected + '"',
+                      (root / 'scripts/package-third-party.py').read_text(encoding='utf-8'))
+        bundle = json.loads(content)
+        records, blobs = [], {}
+        for item in bundle['packages']:
+            self.assertNotIn((item['name'], item['version']), gen.VENDORED)
+            record = gen.package('cargo', item['name'], item['version'])
+            record['archive_sha256'] = item['archive_sha256']
+            record['provenance'] = {key: item[key] for key in ('repository', 'commit', 'path_in_vcs')}
+            records.append(record)
+        vendor, vendor_blobs = self.call('rtc-turn', '0.21.1')
+        records.append(vendor)
+        blobs.update(vendor_blobs)
+        gen.apply_supplement(records, blobs, directory, expected)
+        self.assertEqual(vendor['vendor_provenance']['kind'], 'modified-vendored-source')
+        self.assertNotIn('archive_sha256', vendor)
+
     def test_unknown_patch(self):
         with self.assertRaisesRegex(gen.EvidenceError, 'UNREVIEWED'): self.call('unknown', '1.0.0')
 
