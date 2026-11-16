@@ -2882,6 +2882,7 @@ fn test_handle_inbound_request_defers_failing_connectivity_check() -> Result<()>
         .checked_sub(Duration::from_secs(3600))
         .unwrap_or(a.start_time);
 
+    a.pac_started_at = Some(a.checking_duration);
     let remote_addr = SocketAddr::from_str("172.17.0.3:999")?;
     let mut msg = Message::new();
     msg.build(&[
@@ -3477,7 +3478,7 @@ fn trickle_nomination_blocks_new_convey_but_allows_admitted_write_completion() -
 }
 
 #[test]
-fn trickle_checking_waits_for_eoc_without_changing_legacy_timeout() -> Result<()> {
+fn trickle_checking_waits_for_eoc_after_pac_expiry() -> Result<()> {
     let now = Instant::now();
     for trickle in [false, true] {
         let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
@@ -3485,6 +3486,7 @@ fn trickle_checking_waits_for_eoc_without_changing_legacy_timeout() -> Result<()
         a.connection_state = ConnectionState::Checking;
         a.last_connection_state = ConnectionState::Checking;
         a.checking_duration = now;
+        a.pac_started_at = Some(now);
         a.contact(now + Duration::from_secs(120));
         assert_eq!(a.connection_state, if trickle {ConnectionState::Checking} else {ConnectionState::Failed});
         if trickle {
@@ -3536,5 +3538,126 @@ fn trickle_generation_exhaustion_does_not_wrap_or_mutate_restart_state() -> Resu
     assert_eq!(a.generation_id(), u64::MAX);
     assert!(a.remote_gathering_complete());
     assert_eq!(a.ufrag_pwd.local_credentials.ufrag, credentials);
+    Ok(())
+}
+
+#[test]
+fn pac_early_eoc_does_not_fail_empty_checklist() -> Result<()> {
+    let now = Instant::now();
+    let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
+    a.set_trickle_mode(true);
+    a.start_connectivity_checks(now, false, "remote".into(), "remote-password".into())?;
+    a.mark_local_gathering_complete();
+    a.mark_remote_gathering_complete();
+    a.contact(now);
+    assert_eq!(a.state(), ConnectionState::Checking);
+    a.contact(now + Duration::from_millis(39499));
+    assert_eq!(a.state(), ConnectionState::Checking);
+    a.contact(now + Duration::from_millis(39500));
+    assert_eq!(a.state(), ConnectionState::Failed);
+    Ok(())
+}
+
+#[test]
+fn pac_configuration_restart_scheduling_and_close() -> Result<()> {
+    let now = Instant::now();
+    let config = AgentConfig { pac_timeout: Some(Duration::from_millis(35)), ..Default::default() };
+    let mut a = Agent::new(now, Arc::new(config), test_crypto_provider())?;
+    a.set_trickle_mode(true);
+    a.mark_local_gathering_complete(); a.mark_remote_gathering_complete();
+    assert!(!a.pac_expired(now + Duration::from_secs(100)));
+    a.start_connectivity_checks(now, false, "remote".into(), "remote-password".into())?;
+    a.handle_timeout(now)?;
+    assert_eq!(a.poll_timeout(), Some(now + Duration::from_millis(35)));
+    a.handle_timeout(now + Duration::from_millis(34))?;
+    assert_eq!(a.state(), ConnectionState::Checking);
+    a.handle_timeout(now + Duration::from_millis(35))?;
+    assert_eq!(a.state(), ConnectionState::Failed);
+    a.apply_restart(now + Duration::from_secs(1), false)?;
+    assert!(!a.pac_expired(now + Duration::from_secs(10)));
+    a.start_connectivity_checks(now + Duration::from_secs(10), false, "remote".into(), "remote-password".into())?;
+    a.mark_local_gathering_complete(); a.mark_remote_gathering_complete();
+    a.contact(now + Duration::from_secs(10));
+    assert_eq!(a.state(), ConnectionState::Checking);
+    a.close()?;
+    assert_eq!(a.state(), ConnectionState::Closed);
+    assert_eq!(a.pac_deadline(), None);
+    assert!(Agent::new(now, Arc::new(AgentConfig { pac_timeout: Some(Duration::ZERO), ..Default::default() }), test_crypto_provider()).is_err());
+    Ok(())
+}
+
+#[test]
+fn pac_keeps_authenticated_prflx_discovery_after_eoc() -> Result<()> {
+    let now = Instant::now();
+    let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
+    a.set_trickle_mode(true);
+    let local = trickle_test_host(10000);
+    let priority = local.priority();
+    a.add_local_candidate(local.clone())?;
+    assert!(a.begin_local_candidate_convey(&local));
+    assert!(a.ack_local_candidate_conveyed(&local));
+    a.start_connectivity_checks(now, false, "remote".into(), "remote-password".into())?;
+    a.mark_local_gathering_complete(); a.mark_remote_gathering_complete();
+    a.contact(now + Duration::from_secs(1));
+    assert_eq!(a.state(), ConnectionState::Checking);
+    let mut request = Message::new();
+    request.build(&[
+        Box::new(BINDING_REQUEST), Box::new(TransactionId::new()),
+        Box::new(Username::new(ATTR_USERNAME, format!("{}:remote", a.ufrag_pwd.local_credentials.ufrag))),
+        Box::new(UseCandidateAttr::new()), Box::new(AttrControlling(a.tie_breaker)),
+        Box::new(PriorityAttr(priority)),
+        Box::new(MessageIntegrity::new_short_term_integrity_with_provider(a.ufrag_pwd.local_credentials.pwd.clone(), test_crypto_provider().crypto())),
+        Box::new(FINGERPRINT),
+    ])?;
+    a.handle_inbound(now + Duration::from_secs(2), &mut request, 0, "127.0.0.1:10001".parse()?)?;
+    assert_eq!(a.remote_candidates.len(), 1);
+    assert_eq!(a.candidate_pairs.len(), 1);
+    assert!(a.remote_gathering_complete());
+    a.handle_timeout(now + Duration::from_secs(2))?;
+    assert_eq!(a.state(), ConnectionState::Checking);
+    assert!(a.poll_write().is_some(), "authenticated check drives real STUN response/check output");
+    Ok(())
+}
+
+#[test]
+fn pac_full_legacy_floor_and_exhausted_pairs() -> Result<()> {
+    let now = Instant::now();
+    for trickle in [false, true] {
+        let mut a = Agent::new(now, Arc::new(AgentConfig {
+            pac_timeout: Some(Duration::from_secs(3)), disconnected_timeout: Some(Duration::from_millis(1)),
+            failed_timeout: Some(Duration::from_millis(1)), ..Default::default()
+        }), test_crypto_provider())?;
+        a.set_trickle_mode(trickle);
+        let local = trickle_test_host(10000);
+        a.add_local_candidate(local.clone())?;
+        if trickle { assert!(a.begin_local_candidate_convey(&local)); assert!(a.ack_local_candidate_conveyed(&local)); }
+        a.add_remote_candidate(trickle_test_host(10001))?;
+        a.start_connectivity_checks(now, false, "remote".into(), "remote-password".into())?;
+        a.mark_local_gathering_complete(); a.mark_remote_gathering_complete();
+        a.candidate_pairs[0].state = CandidatePairState::Failed;
+        a.contact(now);
+        a.contact(now + Duration::from_secs(2));
+        assert_eq!(a.state(), ConnectionState::Checking);
+        a.contact(now + Duration::from_secs(3));
+        assert_eq!(a.state(), ConnectionState::Failed);
+    }
+    Ok(())
+}
+
+#[test]
+fn pac_does_not_extend_established_consent_timeout() -> Result<()> {
+    let now = Instant::now();
+    let mut a = Agent::new(now, Arc::new(AgentConfig {
+        disconnected_timeout: Some(Duration::from_secs(1)), failed_timeout: Some(Duration::from_secs(1)),
+        ..Default::default()
+    }), test_crypto_provider())?;
+    a.add_local_candidate(trickle_test_host(10000))?;
+    a.add_remote_candidate(trickle_test_host(10001))?;
+    a.start_connectivity_checks(now, false, "remote".into(), "remote-password".into())?;
+    a.candidate_pairs[0].state = CandidatePairState::Succeeded;
+    a.set_selected_pair(Some(now), Some(0));
+    assert!(!a.pac_expired(now + Duration::from_secs(3)));
+    a.contact(now + Duration::from_secs(3));
+    assert_eq!(a.state(), ConnectionState::Failed, "PAC is not a consent grace period");
     Ok(())
 }

@@ -125,7 +125,8 @@ impl sansio::Protocol<TaggedBytesMut, (), ()> for Agent {
 
         if self.ufrag_pwd.remote_credentials.is_some()
             && (self.force_candidate_contact
-                || self.last_checking_time + self.get_timeout_interval() <= now)
+                || self.last_checking_time + self.get_timeout_interval() <= now
+                || self.pac_deadline().is_some_and(|deadline| self.last_checking_time < deadline && deadline <= now))
         {
             self.contact(now);
         }
@@ -157,7 +158,8 @@ impl sansio::Protocol<TaggedBytesMut, (), ()> for Agent {
         };
 
         // This treats the two options as a collection and picks the minimum
-        [mdns_timeout, ice_timeout].into_iter().flatten().min()
+        [mdns_timeout, ice_timeout, self.pac_deadline().filter(|deadline| *deadline > self.last_checking_time)]
+            .into_iter().flatten().min()
     }
 
     fn close(&mut self) -> std::result::Result<(), Self::Error> {

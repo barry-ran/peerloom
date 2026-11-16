@@ -146,9 +146,11 @@ pub struct Agent {
     //pub(crate) started_ch_tx: Mutex<Option<broadcast::Sender<()>>>,
     pub(crate) ufrag_pwd: UfragPwd,
 
-    // Opt-in Trickle ICE lifecycle; legacy Agent users retain their timeout policy.
+    // Opt-in Trickle lifecycle; RFC 8863 PAC also bounds full legacy ICE failure.
     trickle_mode: bool,
     generation_id: u64,
+    pac_timeout: Duration,
+    pac_started_at: Option<Instant>,
     local_gathering_complete: bool,
     remote_gathering_complete: bool,
     unconveyed_local_candidates: Vec<usize>,
@@ -253,6 +255,10 @@ impl Agent {
             config.candidate_types.clone()
         };
 
+        if config.pac_timeout == Some(Duration::ZERO) {
+            return Err(Error::Other("ICE PAC timeout must be positive".into()));
+        }
+
         if config.lite && (candidate_types.len() != 1 || candidate_types[0] != CandidateType::Host)
         {
             return Err(Error::ErrLiteUsingNonHostCandidates);
@@ -275,6 +281,8 @@ impl Agent {
 
             trickle_mode: false,
             generation_id: 0,
+            pac_timeout: config.pac_timeout.unwrap_or(Duration::from_millis(39500)),
+            pac_started_at: None,
             local_gathering_complete: false,
             remote_gathering_complete: false,
             unconveyed_local_candidates: Vec::new(),
@@ -462,6 +470,16 @@ impl Agent {
         }
         self.request_connectivity_check();
         true
+    }
+
+    fn pac_expired(&self, now: Instant) -> bool {
+        self.lite || self.pac_started_at.is_some_and(|start|
+            now.saturating_duration_since(start) >= self.pac_timeout)
+    }
+
+    fn pac_deadline(&self) -> Option<Instant> {
+        if self.lite || self.connection_state != ConnectionState::Checking { return None; }
+        self.pac_started_at.and_then(|start| start.checked_add(self.pac_timeout))
     }
 
     fn trickle_checklist_failed(&self) -> bool {
@@ -751,6 +769,7 @@ impl Agent {
         );
         self.set_remote_credentials(remote_ufrag, remote_pwd)?;
         self.is_controlling = is_controlling;
+        if self.pac_started_at.is_none() { self.pac_started_at = Some(now); }
         self.start(now);
 
         self.update_connection_state(Some(now), ConnectionState::Checking);
@@ -812,6 +831,7 @@ impl Agent {
         let next_generation = self.generation_id.checked_add(1)
             .ok_or_else(|| Error::Other("ICE generation exhausted".into()))?;
         self.generation_id = next_generation;
+        self.pac_started_at = None;
         if let Some(credentials) = self.ufrag_pwd.pending_local_credentials.take() {
             self.ufrag_pwd.local_credentials = credentials;
         }
@@ -886,7 +906,7 @@ impl Agent {
             }
 
             // We have been in checking longer then Disconnect+Failed timeout, set the connection to Failed
-            if !self.trickle_mode && self.failed_timeout != ZERO_DURATION
+            if !self.trickle_mode && self.pac_expired(now) && self.failed_timeout != ZERO_DURATION
                 && now
                     .checked_duration_since(self.checking_duration)
                     .unwrap_or_else(|| Duration::from_secs(0))
@@ -899,7 +919,7 @@ impl Agent {
         }
 
         self.contact_candidates(now);
-        if self.connection_state == ConnectionState::Checking && self.trickle_checklist_failed() {
+        if self.connection_state == ConnectionState::Checking && self.pac_expired(now) && self.trickle_checklist_failed() {
             self.update_connection_state(Some(now), ConnectionState::Failed);
         }
 

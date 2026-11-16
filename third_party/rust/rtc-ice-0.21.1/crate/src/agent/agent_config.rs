@@ -84,6 +84,11 @@ pub struct AgentConfig {
     /// If the duration is 0, we will never go to failed.
     pub failed_timeout: Option<Duration>,
 
+    /// Minimum full-ICE checking lifetime before failure (RFC 8863 PAC).
+    /// None uses 39.5 seconds. Zero is invalid. Does not delay explicit close
+    /// or alter consent timeouts after a connection has been established.
+    pub pac_timeout: Option<Duration>,
+
     /// Determines how often should we send ICE keepalives (should be less than connection timeout
     /// above) when this is nil, it defaults to 10 seconds.
     /// A keepalive interval of 0 means we never send keepalive packets
