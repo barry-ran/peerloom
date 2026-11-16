@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "原生 WSS 信令信封",
-  "description": "GET /v1/device-signal，Authorization Bearer；native-only，不接受Origin或URL凭证。单节点路由。客户端hello seq0后严格递增；除hello均需服务器发行的generation与fence。SDP仅完整ICE，negotiation_generation为1..9007199254740991；session.reconnecting以当前代请求CAS后重建PeerConnection/Channel，不支持trickle或原地ICE restart。旧connected省略代号仅按1处理。运行时每帧128KiB硬上限、服务端重新鉴权与授权。",
+  "description": "Native ordered WSS signaling. Early SDP followed by bounded session.ice batches. connection_generation/fencing_token fence sockets; negotiation_generation fences ICE. Per direction/generation: 256 candidates and 262144 field UTF-8 bytes. Per batch: 16 items and 16384 payload UTF-8 bytes. complete means actual gathering completion; no later candidates. Recovery uses a new generation; candidate contents are not persisted.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -36,7 +36,8 @@
         "session.terminated",
         "sync.request",
         "sync.snapshot",
-        "error"
+        "error",
+        "session.ice"
       ]
     },
     "id": {
@@ -178,6 +179,88 @@
         "properties": {
           "payload": {
             "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "session.ice"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "session_id",
+          "negotiation_generation"
+        ],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "candidates",
+              "complete"
+            ],
+            "properties": {
+              "candidates": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "candidate",
+                    "sdp_mid",
+                    "sdp_mline_index",
+                    "username_fragment"
+                  ],
+                  "properties": {
+                    "candidate": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sdp_mid": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "sdp_mline_index": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 65535
+                    },
+                    "username_fragment": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  }
+                }
+              },
+              "complete": {
+                "type": "boolean"
+              }
+            },
+            "anyOf": [
+              {
+                "properties": {
+                  "candidates": {
+                    "minItems": 1
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "complete": {
+                    "const": true
+                  }
+                }
+              }
+            ]
           }
         }
       }

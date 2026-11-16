@@ -77,6 +77,23 @@ func AuthorizationDispatch(service *authorization.Service) Dispatch {
 				target = session.SourceDeviceID
 			}
 			return []Delivery{{TenantID: actor.TenantID, DeviceID: target, Message: Envelope{Type: e.Type, SessionID: session.ID, Negotiation: session.NegotiationGeneration, RequestID: e.ID, Payload: e.Payload}}}, nil
+		case "session.ice":
+			if !validSession(e) || e.Negotiation < 1 || e.Negotiation > authorization.MaxNegotiationGeneration {
+				return nil, errors.New("invalid ICE generation")
+			}
+			batch, size, decodeErr := decodeICE(e.Payload)
+			if decodeErr != nil {
+				return nil, decodeErr
+			}
+			session, err = service.AuthorizeICEGeneration(ctx, actor, e.SessionID, e.Negotiation, len(*batch.Candidates), size, *batch.Complete)
+			if err != nil {
+				return closedDeliveries(session, e.ID), err
+			}
+			target := session.TargetDeviceID
+			if actor.ID == target {
+				target = session.SourceDeviceID
+			}
+			return []Delivery{{TenantID: actor.TenantID, DeviceID: target, Message: Envelope{Type: e.Type, SessionID: session.ID, Negotiation: session.NegotiationGeneration, RequestID: e.ID, Payload: e.Payload}}}, nil
 		case "sync.request":
 			if !validSession(e) || !EmptyPayload(e) {
 				return closedDeliveries(session, e.ID), errors.New("invalid sync")

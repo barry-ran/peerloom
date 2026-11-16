@@ -33,6 +33,7 @@ func (s *Service) RecoverGeneration(ctx context.Context, actor identity.Device, 
 		}
 		result, err := scanSession(tx.QueryRow(ctx, `UPDATE sessions SET
 negotiation_generation=negotiation_generation+1,negotiation_started_at=clock_timestamp(),
+source_ice_count=0,source_ice_bytes=0,source_ice_complete=false,target_ice_count=0,target_ice_bytes=0,target_ice_complete=false,
 source_offer_seen=false,target_answer_seen=false,source_connected=false,target_connected=false,state='reconnecting'
 WHERE tenant_id=$1 AND id=$2 RETURNING `+sessionColumns, value.TenantID, value.ID))
 		if err != nil {

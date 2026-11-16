@@ -114,6 +114,18 @@ VALUES($1,$2,$3,clock_timestamp()+interval '1 hour',4)`, tenant, peers[0].ID, pe
 		}
 	}
 	dispatch := AuthorizationDispatch(service)
+	ice := Envelope{Type: "session.ice", ID: uuid(), SessionID: session.ID, Negotiation: 1, Payload: json.RawMessage(`{"candidates":[{"candidate":"candidate:1 1 udp 1 127.0.0.1 9 typ host","sdp_mid":"0","sdp_mline_index":0,"username_fragment":"uf"}],"complete":false}`)}
+	deliveries, iceErr := dispatch(ctx, peers[0], ice)
+	if iceErr != nil || len(deliveries) != 1 || deliveries[0].DeviceID != peers[1].ID || deliveries[0].Message.Negotiation != 1 || string(deliveries[0].Message.Payload) != string(ice.Payload) {
+		t.Fatalf("ICE dispatch did not preserve peer/generation/payload: %v", iceErr)
+	}
+	ice.Payload = json.RawMessage(`{"candidates":[],"complete":true}`)
+	if _, iceErr = dispatch(ctx, peers[0], ice); iceErr != nil {
+		t.Fatal(iceErr)
+	}
+	if _, iceErr = dispatch(ctx, peers[0], ice); iceErr != nil {
+		t.Fatal(iceErr)
+	}
 	if _, err = dispatch(ctx, peers[0], frame); err != nil {
 		t.Fatalf("legacy generation-one connected denied: %v", err)
 	}

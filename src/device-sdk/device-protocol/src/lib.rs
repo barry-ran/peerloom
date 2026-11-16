@@ -215,12 +215,20 @@ pub const ICE_MAX_BATCH_CANDIDATES: usize = 16;
 pub const ICE_MAX_PAYLOAD_BYTES: usize = 16_384;
 pub const ICE_MAX_CANDIDATES: usize = 256;
 pub const ICE_MAX_TOTAL_BYTES: usize = 262_144;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct IceCandidate {
     pub candidate: String,
     pub sdp_mid: String,
     pub sdp_mline_index: u16,
     pub username_fragment: String,
+}
+impl std::fmt::Debug for IceCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IceCandidate")
+            .field("candidate_bytes", &self.candidate.len())
+            .field("sdp_mline_index", &self.sdp_mline_index)
+            .finish_non_exhaustive()
+    }
 }
 impl IceCandidate {
     pub fn validate(&self) -> bool {

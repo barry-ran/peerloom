@@ -124,6 +124,15 @@ class ContractTests(unittest.TestCase):
         for case in cases:
             self.assertFalse(check.is_valid(case))
 
+    def test_trickle_ice_payload(self):
+        check = validator('signal-envelope.schema.json')
+        c = {'candidate': 'candidate:1 1 udp 1 127.0.0.1 9 typ host', 'sdp_mid': '0', 'sdp_mline_index': 0, 'username_fragment': 'uf'}
+        e = {'v': 1, 'type': 'session.ice', 'id': UUID, 'session_id': UUID, 'seq': 1, 'sent_at': '2026-01-01T00:00:00Z', 'connection_generation': 1, 'fencing_token': 'f'*16, 'negotiation_generation': 1, 'payload': {'candidates': [c], 'complete': False}}
+        self.assertTrue(check.is_valid(e))
+        for payload in ({'candidates': [], 'complete': False}, {'candidates': [c]*17, 'complete': False}, {'candidates': [], 'complete': None}, {'candidates': [dict(c, sdp_mline_index=-1)], 'complete': False}, {'candidates': [dict(c, username_fragment=None)], 'complete': False}):
+            self.assertFalse(check.is_valid(dict(e, payload=payload)))
+        self.assertTrue(check.is_valid(dict(e, payload={'candidates': [], 'complete': True})))
+
     def test_openapi_only_implemented_endpoints(self):
         api = json.loads((ROOT / 'api/openapi.json').read_text())
         expected = {
