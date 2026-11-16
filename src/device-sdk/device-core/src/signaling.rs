@@ -391,10 +391,13 @@ impl SignalClient {
             return Err(SignalError::InvalidMessage);
         }
         if kind == "session.ice" {
-            if session_id.is_none() {
+            if session_id.is_none() || ice_peer.is_none() {
+                // Product ICE must use the owned convey ticket path, including EOC.
                 return Err(SignalError::InvalidMessage);
             }
-            IceBatch::parse(&envelope.payload)?;
+            if IceBatch::parse(&envelope.payload)?.candidates.len() > 1 {
+                return Err(SignalError::InvalidMessage);
+            }
         }
         envelope.validate()?;
         if serde_json::to_vec(&envelope)
