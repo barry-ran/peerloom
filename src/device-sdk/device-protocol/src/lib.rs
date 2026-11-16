@@ -209,3 +209,86 @@ mod tests {
         // 没有用于关闭 WebRTC DTLS 的配置字段。
     }
 }
+
+/// Bounded Trickle ICE wire values; generation belongs to the signal envelope.
+pub const ICE_MAX_BATCH_CANDIDATES: usize = 16;
+pub const ICE_MAX_PAYLOAD_BYTES: usize = 16_384;
+pub const ICE_MAX_CANDIDATES: usize = 256;
+pub const ICE_MAX_TOTAL_BYTES: usize = 262_144;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IceCandidate {
+    pub candidate: String,
+    pub sdp_mid: String,
+    pub sdp_mline_index: u16,
+    pub username_fragment: String,
+}
+impl IceCandidate {
+    pub fn validate(&self) -> bool {
+        fn valid(value: &str, limit: usize) -> bool {
+            !value.is_empty() && value.len() <= limit && !value.contains(['\r', '\n', '\0'])
+        }
+        valid(&self.candidate, 4096)
+            && valid(&self.sdp_mid, 256)
+            && valid(&self.username_fragment, 256)
+    }
+    pub fn field_bytes(&self) -> usize {
+        self.candidate.len() + self.sdp_mid.len() + self.username_fragment.len()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IceBatch {
+    pub candidates: Vec<IceCandidate>,
+    pub complete: bool,
+}
+impl IceBatch {
+    /// Serialized JSON additionally has a 16 KiB limit.
+    pub fn validate(&self) -> bool {
+        self.candidates.len() <= ICE_MAX_BATCH_CANDIDATES
+            && (!self.candidates.is_empty() || self.complete)
+            && self.candidates.iter().all(IceCandidate::validate)
+            && self.field_bytes() <= ICE_MAX_PAYLOAD_BYTES
+    }
+    pub fn field_bytes(&self) -> usize {
+        self.candidates.iter().map(IceCandidate::field_bytes).sum()
+    }
+}
+#[cfg(test)]
+mod ice_tests {
+    use super::*;
+    #[test]
+    fn bounded_ice_and_terminal_marker() {
+        let c = IceCandidate {
+            candidate: "candidate:1 1 udp 1 127.0.0.1 9 typ host".into(),
+            sdp_mid: "0".into(),
+            sdp_mline_index: 0,
+            username_fragment: "ufrag".into(),
+        };
+        assert!(c.validate());
+        assert!(
+            IceBatch {
+                candidates: vec![],
+                complete: true
+            }
+            .validate()
+        );
+        assert!(
+            !IceBatch {
+                candidates: vec![],
+                complete: false
+            }
+            .validate()
+        );
+        assert!(
+            !IceBatch {
+                candidates: vec![c.clone(); 17],
+                complete: false
+            }
+            .validate()
+        );
+        let mut bad = c;
+        bad.username_fragment = "a\nb".into();
+        assert!(!bad.validate());
+        bad.username_fragment = "a".repeat(257);
+        assert!(!bad.validate());
+    }
+}
