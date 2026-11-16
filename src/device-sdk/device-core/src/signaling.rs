@@ -1,7 +1,9 @@
 //! 原生有界信令连接：后台 heartbeat，显式 close，无自动重连或会话恢复承诺。
+mod ice;
 use crate::identity::IdentityClient;
 use device_storage::SecretString;
 use futures_util::{SinkExt, StreamExt, stream::FusedStream};
+pub(crate) use ice::{IceBatch, IceBudget};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -325,6 +327,7 @@ impl SignalClient {
                 | "session.reject"
                 | "session.offer"
                 | "session.answer"
+                | "session.ice"
                 | "session.connected"
                 | "session.reconnecting"
                 | "session.renew"
@@ -346,6 +349,12 @@ impl SignalClient {
                 .is_none_or(|s| s.is_empty() || s.len() > 65536)
         {
             return Err(SignalError::InvalidMessage);
+        }
+        if kind == "session.ice" {
+            if session_id.is_none() {
+                return Err(SignalError::InvalidMessage);
+            }
+            IceBatch::parse(&envelope.payload)?;
         }
         envelope.validate()?;
         if serde_json::to_vec(&envelope)

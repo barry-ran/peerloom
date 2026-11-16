@@ -5,6 +5,7 @@ mod channels;
 mod multiconnection_tests;
 mod reset;
 mod session_map;
+mod trickle;
 use crate::outbound::OutboundBudget;
 pub use channels::{
     ChannelValidity, SdkByteStream, SdkChannel, SdkIncomingChannels, SdkMessageChannel,
@@ -18,7 +19,7 @@ use crate::{
         IdempotencyKey, IdentityClient, IdentityError, IdentitySession, RegistrationRequest,
     },
     lease::LeaseGuard,
-    signaling::{Envelope, SignalClient, SignalError},
+    signaling::{Envelope, IceBatch, IceBudget, SignalClient, SignalError},
 };
 use device_protocol::{ChannelMode, ConnectionPolicy, MAX_NEGOTIATION_GENERATION};
 use device_storage::{IdentityStore, SecretString, StoredIdentity};
@@ -463,12 +464,17 @@ enum Command {
     CloseConnection(String, u64, Option<oneshot::Sender<()>>),
 }
 enum Internal {
+    Ice(String, u64, IceBatch),
     Description(String, u64, &'static str, String),
     Ready(String, u64, Connection),
     Closed(String, u64, SdkError),
 }
+enum RemoteSignal {
+    Answer(Box<SessionDescription>),
+    Ice(IceBatch),
+}
 struct Worker {
-    control: mpsc::Sender<SessionDescription>,
+    control: mpsc::Sender<RemoteSignal>,
     stop: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), SdkError>>,
 }
@@ -510,6 +516,8 @@ struct Session {
     gate: Arc<Gate>,
     worker: Option<Worker>,
     authority: Option<PendingAuthority>,
+    ice_budget: IceBudget,
+    pending_ice: Vec<IceBatch>,
     closing: bool,
     renew_at: Instant,
     ready: bool,
@@ -1356,6 +1364,8 @@ impl Actor {
                             offer: None,
                         })
                     },
+                    ice_budget: IceBudget::default(),
+                    pending_ice: Vec::new(),
                     closing: false,
                     renew_at: Instant::now() + Duration::from_secs(10),
                     ready: false,
@@ -1447,7 +1457,10 @@ impl Actor {
             if spawn {
                 self.spawn_worker(&id, None)?;
             }
-        } else if message.kind == "session.offer" || message.kind == "session.answer" {
+        } else if matches!(
+            message.kind.as_str(),
+            "session.offer" | "session.answer" | "session.ice"
+        ) {
             let Some(id) = message.session_id.as_deref() else {
                 return Err(SdkError::Signal(SignalError::InvalidMessage));
             };
@@ -1455,6 +1468,60 @@ impl Actor {
                 return Ok(());
             };
             if session.closing {
+                return Ok(());
+            }
+            if message
+                .negotiation_generation
+                .is_some_and(|g| g < session.generation)
+            {
+                return Ok(());
+            }
+            if message.negotiation_generation != Some(session.generation) {
+                if session.authority.is_some() {
+                    self.refuse_authority(id, SdkError::Signal(SignalError::InvalidMessage));
+                } else {
+                    self.close_session(id, SdkError::Signal(SignalError::InvalidMessage), true)
+                        .await?;
+                }
+                return Ok(());
+            }
+            // The WSS owner has checked its connection generation/fence. Pending
+            // authority cannot touch transport; retain only this exact bounded generation.
+            if message.kind == "session.ice" {
+                if session.authority.is_none() && !session.guard.is_authorized(Instant::now()) {
+                    self.close_session(id, SdkError::AuthorizationExpired, true)
+                        .await?;
+                    return Ok(());
+                }
+                let result = (|| {
+                    let mut batch = IceBatch::parse(&message.payload).map_err(SdkError::Signal)?;
+                    let session = self.sessions.get_mut(id).expect("known session");
+                    if !session.ice_budget.admit(&batch).map_err(SdkError::Signal)? {
+                        return Ok(());
+                    }
+                    if let Some(worker) = session.worker.as_ref() {
+                        worker
+                            .control
+                            .try_send(RemoteSignal::Ice(batch))
+                            .map_err(|_| SdkError::QueueFull)
+                    } else {
+                        if batch.dedup_pending(&session.pending_ice) {
+                            session.pending_ice.push(batch);
+                        }
+                        Ok(())
+                    }
+                })();
+                if let Err(error) = result {
+                    if self
+                        .sessions
+                        .get(id)
+                        .is_some_and(|session| session.authority.is_some())
+                    {
+                        self.refuse_authority(id, error);
+                    } else {
+                        self.close_session(id, error, true).await?;
+                    }
+                }
                 return Ok(());
             }
             if session.authority.is_some() {
@@ -1515,7 +1582,7 @@ impl Actor {
                             .and_then(|worker| {
                                 worker
                                     .control
-                                    .try_send(answer)
+                                    .try_send(RemoteSignal::Answer(Box::new(answer)))
                                     .map_err(|_| SdkError::QueueFull)
                             })
                     }
@@ -1537,7 +1604,13 @@ impl Actor {
         offer: Option<SessionDescription>,
     ) -> Result<(), SdkError> {
         let session = self.sessions.get_mut(id).ok_or(SdkError::Closed)?;
-        let (control, answers) = mpsc::channel(1);
+        // One SDP answer, at most 256 single-candidate batches, and one end marker.
+        let (control, answers) = mpsc::channel(258);
+        for batch in std::mem::take(&mut session.pending_ice) {
+            control
+                .try_send(RemoteSignal::Ice(batch))
+                .map_err(|_| SdkError::QueueFull)?;
+        }
         let (stop, stopped) = oneshot::channel();
         let id = session.id.clone();
         let generation = session.generation;
@@ -1590,6 +1663,24 @@ impl Actor {
     }
     async fn internal(&mut self, event: Internal) -> Result<(), SdkError> {
         match event {
+            Internal::Ice(id, generation, batch) => {
+                if self.sessions.get(&id).is_some_and(|session| {
+                    session.generation == generation
+                        && session.guard.is_authorized(Instant::now())
+                        && session.gate.check().is_ok()
+                }) && self
+                    .send(
+                        "session.ice",
+                        Some(&id),
+                        serde_json::to_value(batch)
+                            .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?,
+                    )
+                    .await
+                    .is_err()
+                {
+                    self.close_session(&id, SdkError::Offline, false).await?;
+                }
+            }
             Internal::Description(id, generation, kind, sdp) => {
                 if self.sessions.get(&id).is_some_and(|session| {
                     session.generation == generation
@@ -1694,6 +1785,8 @@ impl Actor {
         if !session.ready_announced && had_worker {
             session.gate.cleanup.result()?;
         }
+        session.ice_budget = IceBudget::default();
+        session.pending_ice.clear();
         session.generation = generation;
         session.gate = Arc::new(Gate {
             installation_closed: self.installation_closed.clone(),
@@ -1733,6 +1826,7 @@ impl Actor {
         } else {
             None
         };
+        session.pending_ice.clear();
         session.closing = true;
         session.gate.close();
         session.guard.invalidate();
@@ -1905,7 +1999,7 @@ async fn transport_worker(
     mut config: TransportConfig,
     managed_relay: Option<ManagedRelayRequest>,
     offer: Option<SessionDescription>,
-    mut answers: mpsc::Receiver<SessionDescription>,
+    answers: mpsc::Receiver<RemoteSignal>,
     mut stop: oneshot::Receiver<()>,
     events: mpsc::Sender<Internal>,
     sdk: mpsc::Sender<Command>,
@@ -1971,11 +2065,13 @@ async fn transport_worker(
     let channels_started = AtomicBool::new(false);
     let operation = async {
         gate.check()?;
-        let mut channel: MessageChannel = if let Some(offer) = offer {
+        let answerer = offer.is_some();
+        let mut initial_channel: Option<MessageChannel> = None;
+        if let Some(offer) = offer {
             #[cfg(feature = "test-diagnostics")]
             diagnostic.enter("answer-offer");
             let answer = peer
-                .answer_offer(offer)
+                .answer_offer_trickle(offer)
                 .await
                 .map_err(SdkError::Transport)?;
             gate.check()?;
@@ -1990,10 +2086,6 @@ async fn transport_worker(
                 .map_err(|_| SdkError::Closed)?;
             #[cfg(feature = "test-diagnostics")]
             diagnostic.enter("accept-incoming");
-            match peer.accept_incoming().await.map_err(SdkError::Transport)? {
-                device_transport_webrtc::IncomingChannel::ReliableMessage(channel) => channel,
-                _ => return Err(SdkError::Transport(TransportError::UnsupportedChannel)),
-            }
         } else {
             #[cfg(feature = "test-diagnostics")]
             diagnostic.enter("create-channel");
@@ -2003,7 +2095,10 @@ async fn transport_worker(
                 .map_err(SdkError::Transport)?;
             #[cfg(feature = "test-diagnostics")]
             diagnostic.enter("create-offer");
-            let offer = peer.create_offer().await.map_err(SdkError::Transport)?;
+            let offer = peer
+                .create_offer_trickle()
+                .await
+                .map_err(SdkError::Transport)?;
             gate.check()?;
             events
                 .send(Internal::Description(
@@ -2016,54 +2111,84 @@ async fn transport_worker(
                 .map_err(|_| SdkError::Closed)?;
             #[cfg(feature = "test-diagnostics")]
             diagnostic.enter("await-answer");
-            let answer = tokio::time::timeout(Duration::from_secs(30), answers.recv())
-                .await
-                .map_err(|_| SdkError::Transport(TransportError::Timeout))?
-                .ok_or(SdkError::Closed)?;
-            #[cfg(feature = "test-diagnostics")]
-            diagnostic.enter("apply-answer");
-            peer.apply_answer(answer)
-                .await
-                .map_err(SdkError::Transport)?;
-            channel
-        };
-        #[cfg(feature = "test-diagnostics")]
-        diagnostic.enter("metadata");
-        let metadata = channel.metadata().await.map_err(SdkError::Transport)?;
-        if !valid_message_metadata(&metadata) {
-            return Err(SdkError::Transport(TransportError::UnsupportedChannel));
+            initial_channel = Some(channel);
         }
-        #[cfg(feature = "test-diagnostics")]
-        diagnostic.enter("wait-open");
-        channel.wait_open().await.map_err(SdkError::Transport)?;
-        if requires_relay
-            && !matches!(
-                peer.selected_candidate_types()
-                    .await
-                    .map_err(SdkError::Transport)?,
-                Some((CandidateKind::Relay, _))
-            )
-        {
-            return Err(SdkError::Transport(TransportError::RelayRequired));
-        }
-        gate.check()?;
-        #[cfg(feature = "test-diagnostics")]
-        diagnostic.enter("channels-ready");
-        channels_started.store(true, Ordering::Release);
-        channels::run(
+        // Both local producers use the actor's same FIFO, and no candidate pump
+        // is polled until the initial SDP has entered it.
+        let (answer_ready, answered) = oneshot::channel();
+        let remote = trickle::receive(peer.clone(), answers, answerer, answer_ready, gate.clone());
+        let local = trickle::send(
             peer.clone(),
-            channel,
+            events.clone(),
             id.clone(),
             generation,
             gate.clone(),
-            active_channels,
-            outbound,
-            events.clone(),
-            sdk,
-            peer_device_id,
-            request_id,
-        )
-        .await
+        );
+        let established = async {
+            let mut channel = if let Some(channel) = initial_channel {
+                tokio::time::timeout(Duration::from_secs(30), answered)
+                    .await
+                    .map_err(|_| SdkError::Transport(TransportError::Timeout))?
+                    .map_err(|_| SdkError::Closed)?;
+                channel
+            } else {
+                match peer.accept_incoming().await.map_err(SdkError::Transport)? {
+                    device_transport_webrtc::IncomingChannel::ReliableMessage(channel) => channel,
+                    _ => return Err(SdkError::Transport(TransportError::UnsupportedChannel)),
+                }
+            };
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter("metadata");
+            let metadata = channel.metadata().await.map_err(SdkError::Transport)?;
+            if !valid_message_metadata(&metadata) {
+                return Err(SdkError::Transport(TransportError::UnsupportedChannel));
+            }
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter("wait-open");
+            channel.wait_open().await.map_err(SdkError::Transport)?;
+            if requires_relay
+                && !matches!(
+                    peer.selected_candidate_types()
+                        .await
+                        .map_err(SdkError::Transport)?,
+                    Some((CandidateKind::Relay, _))
+                )
+            {
+                return Err(SdkError::Transport(TransportError::RelayRequired));
+            }
+            gate.check()?;
+            #[cfg(feature = "test-diagnostics")]
+            diagnostic.enter("channels-ready");
+            channels_started.store(true, Ordering::Release);
+            channels::run(
+                peer.clone(),
+                channel,
+                id.clone(),
+                generation,
+                gate.clone(),
+                active_channels,
+                outbound,
+                events.clone(),
+                sdk,
+                peer_device_id,
+                request_id,
+            )
+            .await
+        };
+        tokio::pin!(established);
+        tokio::select! {
+            result = &mut established => result,
+            result = remote => {
+                gate.close();
+                wait_established_cleanup(established.as_mut(), &gate, &channels_started).await;
+                result
+            },
+            result = local => {
+                gate.close();
+                wait_established_cleanup(established.as_mut(), &gate, &channels_started).await;
+                result
+            },
+        }
     };
     let result = {
         tokio::pin!(operation);

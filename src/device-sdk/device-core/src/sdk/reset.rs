@@ -153,6 +153,8 @@ mod tests {
                     gate: initial.clone(),
                     worker: None,
                     authority: None,
+                    ice_budget: crate::signaling::IceBudget::default(),
+                    pending_ice: Vec::new(),
                     closing: false,
                     renew_at: Instant::now(),
                     ready: true,

@@ -50,7 +50,7 @@ flowchart LR
     Accept[已接受的会话与双端租约] --> Fetch[可取消的会话ICE请求]
     Fetch --> Check[session ID / 当前协商代 / 最多4节点 / expiry校验]
     Check --> Gate[再次检查独立授权gate]
-    Gate --> Peer[创建PeerConnection与完整ICE SDP]
+    Gate --> Peer[创建PeerConnection与初始ICE SDP]
     Peer --> Selected[RelayOnly核验本地实际选中Relay候选]
     Selected --> Ready[ConnectionReady]
 ```
@@ -157,9 +157,38 @@ stateDiagram-v2
 | 心跳 | 使用 hello 下发的有界心跳与 presence TTL；收不到有效服务端帧则超时 |
 | 退出 | `close().await` 有界等待；超时或 Drop 中止后台任务；取消 close 仍保留任务所有权供 Drop 中止 |
 
-目前支持会话请求、接受/拒绝、续租、连接报告、终止、按会话查询快照及完整 offer/answer。SDP 上限 64 KiB，协商代次为1..9007199254740991（JSON 安全整数边界）；旧connected帧省略代号仅按1处理，不能作用于新代；`SignalClient` 自身不包含自动重连；这一层由 `DeviceSdk` 编排。trickle、原地ICE restart 和 SDP 持久重放仍未实现。
+目前支持会话请求、接受/拒绝、续租、连接报告、终止、按会话查询快照、初始 offer/answer 与增量 session.ice。SDP 上限 64 KiB，协商代次为1..9007199254740991（JSON 安全整数边界）；旧connected帧省略代号仅按1处理，不能作用于新代；`SignalClient` 自身不包含自动重连；这一层由 `DeviceSdk` 编排。原地 ICE restart 和 SDP 持久重放未实现；恢复创建新协商代，不重放旧代候选。
 
 `send().await` 成功只证明帧已提交至 WebSocket 写入流程，不证明服务器授权或目标处理成功；业务结果通过事件接收。取消等待不撤销已经排队或发送的操作。关闭信令对象也不等于关闭另一个对象持有的 WebRTC 连接。
+
+### Trickle ICE 与 worker 生命周期
+
+初始 SDP 包含本代 ICE credentials、DTLS 指纹和数据通道参数，不等待全部接口收集完成。每个 worker 先把初始 SDP 放入 actor 的有序事件队列，再启动本地候选泵；即使底层回调先发生，候选也不能越过 SDP。有效 host/relay 路径可先建立连接，其余接口继续收集至真实终态，不能用第一个候选或 ConnectionReady 冒充 complete。
+
+```mermaid
+sequenceDiagram
+    participant T as PeerTransport
+    participant W as 协商worker
+    participant A as SDK actor
+    participant R as 对端
+    T-->>W: 初始SDP立即返回
+    W->>A: offer或answer入有序队列
+    A->>R: 初始SDP
+    loop 收集至真实终态（可跨越Ready）
+        T-->>W: Candidate或Complete
+        W->>A: 有界session.ice
+        A->>R: 同代候选与终态
+    end
+    R->>A: 对端session.ice
+    A->>W: RemoteSignal::Ice
+    W->>T: 已设置远端SDP后校验并应用
+```
+
+- actor 在当前 WSS fencing、协商代和授权边界内接收消息。等待权威快照时只缓存同代候选，不创建传输；快照确认新代会清空旧缓存。未授权缓存溢出仅本地拒绝，不据此向服务端终止未经确认的会话。
+- 每方向每代最多 256 个候选、256 KiB 字段字节，重复候选也占预算；每批最多 16 个候选、16 KiB JSON。pre-SDP 队列共享同一累计上界，超额显式失败。重复空 complete 幂等，不继续堆积；complete 后追加候选拒绝。
+- 远端控制通道承载 Answer/ICE；候选早于 answer 时先有界缓存，应用 answer 后逐条交给 transport 核对真实 mid、m-line index 与 ufrag。底层去重不绕过预算。
+- Ready 后收发泵继续存在。收集结束只停止本地取候选，不结束连接；远端处理继续到 close。两个泵是 worker 持有的 future，不是游离后台任务。取消先销毁泵，再关闭并 join 原生传输；已有通道仍执行真实排空，不把取消声明成清理成功。
+- 重连只允许新 generation 的候选，旧代消息和关闭后的迟到回调不可复活旧连接。RelayOnly 仍校验实际选中的本地 relay 候选，不通过过滤蜂窝接口或缩短 gathering 超时实现提速。
 
 ## 授权期限策略
 

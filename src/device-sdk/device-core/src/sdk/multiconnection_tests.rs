@@ -55,6 +55,8 @@ async fn target_terminal_session_ignores_late_snapshot_and_offer(reject: bool) {
                 gate: initial.clone(),
                 worker: None,
                 authority: None,
+                ice_budget: IceBudget::default(),
+                pending_ice: Vec::new(),
                 closing: false,
                 renew_at: Instant::now(),
                 ready: true,
@@ -154,6 +156,8 @@ async fn queued_local_description_rechecks_generation_lease_and_reset_gate() {
                     gate: initial.clone(),
                     worker: None,
                     authority: None,
+                    ice_budget: IceBudget::default(),
+                    pending_ice: Vec::new(),
                     closing: false,
                     renew_at: Instant::now(),
                     ready: true,
@@ -882,6 +886,8 @@ async fn pre_ready_actor() -> (Actor, mpsc::Receiver<SdkEvent>, String, String, 
                 gate: initial.clone(),
                 worker: None,
                 authority: None,
+                ice_budget: IceBudget::default(),
+                pending_ice: Vec::new(),
                 closing: false,
                 renew_at: Instant::now(),
                 ready: false,
@@ -1162,4 +1168,95 @@ async fn pre_ready_stop_waits_for_started_channel_cleanup() {
     wait_established_cleanup(operation.as_mut(), &gate, &started).await;
     assert!(finished.load(Ordering::Acquire));
     assert_eq!(gate.cleanup.merge_result(Ok(())), Ok(()));
+}
+
+fn ice_message(mut initial: Envelope, generation: u64, complete: bool) -> Envelope {
+    initial.kind = "session.ice".into();
+    initial.negotiation_generation = Some(generation);
+    initial.payload = if complete {
+        json!({"candidates":[],"complete":true})
+    } else {
+        json!({"candidates":[{"candidate":"candidate:1 1 UDP 1 192.0.2.1 1234 typ host",
+            "sdp_mid":"0","sdp_mline_index":0,"username_fragment":"test"}],"complete":false})
+    };
+    initial
+}
+
+#[tokio::test]
+async fn early_ice_waits_for_authority_and_old_generation_is_cleared() {
+    let (mut actor, mut events, server, authority) = capacity_actor(0).await;
+    let id = uuid::Uuid::new_v4().to_string();
+    let initial = capacity_snapshot(&actor, &id, false);
+    let mut live = initial.clone();
+    live.payload["state"] = json!("connecting");
+    live.payload["negotiation_generation"] = json!(2);
+    live.payload["lease_generation"] = json!(2);
+    authority.lock().unwrap().insert(id.clone(), live);
+    actor.message(initial.clone()).await.unwrap();
+    actor
+        .message(ice_message(initial.clone(), 1, false))
+        .await
+        .unwrap();
+    actor
+        .message(ice_message(initial.clone(), 1, true))
+        .await
+        .unwrap();
+    actor
+        .message(ice_message(initial.clone(), 1, true))
+        .await
+        .unwrap();
+    let session = actor.sessions.get(&id).unwrap();
+    assert_eq!(session.pending_ice.len(), 2);
+    assert!(session.worker.is_none());
+    assert!(session.gate.check().is_err());
+    assert!(events.try_recv().is_err());
+    apply_authority_reply(&mut actor).await;
+    let session = actor.sessions.get(&id).unwrap();
+    assert_eq!(session.generation, 2);
+    assert!(session.pending_ice.is_empty());
+    actor
+        .message(ice_message(initial.clone(), 1, false))
+        .await
+        .unwrap();
+    assert!(actor.sessions.get(&id).unwrap().pending_ice.is_empty());
+    actor.message(ice_message(initial, 2, false)).await.unwrap();
+    assert_eq!(actor.sessions.get(&id).unwrap().pending_ice.len(), 1);
+    actor
+        .close_session(&id, SdkError::Closed, false)
+        .await
+        .unwrap();
+    assert!(actor.sessions.get(&id).unwrap().pending_ice.is_empty());
+    actor.signal.take().unwrap().close().await;
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn pending_authority_ice_overflow_refuses_locally_without_remote_close() {
+    let (mut actor, mut events, server, authority) = capacity_actor(0).await;
+    let id = uuid::Uuid::new_v4().to_string();
+    let initial = capacity_snapshot(&actor, &id, false);
+    authority
+        .lock()
+        .unwrap()
+        .insert(id.clone(), initial.clone());
+    actor.message(initial.clone()).await.unwrap();
+    for _ in 0..256 {
+        actor
+            .message(ice_message(initial.clone(), 1, false))
+            .await
+            .unwrap();
+    }
+    assert_eq!(actor.sessions.get(&id).unwrap().pending_ice.len(), 1);
+    actor.message(ice_message(initial, 1, false)).await.unwrap();
+    assert!(actor.sessions.get(&id).is_none());
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        SdkEvent::ConnectionClosed {
+            reason: SdkError::Signal(SignalError::QueueFull),
+            ..
+        }
+    ));
+    assert!(events.try_recv().is_err());
+    actor.signal.take().unwrap().close().await;
+    server.await.unwrap();
 }

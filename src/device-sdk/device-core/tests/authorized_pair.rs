@@ -1,5 +1,5 @@
 //! 注册由 identity_service 单独覆盖；本测试从开发 fixture 已注册凭证开始。
-//! 验证真实 Go/PG/Redis 授权及完整 ICE SDP 通过 WSS 转发，再跑真实 DTLS/SCTP。
+//! 验证真实 Go/PG/Redis 授权及初始 SDP 与增量 ICE 通过 WSS 转发，再跑真实 DTLS/SCTP。
 use device_core::lease::LeaseGuard;
 use device_core::{
     identity::IdentityClient,
@@ -7,7 +7,9 @@ use device_core::{
 };
 use device_protocol::{ChannelMode, ConnectionPolicy};
 use device_storage::{SecretString, StoredIdentity};
-use device_transport_webrtc::{PeerTransport, SessionDescription, TransportConfig};
+use device_transport_webrtc::{
+    IceCandidate, LocalIceEvent, PeerTransport, SessionDescription, TransportConfig,
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
@@ -126,8 +128,10 @@ async fn exercise_pair(expire_after_disconnect: bool) {
         .create_channel("authorized.echo", ChannelMode::ReliableMessage)
         .await
         .unwrap();
-    let offer = peer_a.create_offer().await.unwrap();
+    let offer = peer_a.create_offer_trickle().await.unwrap();
     assert!(offer.sdp.contains("a=fingerprint:"));
+    assert!(!offer.sdp.contains("a=candidate:"));
+    assert!(!offer.sdp.contains("a=end-of-candidates"));
     signal_a
         .send("session.offer", Some(&session), json!({"sdp":offer.sdp}))
         .await
@@ -136,7 +140,7 @@ async fn exercise_pair(expire_after_disconnect: bool) {
     assert_eq!(routed.session_id.as_deref(), Some(session.as_str()));
     assert_eq!(routed.negotiation_generation, Some(1));
     let answer = peer_b
-        .answer_offer(
+        .answer_offer_trickle(
             SessionDescription::offer(routed.payload["sdp"].as_str().unwrap().into()).unwrap(),
         )
         .await
@@ -148,11 +152,40 @@ async fn exercise_pair(expire_after_disconnect: bool) {
     let routed = event(&mut signal_a, "session.answer").await;
     assert_eq!(routed.session_id.as_deref(), Some(session.as_str()));
     peer_a
-        .apply_answer(
+        .apply_answer_trickle(
             SessionDescription::answer(routed.payload["sdp"].as_str().unwrap().into()).unwrap(),
         )
         .await
         .unwrap();
+    let mut complete = [false, false];
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while !complete.iter().all(|done| *done) {
+            let (side, candidate) = tokio::select! {
+                candidate = peer_a.next_local_ice(), if !complete[0] => (0,candidate.unwrap()),
+                candidate = peer_b.next_local_ice(), if !complete[1] => (1,candidate.unwrap()),
+            };
+            let payload = match candidate {
+                LocalIceEvent::Candidate(candidate) => json!({"candidates":[{
+                    "candidate":candidate.candidate,"sdp_mid":candidate.sdp_mid,
+                    "sdp_mline_index":candidate.sdp_mline_index,"username_fragment":candidate.username_fragment
+                }],"complete":false}),
+                LocalIceEvent::Complete => { complete[side]=true;json!({"candidates":[],"complete":true}) },
+            };
+            let (from,to,peer) = if side==0 { (&signal_a,&mut signal_b,&peer_b) }
+                else { (&signal_b,&mut signal_a,&peer_a) };
+            from.send("session.ice",Some(&session),payload).await.unwrap();
+            let routed=event(to,"session.ice").await;
+            assert_eq!(routed.session_id.as_deref(),Some(session.as_str()));
+            assert_eq!(routed.negotiation_generation,Some(1));
+            let candidates:Vec<IceCandidate>=routed.payload["candidates"].as_array().unwrap().iter().map(|c|IceCandidate {
+                candidate:c["candidate"].as_str().unwrap().into(),
+                sdp_mid:c["sdp_mid"].as_str().unwrap().into(),
+                sdp_mline_index:u16::try_from(c["sdp_mline_index"].as_u64().unwrap()).unwrap(),
+                username_fragment:c["username_fragment"].as_str().unwrap().into(),
+            }).collect();
+            peer.add_remote_ice(&candidates,routed.payload["complete"].as_bool().unwrap()).await.unwrap();
+        }
+    }).await.unwrap();
     let mut incoming = peer_b.accept_channel().await.unwrap();
     outgoing.wait_open().await.unwrap();
     incoming.wait_open().await.unwrap();
