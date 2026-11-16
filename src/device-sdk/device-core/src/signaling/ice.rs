@@ -101,13 +101,6 @@ pub(crate) struct IceBudget {
 impl IceBudget {
     // Count duplicates before transport deduplication; empty completion is idempotent.
     pub fn admit(&mut self, batch: &IceBatch) -> Result<bool, SignalError> {
-        if self.complete {
-            return if batch.candidates.is_empty() && batch.complete {
-                Ok(false)
-            } else {
-                Err(SignalError::InvalidMessage)
-            };
-        }
         let count = self.count + batch.candidates.len();
         let bytes = self.bytes + batch.bytes();
         if count > device_protocol::ICE_MAX_CANDIDATES
@@ -117,8 +110,9 @@ impl IceBudget {
         }
         self.count = count;
         self.bytes = bytes;
-        self.complete = batch.complete;
-        Ok(true)
+        let deliver = !self.complete;
+        self.complete |= batch.complete;
+        Ok(deliver)
     }
 }
 
@@ -157,7 +151,7 @@ mod tests {
         );
     }
     #[test]
-    fn duplicates_consume_budget_end_is_idempotent_and_late_candidates_fail() {
+    fn duplicates_consume_budget_end_is_idempotent_and_late_candidates_are_budgeted() {
         let batch = IceBatch::parse(&json!({"candidates":[candidate()],"complete":false})).unwrap();
         let mut budget = IceBudget::default();
         for _ in 0..256 {
@@ -169,7 +163,12 @@ mod tests {
         for _ in 0..1000 {
             assert_eq!(budget.admit(&end), Ok(false));
         }
-        assert_eq!(budget.admit(&batch), Err(SignalError::InvalidMessage));
+        assert_eq!(budget.admit(&batch), Err(SignalError::QueueFull));
+        let mut fresh = IceBudget::default();
+        assert_eq!(fresh.admit(&end), Ok(true));
+        assert_eq!(fresh.admit(&batch), Ok(false));
+        assert_eq!(fresh.count, 1);
+        assert_eq!(fresh.admit(&end), Ok(false));
     }
     #[test]
     fn byte_limit_counts_utf8_and_rejection_is_atomic() {

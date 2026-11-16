@@ -24,7 +24,9 @@ pub(super) async fn send(
                 .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?,
         )
         .map_err(SdkError::Signal)?;
-        budget.admit(&batch).map_err(SdkError::Signal)?;
+        if !budget.admit(&batch).map_err(SdkError::Signal)? {
+            return Err(SdkError::Signal(SignalError::InvalidMessage));
+        }
         let complete = batch.complete;
         gate.check()?;
         events
@@ -204,7 +206,7 @@ mod tests {
         .await
         .unwrap();
         // Ready does not discard the remote ICE receiver. Repeated terminal
-        // markers remain harmless; a candidate after complete must still fail.
+        // markers and candidates after complete are ignored without closing the session.
         a_tx.send(RemoteSignal::Ice(IceBatch::local(None)))
             .await
             .unwrap();
@@ -217,14 +219,12 @@ mod tests {
         }],"complete":false}))
         .unwrap();
         a_tx.send(RemoteSignal::Ice(late)).await.unwrap();
-        let terminal = tokio::time::timeout(Duration::from_secs(5), a_events.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(
-            terminal,
-            Internal::Closed(_, 1, SdkError::Signal(SignalError::InvalidMessage))
-        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), a_events.recv())
+                .await
+                .is_err()
+        );
+        assert!(a_gate.check().is_ok());
         let _ = a_stop.send(());
         let _ = b_stop.send(());
         tokio::time::timeout(Duration::from_secs(5), async {

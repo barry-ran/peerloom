@@ -120,11 +120,22 @@ VALUES($1,$2,$3,clock_timestamp()+interval '1 hour',4)`, tenant, peers[0].ID, pe
 		t.Fatalf("ICE dispatch did not preserve peer/generation/payload: %v", iceErr)
 	}
 	ice.Payload = json.RawMessage(`{"candidates":[],"complete":true}`)
-	if _, iceErr = dispatch(ctx, peers[0], ice); iceErr != nil {
-		t.Fatal(iceErr)
+	deliveries, iceErr = dispatch(ctx, peers[0], ice)
+	if iceErr != nil || len(deliveries) != 1 {
+		t.Fatalf("first EOC delivery: %v %d", iceErr, len(deliveries))
 	}
-	if _, iceErr = dispatch(ctx, peers[0], ice); iceErr != nil {
-		t.Fatal(iceErr)
+	deliveries, iceErr = dispatch(ctx, peers[0], ice)
+	if iceErr != nil || len(deliveries) != 0 {
+		t.Fatalf("duplicate EOC forwarded: %v %d", iceErr, len(deliveries))
+	}
+	ice.Payload = json.RawMessage(`{"candidates":[{"candidate":"candidate:late 1 udp 1 127.0.0.1 9 typ host","sdp_mid":"0","sdp_mline_index":0,"username_fragment":"uf"}],"complete":false}`)
+	deliveries, iceErr = dispatch(ctx, peers[0], ice)
+	if iceErr != nil || len(deliveries) != 0 {
+		t.Fatalf("post-EOC candidate forwarded: %v %d", iceErr, len(deliveries))
+	}
+	var receivedCount int
+	if err := pool.QueryRow(ctx, "SELECT source_ice_count FROM sessions WHERE id=$1", session.ID).Scan(&receivedCount); err != nil || receivedCount != 2 {
+		t.Fatalf("ignored candidate escaped budget: %v %d", err, receivedCount)
 	}
 	if _, err = dispatch(ctx, peers[0], frame); err != nil {
 		t.Fatalf("legacy generation-one connected denied: %v", err)

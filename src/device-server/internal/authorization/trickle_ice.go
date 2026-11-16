@@ -14,11 +14,12 @@ const MaxICEBytes = 262144
 // AuthorizeICEGeneration shares the session lock and revocation/lease checks
 // with description admission and recovery. Counters survive socket replacement.
 // Candidate contents remain transient; no network addresses are persisted.
-func (s *Service) AuthorizeICEGeneration(ctx context.Context, actor identity.Device, id string, generation int64, count, bytes int, complete bool) (Session, error) {
+func (s *Service) AuthorizeICEGeneration(ctx context.Context, actor identity.Device, id string, generation int64, count, bytes int, complete bool) (Session, bool, error) {
 	if count < 0 || count > 16 || bytes < 0 || bytes > 16384 || (count == 0 && !complete) {
-		return Session{}, failure("INVALID_INPUT", 422)
+		return Session{}, false, failure("INVALID_INPUT", 422)
 	}
-	return s.operate(ctx, actor, id, false, func(ctx context.Context, tx pgx.Tx, value Session, _ grant, _ time.Time) (Session, error) {
+	deliver := false
+	result, err := s.operate(ctx, actor, id, false, func(ctx context.Context, tx pgx.Tx, value Session, _ grant, _ time.Time) (Session, error) {
 		if err := accepted(value); err != nil {
 			return Session{}, err
 		}
@@ -40,9 +41,6 @@ func (s *Service) AuthorizeICEGeneration(ctx context.Context, actor identity.Dev
 		if err != nil {
 			return Session{}, databaseError(err)
 		}
-		if ended && count != 0 {
-			return Session{}, failure("ICE_ALREADY_COMPLETE", 409)
-		}
 		if oldCount+count > MaxICECandidates || oldBytes+bytes > MaxICEBytes {
 			return Session{}, failure("ICE_LIMIT", 429)
 		}
@@ -50,6 +48,8 @@ func (s *Service) AuthorizeICEGeneration(ctx context.Context, actor identity.Dev
 		if err != nil {
 			return Session{}, databaseError(err)
 		}
+		deliver = !ended
 		return value, nil
 	})
+	return result, deliver && err == nil, err
 }

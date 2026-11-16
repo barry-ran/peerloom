@@ -85,9 +85,13 @@ func AuthorizationDispatch(service *authorization.Service) Dispatch {
 			if decodeErr != nil {
 				return nil, decodeErr
 			}
-			session, err = service.AuthorizeICEGeneration(ctx, actor, e.SessionID, e.Negotiation, len(*batch.Candidates), size, *batch.Complete)
+			var deliver bool
+			session, deliver, err = service.AuthorizeICEGeneration(ctx, actor, e.SessionID, e.Negotiation, len(*batch.Candidates), size, *batch.Complete)
 			if err != nil {
 				return closedDeliveries(session, e.ID), err
+			}
+			if !deliver {
+				return nil, nil
 			}
 			target := session.TargetDeviceID
 			if actor.ID == target {
