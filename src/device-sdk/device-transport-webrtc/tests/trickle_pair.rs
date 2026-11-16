@@ -102,3 +102,73 @@ async fn trickle_connects_before_unresponsive_turn_finishes() {
     let _ = blackhole.await;
     assert!(matches!(outcome, Ok(Ok(()))), "{outcome:?}");
 }
+
+#[tokio::test]
+#[ignore = "real owned loopback UDP; explicit acceptance gate"]
+async fn trickle_relay_only_never_falls_back_and_close_wakes_pending_event() {
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = socket.local_addr().unwrap().port();
+    let packets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = packets.clone();
+    let blackhole = tokio::spawn(async move {
+        let mut bytes = [0u8; 4096];
+        while socket.recv_from(&mut bytes).await.is_ok() {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    let config = TransportConfig {
+        policy: ConnectionPolicy::RelayOnly,
+        include_loopback: true,
+        bind_address: "127.0.0.1:0".parse().unwrap(),
+        ice_servers: vec![RTCIceServer {
+            urls: vec![format!("turn:127.0.0.1:{port}?transport=udp")],
+            username: "test".into(),
+            credential: "test-only".into(),
+        }],
+        ..Default::default()
+    };
+    let a = Arc::new(PeerTransport::new(config.clone()).await.unwrap());
+    let b = Arc::new(PeerTransport::new(config).await.unwrap());
+    let mut channel = a
+        .create_channel("must-relay", ChannelMode::ReliableMessage)
+        .await
+        .unwrap();
+    let offer = a.create_offer_trickle().await.unwrap();
+    let answer = b.answer_offer_trickle(offer).await.unwrap();
+    a.apply_answer_trickle(answer).await.unwrap();
+    // Cancelling a pending receive must neither consume nor fabricate Complete.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), a.next_local_ice())
+            .await
+            .is_err()
+    );
+    let gather = tokio::time::timeout(Duration::from_secs(12), async {
+        let (left, right) = tokio::join!(a.next_local_ice(), b.next_local_ice());
+        assert!(matches!(left, Ok(LocalIceEvent::Complete)));
+        assert!(matches!(right, Ok(LocalIceEvent::Complete)));
+        a.add_remote_ice(&[], true).await.unwrap();
+        b.add_remote_ice(&[], true).await.unwrap();
+    })
+    .await;
+    assert!(packets.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(gather.is_ok());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), channel.wait_open())
+            .await
+            .is_err()
+    );
+    assert_eq!(a.selected_candidate_types().await.unwrap(), None);
+    let waiting = a.clone();
+    let event = tokio::spawn(async move { waiting.next_local_ice().await });
+    a.close().await.unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), event)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(TransportError::Closed)
+    ));
+    b.close().await.unwrap();
+    blackhole.abort();
+    let _ = blackhole.await;
+}
