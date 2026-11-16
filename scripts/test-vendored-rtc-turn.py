@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'third_party/rust/rtc-turn-0.21.1'
-MANIFEST_SHA = 'f9233cb6bc88990aeaba13993717060f0b6fcd0d08591f51c22e743d3453046f'
+MANIFEST_SHA = 'aff73edc774c9d77ba51bcb6a3e6d0983031e290de39d80aff98491f1c09c63e'
 ARCHIVE_SHA = 'c53078a0696df5a3a5e4947bc550c5e903b59803b252f1d39062d637ebd3d17e'
 
 
