@@ -1681,7 +1681,10 @@ impl Actor {
         Ok(())
     }
     async fn replace_generation(&mut self, id: &str, generation: u64) -> Result<(), SdkError> {
-        let was_ready = self.sessions.get(id).is_some_and(|session| session.ready);
+        let was_ready = self
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.ready && session.ready_announced);
         let had_worker = self
             .sessions
             .get(id)
