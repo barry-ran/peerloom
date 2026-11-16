@@ -1,0 +1,235 @@
+--- a/src/agent/agent_test.rs
++++ b/src/agent/agent_test.rs
+@@ -3388,0 +3389,112 @@
++
++#[test]
++fn trickle_eoc_is_directional_and_restart_resets() -> Result<()> {
++    let now = Instant::now();
++    let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
++    a.set_trickle_mode(true);
++    a.mark_remote_gathering_complete();
++    a.mark_remote_gathering_complete();
++    assert!(a.remote_gathering_complete());
++    assert!(!a.local_gathering_complete());
++    assert!(!a.trickle_checklist_failed());
++    a.mark_local_gathering_complete();
++    assert!(a.trickle_checklist_failed());
++    a.apply_restart(now, false)?;
++    assert!(!a.local_gathering_complete());
++    assert!(!a.remote_gathering_complete());
++    assert!(a.trickle_mode);
++    Ok(())
++}
++
++fn trickle_test_host(port: u16) -> Candidate {
++    CandidateHostConfig { base_config: CandidateConfig {
++        network: "udp".into(), address: "127.0.0.1".into(), port, component: 1,
++        ..Default::default()
++    }, ..Default::default() }.new_candidate_host().unwrap()
++}
++
++#[test]
++fn trickle_local_pairing_requires_conveyed_ack() -> Result<()> {
++    let now = Instant::now();
++    let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
++    a.set_trickle_mode(true);
++    let local = trickle_test_host(10000);
++    a.add_local_candidate(local.clone())?;
++    a.add_remote_candidate(trickle_test_host(10001))?;
++    assert!(a.candidate_pairs.is_empty());
++    assert!(!a.ack_local_candidate_conveyed(&local));
++    assert!(a.begin_local_candidate_convey(&local));
++    assert!(!a.begin_local_candidate_convey(&local));
++    assert!(a.candidate_pairs.is_empty());
++    a.mark_local_gathering_complete();
++    a.mark_remote_gathering_complete();
++    assert!(!a.trickle_checklist_failed());
++    assert!(a.ack_local_candidate_conveyed(&local));
++    assert_eq!(a.candidate_pairs.len(), 1);
++    assert!(!a.ack_local_candidate_conveyed(&local));
++    assert!(!a.trickle_checklist_failed());
++    a.candidate_pairs[0].state = CandidatePairState::Succeeded;
++    assert!(!a.trickle_checklist_failed());
++    a.candidate_pairs[0].state = CandidatePairState::Failed;
++    assert!(a.trickle_checklist_failed());
++    a.apply_restart(now, true)?;
++    assert_eq!(a.unconveyed_local_candidates.len(), 1);
++    assert!(a.conveying_local_candidates.is_empty());
++    Ok(())
++}
++
++#[test]
++fn trickle_remote_eoc_ignores_signaling_but_keeps_authenticated_discovery() -> Result<()> {
++    let mut a = Agent::new(Instant::now(), Arc::new(AgentConfig::default()), test_crypto_provider())?;
++    a.set_trickle_mode(true);
++    a.mark_remote_gathering_complete();
++    assert!(!a.add_remote_candidate(trickle_test_host(10001))?);
++    assert!(a.remote_candidates.is_empty());
++    assert!(a.add_remote_candidate_inner(trickle_test_host(10002))?);
++    assert_eq!(a.remote_candidates.len(), 1);
++    Ok(())
++}
++
++#[test]
++fn trickle_nomination_blocks_new_convey_but_allows_admitted_write_completion() -> Result<()> {
++    let mut a = Agent::new(Instant::now(), Arc::new(AgentConfig::default()), test_crypto_provider())?;
++    a.set_trickle_mode(true);
++    let first = trickle_test_host(10000);
++    let second = trickle_test_host(10002);
++    a.add_local_candidate(first.clone())?;
++    a.add_remote_candidate(trickle_test_host(10001))?;
++    a.add_local_candidate(second.clone())?;
++    assert!(a.begin_local_candidate_convey(&first));
++    assert!(a.ack_local_candidate_conveyed(&first));
++    assert!(a.begin_local_candidate_convey(&second));
++    a.selected_pair = Some(0);
++    assert!(!a.begin_local_candidate_convey(&first));
++    assert!(a.ack_local_candidate_conveyed(&second));
++    assert_eq!(a.candidate_pairs.len(), 1);
++    assert!(!a.local_gathering_complete());
++    assert!(!a.remote_gathering_complete());
++    Ok(())
++}
++
++#[test]
++fn trickle_checking_waits_for_eoc_without_changing_legacy_timeout() -> Result<()> {
++    let now = Instant::now();
++    for trickle in [false, true] {
++        let mut a = Agent::new(now, Arc::new(AgentConfig::default()), test_crypto_provider())?;
++        a.set_trickle_mode(trickle);
++        a.connection_state = ConnectionState::Checking;
++        a.last_connection_state = ConnectionState::Checking;
++        a.checking_duration = now;
++        a.contact(now + Duration::from_secs(120));
++        assert_eq!(a.connection_state, if trickle {ConnectionState::Checking} else {ConnectionState::Failed});
++        if trickle {
++            a.mark_local_gathering_complete();
++            a.contact(now + Duration::from_secs(121));
++            assert_eq!(a.connection_state, ConnectionState::Checking);
++            a.mark_remote_gathering_complete();
++            a.contact(now + Duration::from_secs(122));
++            assert_eq!(a.connection_state, ConnectionState::Failed);
++        }
++    }
++    Ok(())
++}
+--- a/src/agent/mod.rs
++++ b/src/agent/mod.rs
+@@ -148,0 +149,6 @@
++    // Opt-in Trickle ICE lifecycle; legacy Agent users retain their timeout policy.
++    trickle_mode: bool,
++    local_gathering_complete: bool,
++    remote_gathering_complete: bool,
++    unconveyed_local_candidates: Vec<usize>,
++    conveying_local_candidates: Vec<usize>,
+@@ -268,0 +275,5 @@
++            trickle_mode: false,
++            local_gathering_complete: false,
++            remote_gathering_complete: false,
++            unconveyed_local_candidates: Vec::new(),
++            conveying_local_candidates: Vec::new(),
+@@ -387,0 +399,72 @@
++    /// Enable before candidate gathering. Candidates must be acknowledged after
++    /// ordered signaling admission before they may form connectivity-check pairs.
++    pub fn set_trickle_mode(&mut self, enabled: bool) {
++        self.trickle_mode = enabled;
++        if !enabled {
++            self.unconveyed_local_candidates.clear();
++            self.conveying_local_candidates.clear();
++        }
++    }
++
++    /// Record actual local gathering completion; pending convey acknowledgements still gate failure.
++    pub fn mark_local_gathering_complete(&mut self) {
++        self.local_gathering_complete = true;
++        self.request_connectivity_check();
++    }
++
++    /// Record the remote end-of-candidates marker for the current ICE generation.
++    pub fn mark_remote_gathering_complete(&mut self) {
++        self.remote_gathering_complete = true;
++        self.request_connectivity_check();
++    }
++
++    /// Whether local gathering has completed in this generation.
++    pub fn local_gathering_complete(&self) -> bool { self.local_gathering_complete }
++    /// Whether remote EOC has been received in this generation.
++    pub fn remote_gathering_complete(&self) -> bool { self.remote_gathering_complete }
++
++    /// Linearize the start of an ordered signaling write before nomination.
++    /// A previously admitted write may finish, but no new write begins afterwards.
++    pub fn begin_local_candidate_convey(&mut self, candidate: &Candidate) -> bool {
++        if !self.trickle_mode || self.selected_pair.is_some() { return false; }
++        let Some(index) = self.local_candidates.iter().position(|c| c.equal(candidate)) else { return false; };
++        if !self.unconveyed_local_candidates.contains(&index) || self.conveying_local_candidates.contains(&index) { return false; }
++        self.conveying_local_candidates.push(index);
++        true
++    }
++
++    /// Acknowledge only this generation's successfully conveyed candidate.
++    /// Duplicate acknowledgements are harmless; unknown candidates are not added.
++    pub fn ack_local_candidate_conveyed(&mut self, candidate: &Candidate) -> bool {
++        let Some(index) = self.local_candidates.iter().position(|c| c.equal(candidate)) else {
++            return false;
++        };
++        let Some(pending) = self.unconveyed_local_candidates.iter().position(|i| *i == index) else {
++            return false;
++        };
++        let Some(inflight) = self.conveying_local_candidates.iter().position(|i| *i == index) else { return false; };
++        self.conveying_local_candidates.remove(inflight);
++        self.unconveyed_local_candidates.remove(pending);
++        if self.selected_pair.is_some() { return true; }
++        for remote in 0..self.remote_candidates.len() {
++            if self.local_candidates[index].can_pair_with(&self.remote_candidates[remote])
++                && self.find_pair(index, remote).is_none() {
++                self.add_pair(index, remote);
++            }
++        }
++        self.request_connectivity_check();
++        true
++    }
++
++    fn trickle_checklist_failed(&self) -> bool {
++        self.trickle_mode && self.local_gathering_complete && self.remote_gathering_complete
++            && self.unconveyed_local_candidates.is_empty() && self.mdns_queries.is_empty()
++            && self.selected_pair.is_none()
++            && self.candidate_pairs.iter().all(|p| matches!(p.state, CandidatePairState::Failed | CandidatePairState::Succeeded))
++            && (self.candidate_pairs.is_empty() || self.local_candidates.iter().any(|local| {
++                !self.candidate_pairs.iter().any(|pair| pair.state == CandidatePairState::Succeeded
++                    && self.local_candidates[pair.local_index].component() == local.component())
++            }))
++    }
++
++    /// Register a local candidate; Trickle mode defers pairing until convey acknowledgement.
+@@ -434,0 +518 @@
++        if self.trickle_mode { self.unconveyed_local_candidates.push(local_index); }
+@@ -450,0 +535,7 @@
++        if self.trickle_mode && self.remote_gathering_complete { return Ok(false); }
++        self.add_remote_candidate_inner(c)
++    }
++
++    // Also used by authenticated peer-reflexive discovery, which is not trickled
++    // signaling and must not be rejected by the remote EOC marker.
++    fn add_remote_candidate_inner(&mut self, c: Candidate) -> Result<bool> {
+@@ -721,0 +813,6 @@
++        self.local_gathering_complete = false;
++        self.remote_gathering_complete = false;
++        self.conveying_local_candidates.clear();
++        self.unconveyed_local_candidates = if self.trickle_mode {
++            (0..self.local_candidates.len()).collect()
++        } else { Vec::new() };
+@@ -779 +876 @@
+-            if self.failed_timeout != ZERO_DURATION
++            if !self.trickle_mode && self.failed_timeout != ZERO_DURATION
+@@ -791,0 +889,3 @@
++        if self.connection_state == ConnectionState::Checking && self.trickle_checklist_failed() {
++            self.update_connection_state(Some(now), ConnectionState::Failed);
++        }
+@@ -900,0 +1001 @@
++        if self.trickle_mode && self.unconveyed_local_candidates.contains(&local_index) { return; }
+@@ -1005,0 +1107,2 @@
++        self.unconveyed_local_candidates.clear();
++        self.conveying_local_candidates.clear();
+@@ -1441 +1544 @@
+-                        if let Ok(added) = self.add_remote_candidate(prflx_candidate)
++                        if let Ok(added) = self.add_remote_candidate_inner(prflx_candidate)

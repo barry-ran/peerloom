@@ -127,7 +127,7 @@ def main():
     result = subprocess.run([sys.executable, str(root / "scripts/generate-third-party.py"),
                              "--output", "dist/third-party",
                              "--supplement-dir", str(root / "third_party/license-evidence"),
-                             "--supplement-sha256", "4ac99e50a2a81d3e74fd1f729c95fd5a61baa301c7b5ffb780551cc7623c051c"], cwd=root)
+                             "--supplement-sha256", "2dc4add0363aa8f8c486ed5240f3829e19712e306a2c9b5745bd462aa43157fc"], cwd=root)
     status = write_status(output, result.returncode)
     append_owned_manifest(output, {"发布审查状态.txt": sha_file(output / "发布审查状态.txt")})
     if args.include_build_notices:

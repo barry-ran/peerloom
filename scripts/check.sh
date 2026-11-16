@@ -29,6 +29,7 @@ python3 scripts/test-windows-service-script.py
 python3 scripts/test-vendor-evidence.py
 python3 scripts/test-vendored-webrtc.py
 python3 scripts/test-vendored-rtc-turn.py
+python3 scripts/test-vendored-rtc-ice.py
 python3 bindings/android/scripts/test-maven-evidence.py
 (
   cd src/device-server

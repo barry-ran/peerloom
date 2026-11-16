@@ -21,3 +21,4 @@ webrtc = { path = "../../third_party/rust/webrtc-0.21.1/crate" }
 nix = { path = "../../third_party/rust/nix-0.31.3/crate" }
 rtc = { path = "../../third_party/rust/rtc-0.21.1/crate" }
 rtc-turn = { path = "../../third_party/rust/rtc-turn-0.21.1/crate" }
+rtc-ice = { path = "../../third_party/rust/rtc-ice-0.21.1/crate" }

@@ -242,30 +242,6 @@
       "version": "0.21.1"
     },
     {
-      "archive_sha256": "099984f1be120b2e5692f232f8cbb82e53f6b4261c5c2eeda5be6223ba1adaa9",
-      "commit": "2a732df55ca4bcf26b80914fa0f570cfaf74cfcb",
-      "files": [
-        {
-          "file": "files/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt",
-          "git_blob_sha1": "16fe87b06e802f094b3fbb0894b137bca2b16ef1",
-          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
-          "source_path": "LICENSE-APACHE",
-          "url": "https://raw.githubusercontent.com/webrtc-rs/rtc/2a732df55ca4bcf26b80914fa0f570cfaf74cfcb/LICENSE-APACHE"
-        },
-        {
-          "file": "files/56cc6c08157f4faf70d351b3a7ceac143399d5359a78c180e06dcd0390784f4d.txt",
-          "git_blob_sha1": "e11d93befe8321ba69c2c96f7aa501c07ade27de",
-          "sha256": "56cc6c08157f4faf70d351b3a7ceac143399d5359a78c180e06dcd0390784f4d",
-          "source_path": "LICENSE-MIT",
-          "url": "https://raw.githubusercontent.com/webrtc-rs/rtc/2a732df55ca4bcf26b80914fa0f570cfaf74cfcb/LICENSE-MIT"
-        }
-      ],
-      "name": "rtc-ice",
-      "path_in_vcs": "rtc-ice",
-      "repository": "https://github.com/webrtc-rs/rtc",
-      "version": "0.21.1"
-    },
-    {
       "archive_sha256": "43e7df85d7aacf6e3f69bb922a6c9f83b2a29461038d06285df7642206df64cf",
       "commit": "2a732df55ca4bcf26b80914fa0f570cfaf74cfcb",
       "files": [
