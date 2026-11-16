@@ -1,0 +1,50 @@
+[package]
+name = "rtc-ice"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "RTC ICE in Rust"
+license.workspace = true
+documentation = "https://docs.rs/rtc-ice"
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["crypto-ring"]
+crypto-ring = ["crypto/crypto-ring", "stun/crypto-ring"]
+crypto-aws-lc-rs = ["crypto/crypto-aws-lc-rs", "stun/crypto-aws-lc-rs"]
+
+[dependencies]
+shared = { workspace = true, default-features = false, features = [] }
+sansio.workspace = true
+stun.workspace = true
+mdns.workspace = true
+crypto.workspace = true
+
+crc.workspace = true
+log.workspace = true
+serde.workspace = true
+url.workspace = true
+uuid.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+regex.workspace = true
+env_logger.workspace = true
+chrono.workspace = true
+ipnet.workspace = true
+clap.workspace = true
+lazy_static.workspace = true
+hyper.workspace = true
+waitgroup.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+ctrlc.workspace = true
+
+[[example]]
+name = "ping_pong"
+path = "examples/ping_pong.rs"
+bench = false
