@@ -14,3 +14,6 @@ LICENSE -text
 
 # SHA-bound original Maven POM and notice acceptance fixtures.
 scripts/testdata/maven-gap-proof/** -text
+
+# Fixed QA lock is compared byte-for-byte with the reviewed vendor lock.
+scripts/fixtures/rtc-convey.Cargo.lock -text
