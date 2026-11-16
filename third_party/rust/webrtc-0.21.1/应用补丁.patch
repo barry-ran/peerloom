@@ -1639,3 +1639,226 @@
 +        self.0.close()
 +    }
 +
+--- a/src/peer_connection/transport/turn_relayer.rs
++++ b/src/peer_connection/transport/turn_relayer.rs
+@@ -53,0 +54,19 @@
++}
++
++impl ManagedTurnClient {
++    fn is_pending_allocate_failure(&self, tid: TransactionId) -> bool {
++        if self.gather_finished {
++            return false;
++        }
++        if tid == self.allocate_tid {
++            return true;
++        }
++        // rtc-turn 0.21.1 returns the authenticated Allocate transaction ID from
++        // allocate(): the anonymous attempt's last byte incremented with wrapping.
++        // Its timeout/error events retain the wire ID of that first attempt.
++        // Both stages belong to this allocation, but neither may finish it twice.
++        let mut authenticated_tid = tid;
++        let last = authenticated_tid.0.len() - 1;
++        authenticated_tid.0[last] = authenticated_tid.0[last].wrapping_add(1);
++        authenticated_tid == self.allocate_tid
++    }
+@@ -704 +723,2 @@
+-                            if tid == managed_client.allocate_tid =>
++                            if !managed_client.gather_finished
++                                && tid == managed_client.allocate_tid =>
+@@ -717 +737 @@
+-                            if tid == managed_client.allocate_tid =>
++                            if managed_client.is_pending_allocate_failure(tid) =>
+@@ -761 +781 @@
+-                            } else if tid == managed_client.allocate_tid {
++                            } else if managed_client.is_pending_allocate_failure(tid) {
+@@ -1104,0 +1125,190 @@
++    async fn allocation_fixture() -> (RTCTurnRelayer, TaggedBytesMut, StunMessage) {
++        let mut relayer = RTCTurnRelayer::new(
++            vec!["127.0.0.1:50000".parse().unwrap()],
++            vec![RTCIceServer {
++                urls: vec!["turn:127.0.0.1:3478".into()],
++                username: "user".into(),
++                credential: "pass".into(),
++            }],
++            RTCIceTransportPolicy::Relay,
++            None,
++            crate::runtime::default_runtime().unwrap(),
++            rtc::crypto::default_provider().unwrap(),
++        );
++        relayer.gather().await.unwrap();
++        let packet = relayer.poll_write().unwrap();
++        let mut message = StunMessage::new();
++        message.raw = packet.message.to_vec();
++        message.decode().unwrap();
++        (relayer, packet, message)
++    }
++
++    fn drain_gather_events(relayer: &mut RTCTurnRelayer) -> usize {
++        let mut complete = 0;
++        while let Some(event) = relayer.poll_event() {
++            if matches!(event, RTCTurnRelayEventOut::TurnGatheringComplete) {
++                complete += 1;
++            }
++        }
++        complete
++    }
++
++    fn expire_allocation(relayer: &mut RTCTurnRelayer) -> usize {
++        let mut complete = 0;
++        for _ in 0..16 {
++            let Some(deadline) = relayer.poll_timeout() else {
++                break;
++            };
++            relayer.handle_timeout(deadline).unwrap();
++            while relayer.poll_write().is_some() {}
++            complete += drain_gather_events(relayer);
++        }
++        complete
++    }
++
++    #[test]
++    fn allocation_initial_timeout_completes_gather_and_late_challenge_is_ignored() {
++        futures::executor::block_on(async {
++            let (mut relayer, packet, initial) = allocation_fixture().await;
++            assert_eq!(expire_allocation(&mut relayer), 1);
++            assert_eq!(relayer.state(), RTCIceGatheringState::Complete);
++            let late = build_turn_allocate_unauthorized(initial.transaction_id);
++            relayer
++                .handle_read(tagged(
++                    packet.transport.local_addr,
++                    packet.transport.peer_addr,
++                    &late.raw,
++                ))
++                .unwrap();
++            assert!(relayer.poll_write().is_none());
++            assert_eq!(drain_gather_events(&mut relayer), 0);
++        });
++    }
++
++    #[test]
++    fn allocation_authenticated_timeout_completes_gather_once() {
++        futures::executor::block_on(async {
++            let (mut relayer, packet, initial) = allocation_fixture().await;
++            let challenge = build_turn_allocate_unauthorized(initial.transaction_id);
++            relayer
++                .handle_read(tagged(
++                    packet.transport.local_addr,
++                    packet.transport.peer_addr,
++                    &challenge.raw,
++                ))
++                .unwrap();
++            let retry = relayer.poll_write().unwrap();
++            let mut retry_message = StunMessage::new();
++            retry_message.raw = retry.message.to_vec();
++            retry_message.decode().unwrap();
++            assert_eq!(
++                retry_message.transaction_id,
++                relayer.clients.values().next().unwrap().allocate_tid
++            );
++            assert_eq!(expire_allocation(&mut relayer), 1);
++            assert_eq!(drain_gather_events(&mut relayer), 0);
++        });
++    }
++
++    #[test]
++    fn allocation_initial_error_completes_gather() {
++        futures::executor::block_on(async {
++            let (mut relayer, packet, initial) = allocation_fixture().await;
++            let mut malformed = StunMessage::new();
++            malformed
++                .build(&[
++                    Box::new(initial.transaction_id),
++                    Box::new(MessageType::new(
++                        rtc::stun::message::METHOD_ALLOCATE,
++                        CLASS_ERROR_RESPONSE,
++                    )),
++                    Box::new(CODE_UNAUTHORIZED),
++                ])
++                .unwrap();
++            relayer
++                .handle_read(tagged(
++                    packet.transport.local_addr,
++                    packet.transport.peer_addr,
++                    &malformed.raw,
++                ))
++                .unwrap();
++            assert_eq!(drain_gather_events(&mut relayer), 1);
++        });
++    }
++
++    #[test]
++    fn allocation_success_completes_once_and_late_challenge_is_ignored() {
++        futures::executor::block_on(async {
++            let (mut relayer, packet, initial) = allocation_fixture().await;
++            let challenge = build_turn_allocate_unauthorized(initial.transaction_id);
++            relayer
++                .handle_read(tagged(
++                    packet.transport.local_addr,
++                    packet.transport.peer_addr,
++                    &challenge.raw,
++                ))
++                .unwrap();
++            relayer.poll_write().unwrap();
++            let tid = relayer.clients.values().next().unwrap().allocate_tid;
++            let mut success = StunMessage::new();
++            success
++                .build(&[
++                    Box::new(tid),
++                    Box::new(MessageType::new(
++                        rtc::stun::message::METHOD_ALLOCATE,
++                        CLASS_SUCCESS_RESPONSE,
++                    )),
++                    Box::new(rtc::turn::proto::relayaddr::RelayedAddress {
++                        ip: "203.0.113.9".parse().unwrap(),
++                        port: 55000,
++                    }),
++                    Box::new(rtc::turn::proto::lifetime::Lifetime(Duration::from_secs(
++                        600,
++                    ))),
++                ])
++                .unwrap();
++            relayer
++                .handle_read(tagged(
++                    packet.transport.local_addr,
++                    packet.transport.peer_addr,
++                    &success.raw,
++                ))
++                .unwrap();
++            assert_eq!(drain_gather_events(&mut relayer), 1);
++            assert_eq!(relayer.relay_addrs.len(), 1);
++            relayer
++                .handle_read(tagged(
++                    packet.transport.local_addr,
++                    packet.transport.peer_addr,
++                    &challenge.raw,
++                ))
++                .unwrap();
++            assert_eq!(drain_gather_events(&mut relayer), 0);
++            assert!(relayer.clients.values().next().unwrap().gather_finished);
++        });
++    }
++
++    #[test]
++    fn allocation_failure_ids_wrap_and_reject_unrelated_or_finished_events() {
++        futures::executor::block_on(async {
++            let (mut relayer, _, _) = allocation_fixture().await;
++            let managed = relayer.clients.values_mut().next().unwrap();
++            for last in [0, 1, 255] {
++                managed.allocate_tid.0[11] = last;
++                let mut initial = managed.allocate_tid;
++                initial.0[11] = last.wrapping_sub(1);
++                assert!(managed.is_pending_allocate_failure(initial));
++                assert!(managed.is_pending_allocate_failure(managed.allocate_tid));
++                let mut unrelated = initial;
++                unrelated.0[0] ^= 1;
++                assert!(!managed.is_pending_allocate_failure(unrelated));
++                for delta in [2u8, 254u8] {
++                    let mut same_prefix = managed.allocate_tid;
++                    same_prefix.0[11] = last.wrapping_add(delta);
++                    assert!(!managed.is_pending_allocate_failure(same_prefix));
++                }
++            }
++            managed.gather_finished = true;
++            assert!(!managed.is_pending_allocate_failure(managed.allocate_tid));
++        });
++    }

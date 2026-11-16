@@ -11,15 +11,16 @@
   },
   "patch": {
     "file": "应用补丁.patch",
-    "sha256": "8d13f2322d77e693246e2649d837734bec63d6f2f8444acbd9dab467fcdf8d75",
+    "sha256": "5d9b9d890138befbfec217ac6dc391156531f623a2499572634a4a97eb8ee20e",
     "modified_files": [
       "Cargo.toml",
       "src/peer_connection/driver.rs",
       "src/peer_connection/mod.rs",
       "src/peer_connection/transport/tcp_transport.rs",
+      "src/peer_connection/transport/turn_relayer.rs",
       "src/runtime/primitives.rs"
     ],
-    "kind": "Peerloom本地TURN排空、可选缓冲通知与关闭时TCP/inbox所有权补丁；不宣称上游已合并"
+    "kind": "Peerloom本地TURN排空、可选缓冲通知与关闭时TCP/inbox所有权补丁；不宣称上游已合并; terminal anonymous Allocate failure completes gather (local patch, not upstream merged)"
   },
   "files": [
     {
@@ -109,7 +110,7 @@
     },
     {
       "path": "src/peer_connection/transport/turn_relayer.rs",
-      "sha256": "f224a6acef7bd4c80fae55daf82aca677b14efcd98381934eec483e63adfa1e8",
+      "sha256": "d040396d2cbc8ab2e953c20d63b02752026a526333372011eed966605d9b6e8b",
       "upstream_sha256": "f224a6acef7bd4c80fae55daf82aca677b14efcd98381934eec483e63adfa1e8"
     },
     {

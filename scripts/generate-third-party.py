@@ -234,7 +234,7 @@ def attempt(record, operation):
 # Explicit reviewed provenance pins: changing a vendor requires a reviewed pin update.
 VENDORED = {
     ('rtc-turn', '0.21.1'): 'f9233cb6bc88990aeaba13993717060f0b6fcd0d08591f51c22e743d3453046f',
-    ('webrtc', '0.21.1'): '035335a09cc221159429fb47d7ddf6ad99987d37443a1afa269bb466dbf98088',
+    ('webrtc', '0.21.1'): '3e2b148d075e7c60329136302b6acd0b39a53180d1297b81c242e69082e84e8b',
     ('nix', '0.31.3'): 'd8b3339019d02a41f5adada077dbe59962fb7a4d29a64de01b0ae853b0cbff72',
     ('rtc', '0.21.1'): 'b9c191ff8e15afe8608cb1b9b868ecee0bf90312982e7b5dd3a4b628f6fdd5a4',
 }

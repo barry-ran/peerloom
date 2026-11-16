@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'third_party/rust/webrtc-0.21.1'
-MANIFEST_SHA = '035335a09cc221159429fb47d7ddf6ad99987d37443a1afa269bb466dbf98088'
+MANIFEST_SHA = '3e2b148d075e7c60329136302b6acd0b39a53180d1297b81c242e69082e84e8b'
 ARCHIVE_SHA = 'b621e736302bef784948cc8d8099fd0a8fdb5757693c80a344ffbe38c49387d2'
 
 
@@ -24,7 +24,7 @@ def verify(base):
     manifest = json.loads(encoded)
     assert manifest['archive']['sha256'] == ARCHIVE_SHA
     assert manifest['package'] == {'name': 'webrtc', 'version': '0.21.1', 'declared_license': 'MIT/Apache-2.0'}
-    assert manifest['patch']['modified_files'] == ['Cargo.toml', 'src/peer_connection/driver.rs', 'src/peer_connection/mod.rs', 'src/peer_connection/transport/tcp_transport.rs', 'src/runtime/primitives.rs']
+    assert manifest['patch']['modified_files'] == ['Cargo.toml', 'src/peer_connection/driver.rs', 'src/peer_connection/mod.rs', 'src/peer_connection/transport/tcp_transport.rs', 'src/peer_connection/transport/turn_relayer.rs', 'src/runtime/primitives.rs']
     patch = base / '应用补丁.patch'
     assert sha(patch.read_bytes()) == manifest['patch']['sha256']
     crate = base / 'crate'
