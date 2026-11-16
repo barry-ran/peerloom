@@ -58,7 +58,12 @@ impl Drop for Blackhole {
 #[tokio::test]
 #[ignore = "real owned UDP blackhole; explicit acceptance gate"]
 async fn auto_uses_reachable_host_when_turn_never_answers() {
-    auto_pair(Duration::from_secs(2), Duration::from_secs(12)).await;
+    auto_pair(
+        Duration::from_secs(2),
+        Duration::from_secs(12),
+        GatheringOutcome::PartialAtDeadline,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -66,10 +71,19 @@ async fn auto_uses_reachable_host_when_turn_never_answers() {
 async fn default_twenty_second_gather_connects_within_forty_five_seconds() {
     let operation_timeout = TransportConfig::default().operation_timeout;
     assert_eq!(operation_timeout, Duration::from_secs(20));
-    auto_pair(operation_timeout, Duration::from_secs(45)).await;
+    auto_pair(
+        operation_timeout,
+        Duration::from_secs(45),
+        GatheringOutcome::Complete,
+    )
+    .await;
 }
 
-async fn auto_pair(operation_timeout: Duration, total: Duration) {
+async fn auto_pair(
+    operation_timeout: Duration,
+    total: Duration,
+    expected_outcome: GatheringOutcome,
+) {
     let mut blackhole = Blackhole::start().await;
     let mut config = blackhole.config(ConnectionPolicy::Auto);
     config.operation_timeout = operation_timeout;
@@ -96,10 +110,7 @@ async fn auto_pair(operation_timeout: Duration, total: Duration) {
         sender.wait_open().await?;
         receiver.wait_open().await?;
         for peer in [&left, &right] {
-            assert_eq!(
-                peer.gathering_outcome(),
-                GatheringOutcome::PartialAtDeadline
-            );
+            assert_eq!(peer.gathering_outcome(), expected_outcome);
             assert_eq!(
                 peer.selected_candidate_types().await?,
                 Some((CandidateKind::Host, CandidateKind::Host))
