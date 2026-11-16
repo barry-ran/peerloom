@@ -156,6 +156,7 @@ mod tests {
                     closing: false,
                     renew_at: Instant::now(),
                     ready: true,
+                    ready_announced: true,
                     generation: 1,
                     recovery_at: None,
                     recovery_attempt: 0,

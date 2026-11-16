@@ -77,7 +77,7 @@ flowchart LR
 
 `max_connections` 与 `max_channels_per_connection` 默认 0（不设人工数量上限），正数启用显式配额；pending、待授权、协商、Ready、恢复的会话计入活动配额；本地关闭 gate 并完成有界 worker 收束后即释放活动配额，不等待服务端确认。关闭后尚未确认的轻量记录独立保留，仅供补发终止与阻止旧会话复活，不占活动配额、不设置额外累计数量上限；服务端终态/明确不存在或整个安装停止/reset 后才移除，不能按旧本地 deadline 猜测清除。活动通道计数包含默认可靠消息通道及正在创建/握手的通道；只有活动与累计创建预算都为正数时才要求 active≤creation。数量不限不按配置预分配，仍可能因硬件/操作系统资源、SCTP stream-ID 或独立队列背压失败。[C ABI](C语言接口模块.md)、[Kotlin](Android封装模块.md)与[Swift](../bindings/ios/Apple封装说明.md)已暴露多连接及三类型 typed 通道，保留默认可靠消息通道的兼容入口；各平台真实验收独立于 Rust 测试，不能据配置上限推断长期并发或所有系统版本已通过。每会话初始仍创建默认可靠消息通道以保持旧 `send/receive`；Ready 前检查 label 为 `peerloom.reliable`、protocol 为空，并且有序、没有有限重传次数或期限，不能把低延迟或字节流通道伪装为可靠消息。
 
-连接请求被拒时发出同样的 `ConnectionRequestFailed`（reason 为拒绝错误），不会释放其他目标的 pending，也不会关闭已获准的兄弟会话。未知或旧代响应不作用于当前代。服务端已分配会话后的事件继续以 session_id 关联。ABI2 保持事件布局与编号不变：请求失败映射既有 CONNECTION_CLOSED（connection_id=0、session_id 为空），JSON 追加 request_id 和 target_device_id；ABI 2 客户端按该字段关联请求。
+连接请求被拒时发出同样的 `ConnectionRequestFailed`（reason 为拒绝错误），不会释放其他目标的 pending，也不会关闭已获准的兄弟会话。未知或旧代响应不作用于当前代。服务端已分配会话但尚未成功发布 `ConnectionReady` 时，出站请求的终止仍通过 `ConnectionRequestFailed` 携带原始 `request_id` 与目标设备关联；首次 Ready 发布之后才按 `session_id` 发送关闭事件。可恢复的首次握手失败不提前发出终态，旧代事件、重复关闭和迟到 Ready 不得终结或复活当前请求。关联失败事件在本地 worker 退出且清理成功后发出；清理失败或超时走 SDK 停止路径，不把未知收尾伪装为成功释放。ABI2 保持事件布局与编号不变：请求失败映射既有 CONNECTION_CLOSED（connection_id=0、session_id 为空），JSON 追加 request_id 和 target_device_id；ABI 2 客户端按该字段关联请求。
 
 当前源码不设每实例累计1024个会话的工程上限，同时保留关闭后不复活的授权边界：未知 incoming 先取得关联 request_id 的服务端最新快照，验证参与者、代次与双端租约后才交应用或建立 transport；本地关闭立即关闭旧 gate，终止确认前保留待收束状态并补发 terminate。终态释放后，迟到通知必须再次核验服务端，不能凭旧 snapshot 重新建立连接。固定32项仅作为同步在途窗口，不作为连接总数或累计生命周期配额。验证范围与交付门禁见[开发与验收](开发与验收.md)。
 

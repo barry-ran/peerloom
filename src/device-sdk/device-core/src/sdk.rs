@@ -111,7 +111,7 @@ pub enum SdkEvent {
         source_device_id: String,
     },
     ConnectionReady(Connection),
-    /// An admitted outgoing request failed before a session was established.
+    /// An admitted outgoing request failed before ConnectionReady was published.
     ConnectionRequestFailed {
         target_device_id: String,
         request_id: String,
@@ -513,6 +513,8 @@ struct Session {
     closing: bool,
     renew_at: Instant,
     ready: bool,
+    // Session-wide: recovery must not turn a published handle back into a request.
+    ready_announced: bool,
     generation: u64,
     recovery_at: Option<Instant>,
     recovery_attempt: u32,
@@ -889,7 +891,7 @@ impl Actor {
                     },
                     true,
                 )
-                .await;
+                .await?;
                 continue;
             }
             if self.signal.is_some() && session.sync_pending && !session.sync_requested {
@@ -936,7 +938,7 @@ impl Actor {
                                 .guard
                                 .trace_failure("renewal-registration", 0, false, now);
                             self.close_session(&id, SdkError::AuthorizationExpired, true)
-                                .await;
+                                .await?;
                         } else {
                             session.renew_at = now + Duration::from_secs(15);
                         }
@@ -1020,7 +1022,7 @@ impl Actor {
                             SdkError::Rejected("CLIENT_REJECTED".into()),
                             false,
                         )
-                        .await;
+                        .await?;
                     }
                     outcome
                 };
@@ -1030,7 +1032,7 @@ impl Actor {
                 if self.sessions.get(&id).is_some_and(|session| {
                     session.generation == generation && (session.ready || done.is_some())
                 }) {
-                    self.close_session(&id, SdkError::Closed, true).await;
+                    self.close_session(&id, SdkError::Closed, true).await?;
                 }
                 if let Some(done) = done {
                     let _ = done.send(());
@@ -1194,7 +1196,7 @@ impl Actor {
                 }
             } else {
                 self.close_session(&id, SdkError::Rejected(code), false)
-                    .await;
+                    .await?;
             }
             return Ok(());
         }
@@ -1245,7 +1247,7 @@ impl Actor {
                         ),
                         false,
                     )
-                    .await;
+                    .await?;
                     self.sessions.remove(&id);
                 }
                 return Ok(());
@@ -1281,7 +1283,7 @@ impl Actor {
                         .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?;
                     if guard.apply(&message, &clock, Instant::now()).is_err() {
                         self.close_session(&id, SdkError::AuthorizationExpired, true)
-                            .await;
+                            .await?;
                         return Ok(());
                     }
                     let session = self.sessions.get_mut(&id).expect("pending authority");
@@ -1357,6 +1359,7 @@ impl Actor {
                     closing: false,
                     renew_at: Instant::now() + Duration::from_secs(10),
                     ready: false,
+                    ready_announced: false,
                     generation,
                     recovery_at: None,
                     recovery_attempt: 0,
@@ -1382,7 +1385,7 @@ impl Actor {
                         .insert_retiring_or_pending(id.clone(), session)
                         .map_err(|_| SdkError::QueueFull)?;
                     if full {
-                        self.close_session(&id, SdkError::Busy, true).await;
+                        self.close_session(&id, SdkError::Busy, true).await?;
                     } else {
                         self.request_authority(&id).await;
                         self.control_remaining = self.sessions.len();
@@ -1409,7 +1412,7 @@ impl Actor {
                 .is_err()
             {
                 self.close_session(&id, SdkError::AuthorizationExpired, true)
-                    .await;
+                    .await?;
                 return Ok(());
             }
             if message.payload["state"] == "closed" {
@@ -1423,7 +1426,7 @@ impl Actor {
                     ),
                     false,
                 )
-                .await;
+                .await?;
                 return Ok(());
             }
             session.gate.update_guard(&session.guard);
@@ -1485,12 +1488,12 @@ impl Actor {
                 || !session.guard.is_authorized(Instant::now())
             {
                 self.close_session(id, SdkError::Signal(SignalError::InvalidMessage), true)
-                    .await;
+                    .await?;
                 return Ok(());
             }
             let Some(sdp) = message.payload["sdp"].as_str() else {
                 self.close_session(id, SdkError::Signal(SignalError::InvalidMessage), true)
-                    .await;
+                    .await?;
                 return Ok(());
             };
             let result = if message.kind == "session.offer" {
@@ -1520,7 +1523,7 @@ impl Actor {
                 }
             };
             if let Err(error) = result {
-                self.close_session(id, error, true).await;
+                self.close_session(id, error, true).await?;
             }
         }
         if let Some(offer) = buffered_offer {
@@ -1597,7 +1600,7 @@ impl Actor {
                     .await
                     .is_err()
                 {
-                    self.close_session(&id, SdkError::Offline, false).await;
+                    self.close_session(&id, SdkError::Offline, false).await?;
                 }
             }
             Internal::Ready(id, generation, connection) => {
@@ -1617,6 +1620,10 @@ impl Actor {
                     }) && connection.gate.check().is_ok()
                     {
                         self.emit(SdkEvent::ConnectionReady(connection))?;
+                        self.sessions
+                            .get_mut(&id)
+                            .expect("current session")
+                            .ready_announced = true;
                     }
                 }
             }
@@ -1631,7 +1638,7 @@ impl Actor {
                     {
                         self.prepare_recovery(&id, error).await?;
                     } else {
-                        self.close_session(&id, error, true).await;
+                        self.close_session(&id, error, true).await?;
                     }
                 }
             }
@@ -1649,8 +1656,15 @@ impl Actor {
         }
     }
     async fn prepare_recovery(&mut self, id: &str, reason: SdkError) -> Result<(), SdkError> {
+        let had_worker = self
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.worker.is_some());
         self.stop_generation(id).await;
         let session = self.sessions.get_mut(id).ok_or(SdkError::Closed)?;
+        if !session.ready_announced && had_worker {
+            session.gate.cleanup.result()?;
+        }
         session.gate = Arc::new(Gate {
             installation_closed: self.installation_closed.clone(),
             ..Gate::default()
@@ -1658,15 +1672,25 @@ impl Actor {
         session.gate.update_guard(&session.guard);
         session.ready = false;
         session.recovery_at = Some(Instant::now() + backoff(session.recovery_attempt));
-        self.emit(SdkEvent::ConnectionClosed {
-            session_id: id.to_owned(),
-            reason,
-        })
+        if session.ready_announced {
+            self.emit(SdkEvent::ConnectionClosed {
+                session_id: id.to_owned(),
+                reason,
+            })?;
+        }
+        Ok(())
     }
     async fn replace_generation(&mut self, id: &str, generation: u64) -> Result<(), SdkError> {
         let was_ready = self.sessions.get(id).is_some_and(|session| session.ready);
+        let had_worker = self
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.worker.is_some());
         self.stop_generation(id).await;
         let session = self.sessions.get_mut(id).ok_or(SdkError::Closed)?;
+        if !session.ready_announced && had_worker {
+            session.gate.cleanup.result()?;
+        }
         session.generation = generation;
         session.gate = Arc::new(Gate {
             installation_closed: self.installation_closed.clone(),
@@ -1685,14 +1709,27 @@ impl Actor {
         }
         Ok(())
     }
-    async fn close_session(&mut self, id: &str, reason: SdkError, notify: bool) {
+    async fn close_session(
+        &mut self,
+        id: &str,
+        reason: SdkError,
+        notify: bool,
+    ) -> Result<(), SdkError> {
         let Some(session) = self.sessions.get_mut(id) else {
-            return;
+            return Ok(());
         };
         if session.closing {
-            return;
+            return Ok(());
         }
         let announced = session.authority.is_none();
+        let failed_request = if !session.ready_announced {
+            session
+                .initial_request_id
+                .clone()
+                .map(|request_id| (session.target.clone(), request_id))
+        } else {
+            None
+        };
         session.closing = true;
         session.gate.close();
         session.guard.invalidate();
@@ -1702,6 +1739,8 @@ impl Actor {
             authority.request = None;
         }
         let generation = session.generation;
+        let cleanup_gate = session.gate.clone();
+        let had_worker = session.worker.is_some();
         if notify {
             let _ = self
                 .send_generation("session.terminate", Some(id), json!({}), generation)
@@ -1709,12 +1748,24 @@ impl Actor {
         }
         self.stop_generation(id).await;
         self.sessions.retire(id);
-        if announced {
+        if let Some((target_device_id, request_id)) = failed_request {
+            // A request terminal has no public handle for later cleanup inspection.
+            // Fail the actor instead of claiming drain after a failed native retirement.
+            if had_worker {
+                cleanup_gate.cleanup.result()?;
+            }
+            self.emit(SdkEvent::ConnectionRequestFailed {
+                target_device_id,
+                request_id,
+                reason,
+            })?;
+        } else if announced {
             let _ = self.emit(SdkEvent::ConnectionClosed {
                 session_id: id.to_owned(),
                 reason,
             });
         }
+        Ok(())
     }
     async fn close_all(&mut self) {
         self.outbound.close();

@@ -58,6 +58,7 @@ async fn target_terminal_session_ignores_late_snapshot_and_offer(reject: bool) {
                 closing: false,
                 renew_at: Instant::now(),
                 ready: true,
+                ready_announced: true,
                 generation: 1,
                 recovery_at: None,
                 recovery_attempt: 0,
@@ -156,6 +157,7 @@ async fn queued_local_description_rechecks_generation_lease_and_reset_gate() {
                     closing: false,
                     renew_at: Instant::now(),
                     ready: true,
+                    ready_announced: true,
                     generation: 1,
                     recovery_at: None,
                     recovery_attempt: 0,
@@ -372,7 +374,10 @@ async fn authority_healthy_churn_over_4096_has_no_history_floor() {
             events.try_recv().unwrap(),
             SdkEvent::IncomingConnection { .. }
         ));
-        actor.close_session(&id, SdkError::Closed, true).await;
+        actor
+            .close_session(&id, SdkError::Closed, true)
+            .await
+            .unwrap();
         assert!(actor.sessions.get(&id).unwrap().closing);
         apply_authority_reply(&mut actor).await;
         assert_eq!(actor.sessions.len(), 0);
@@ -449,7 +454,10 @@ async fn authority_local_closed_cannot_be_revived_by_live_snapshot() {
     apply_authority_reply(&mut actor).await;
     events.try_recv().unwrap();
     let gate = actor.sessions.get(&id).unwrap().gate.clone();
-    actor.close_session(&id, SdkError::Closed, false).await;
+    actor
+        .close_session(&id, SdkError::Closed, false)
+        .await
+        .unwrap();
     let mut live = initial;
     live.kind = "sync.snapshot".into();
     live.payload["state"] = json!("connected");
@@ -711,7 +719,10 @@ async fn authority_closing_auth_failure_is_fatal_without_reviving_or_forgetting_
     apply_authority_reply(&mut actor).await;
     events.try_recv().unwrap();
     let gate = actor.sessions.get(&id).unwrap().gate.clone();
-    actor.close_session(&id, SdkError::Closed, false).await;
+    actor
+        .close_session(&id, SdkError::Closed, false)
+        .await
+        .unwrap();
     assert_eq!(
         actor
             .message(authority_error(&request, "AUTH_INVALID"))
@@ -741,7 +752,10 @@ async fn local_close_releases_active_capacity_but_keeps_replay_fence_until_termi
         events.try_recv().unwrap(),
         SdkEvent::IncomingConnection { .. }
     ));
-    actor.close_session(&id, SdkError::Closed, true).await;
+    actor
+        .close_session(&id, SdkError::Closed, true)
+        .await
+        .unwrap();
     assert!(
         matches!(events.try_recv().unwrap(), SdkEvent::ConnectionClosed { session_id, .. } if session_id == id)
     );
@@ -820,4 +834,249 @@ async fn persisted_identity_has_no_periodic_credential_mutation() {
         snapshot.identity.unwrap().device_credential.expose(),
         stored.device_credential.expose()
     );
+}
+
+async fn pre_ready_actor() -> (Actor, mpsc::Receiver<SdkEvent>, String, String, String) {
+    use device_storage::{IdentityScope, MemoryIdentityStore, SecretString};
+    let app = uuid::Uuid::new_v4().to_string();
+    let source = uuid::Uuid::new_v4().to_string();
+    let target = uuid::Uuid::new_v4().to_string();
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let config = SdkConfig::new("https://reset.example".into(), app.clone());
+    let store = Arc::new(MemoryIdentityStore::default());
+    let stored = StoredIdentity {
+        device_id: target.clone(),
+        device_credential: SecretString::new(format!("dev_{}", "a".repeat(43))),
+    };
+    store
+        .save(
+            &IdentityScope {
+                server_origin: "https://reset.example/".into(),
+                application_id: app,
+            },
+            0,
+            stored.clone(),
+        )
+        .await
+        .unwrap();
+    let identity = DeviceSdk::identity(&config, store).await.unwrap();
+    let (commands, _command_rx) = mpsc::channel(32);
+    let (events, event_rx) = mpsc::channel(32);
+    let mut actor = Actor::new(config, identity, stored, commands, events);
+    let installation = actor.installation_closed.clone();
+    let initial = Arc::new(Gate {
+        installation_closed: installation.clone(),
+        ..Gate::default()
+    });
+    actor
+        .sessions
+        .insert_incoming(
+            session_id.clone(),
+            Session {
+                id: session_id.clone(),
+                initial_request_id: Some(request_id.clone()),
+                source: source.clone(),
+                target: target.clone(),
+                guard: LeaseGuard::new(session_id.clone(), source.clone(), target.clone()).unwrap(),
+                gate: initial.clone(),
+                worker: None,
+                authority: None,
+                closing: false,
+                renew_at: Instant::now(),
+                ready: false,
+                ready_announced: false,
+                generation: 1,
+                recovery_at: None,
+                recovery_attempt: 0,
+                sync_pending: false,
+                sync_requested: false,
+                requests: std::collections::VecDeque::new(),
+            },
+        )
+        .unwrap();
+
+    (actor, event_rx, session_id, target, request_id)
+}
+#[tokio::test]
+async fn accepted_request_closed_before_ready_keeps_request_correlation() {
+    let (mut actor, mut event_rx, session_id, target, request_id) = pre_ready_actor().await;
+    actor
+        .close_session(&session_id, SdkError::Closed, false)
+        .await
+        .unwrap();
+    match event_rx.try_recv().expect("terminal event") {
+        SdkEvent::ConnectionRequestFailed {
+            target_device_id,
+            request_id: got,
+            ..
+        } => {
+            assert_eq!(target_device_id, target);
+            assert_eq!(got, request_id);
+        }
+        other => panic!("uncorrelated terminal event: {other:?}"),
+    }
+    actor
+        .close_session(&session_id, SdkError::Closed, false)
+        .await
+        .unwrap();
+    assert!(
+        event_rx.try_recv().is_err(),
+        "duplicate close must be silent"
+    );
+}
+
+#[tokio::test]
+async fn pre_ready_terminal_waits_for_worker_and_rejects_unknown_cleanup() {
+    for fail in [false, true] {
+        let (mut actor, mut events, id, _, _) = pre_ready_actor().await;
+        let (control, _) = mpsc::channel(1);
+        let (stop, stopped) = oneshot::channel();
+        let joined = Arc::new(AtomicBool::new(false));
+        let finished = joined.clone();
+        actor.sessions.get_mut(&id).unwrap().worker = Some(Worker {
+            control,
+            stop: Some(stop),
+            task: tokio::spawn(async move {
+                stopped.await.unwrap();
+                tokio::task::yield_now().await;
+                finished.store(true, Ordering::Release);
+                if fail {
+                    Err(SdkError::RequestOutcomeUnknown)
+                } else {
+                    Ok(())
+                }
+            }),
+        });
+        let result = actor.close_session(&id, SdkError::Closed, false).await;
+        assert!(joined.load(Ordering::Acquire));
+        if fail {
+            assert_eq!(result, Err(SdkError::RequestOutcomeUnknown));
+            assert!(
+                events.try_recv().is_err(),
+                "unknown cleanup cannot claim request drain"
+            );
+        } else {
+            result.unwrap();
+            assert!(matches!(
+                events.try_recv().unwrap(),
+                SdkEvent::ConnectionRequestFailed { .. }
+            ));
+        }
+    }
+}
+
+#[tokio::test]
+async fn pre_ready_old_generation_close_cannot_fail_current_request() {
+    let (mut actor, mut events, id, _, request_id) = pre_ready_actor().await;
+    actor.sessions.get_mut(&id).unwrap().generation = 2;
+    actor
+        .internal(Internal::Closed(id.clone(), 1, SdkError::Closed))
+        .await
+        .unwrap();
+    assert!(events.try_recv().is_err());
+    assert!(!actor.sessions.get(&id).unwrap().closing);
+    actor
+        .internal(Internal::Closed(id.clone(), 2, SdkError::Closed))
+        .await
+        .unwrap();
+    assert!(
+        matches!(events.try_recv().unwrap(), SdkEvent::ConnectionRequestFailed {request_id: got, ..} if got == request_id)
+    );
+    actor
+        .internal(Internal::Closed(id, 2, SdkError::Closed))
+        .await
+        .unwrap();
+    assert!(events.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn pre_ready_recovery_is_not_terminal_and_published_ready_survives_recovery() {
+    for announced in [false, true] {
+        let (mut actor, mut events, id, _, _) = pre_ready_actor().await;
+        actor.sessions.get_mut(&id).unwrap().ready_announced = announced;
+        actor.prepare_recovery(&id, SdkError::Closed).await.unwrap();
+        if announced {
+            assert!(matches!(
+                events.try_recv().unwrap(),
+                SdkEvent::ConnectionClosed { .. }
+            ));
+        } else {
+            assert!(events.try_recv().is_err());
+        }
+        actor
+            .close_session(&id, SdkError::Closed, false)
+            .await
+            .unwrap();
+        let event = events.try_recv().unwrap();
+        assert!(if announced {
+            matches!(event, SdkEvent::ConnectionClosed { .. })
+        } else {
+            matches!(event, SdkEvent::ConnectionRequestFailed { .. })
+        });
+    }
+}
+
+#[tokio::test]
+async fn pre_ready_publish_success_queue_failure_and_late_ready_are_distinct() {
+    for full in [false, true] {
+        let (mut actor, mut events, id, _, _) = pre_ready_actor().await;
+        let now = Instant::now();
+        #[allow(deprecated)]
+        let clock = ServerClockBound::from_hello("2026-10-28T00:00:00Z", now).unwrap();
+        let session = actor.sessions.get_mut(&id).unwrap();
+        let message: Envelope = serde_json::from_value(json!({
+            "v":1,"type":"session.updated","id":uuid::Uuid::new_v4().to_string(),
+            "session_id":id,"connection_generation":1,
+            "fencing_token":"12345678901234567890123456789012","seq":1,
+            "sent_at":"2026-10-28T00:00:00Z",
+            "payload":{"session_id":id,"source_device_id":session.source,
+                "target_device_id":session.target,"state":"connecting","lease_generation":1,
+                "lease_expires_at":"2026-10-28T00:01:00Z",
+                "source_lease_expires_at":"2026-10-28T00:01:00Z",
+                "target_lease_expires_at":"2026-10-28T00:01:00Z"}
+        }))
+        .unwrap();
+        session.guard.apply(&message, &clock, now).unwrap();
+        session.gate.update(session.guard.deadline());
+        if full {
+            for _ in 0..32 {
+                actor.emit(SdkEvent::Online).unwrap();
+            }
+        }
+        let (mut connection, _, _) = channels::test_connection();
+        connection.session_id = id.clone();
+        let result = actor
+            .internal(Internal::Ready(id.clone(), 1, connection))
+            .await;
+        assert_eq!(actor.sessions.get(&id).unwrap().ready_announced, !full);
+        if full {
+            assert_eq!(result, Err(SdkError::QueueFull));
+            for _ in 0..32 {
+                assert!(matches!(events.try_recv().unwrap(), SdkEvent::Online));
+            }
+        } else {
+            result.unwrap();
+            assert!(matches!(
+                events.try_recv().unwrap(),
+                SdkEvent::ConnectionReady(_)
+            ));
+        }
+        actor
+            .close_session(&id, SdkError::Closed, false)
+            .await
+            .unwrap();
+        let terminal = events.try_recv().unwrap();
+        assert!(if full {
+            matches!(terminal, SdkEvent::ConnectionRequestFailed { .. })
+        } else {
+            matches!(terminal, SdkEvent::ConnectionClosed { .. })
+        });
+        let (late, _, _) = channels::test_connection();
+        actor.internal(Internal::Ready(id, 1, late)).await.unwrap();
+        assert!(
+            events.try_recv().is_err(),
+            "late Ready cannot resurrect retired session"
+        );
+    }
 }
