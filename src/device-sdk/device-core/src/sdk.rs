@@ -464,7 +464,13 @@ enum Command {
     CloseConnection(String, u64, Option<oneshot::Sender<()>>),
 }
 enum Internal {
-    Ice(String, u64, IceBatch),
+    Ice(
+        String,
+        u64,
+        IceBatch,
+        Arc<PeerTransport>,
+        oneshot::Sender<Result<crate::signaling::IceConveyOutcome, SdkError>>,
+    ),
     Description(String, u64, &'static str, String),
     Ready(String, u64, Connection),
     Closed(String, u64, SdkError),
@@ -1663,21 +1669,45 @@ impl Actor {
     }
     async fn internal(&mut self, event: Internal) -> Result<(), SdkError> {
         match event {
-            Internal::Ice(id, generation, batch) => {
-                if self.sessions.get(&id).is_some_and(|session| {
-                    session.generation == generation
-                        && session.guard.is_authorized(Instant::now())
-                        && session.gate.check().is_ok()
-                }) && self
-                    .send(
-                        "session.ice",
-                        Some(&id),
-                        serde_json::to_value(batch)
-                            .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?,
-                    )
-                    .await
-                    .is_err()
-                {
+            Internal::Ice(id, generation, batch, peer, completion) => {
+                let valid = |this: &Self| {
+                    this.sessions.get(&id).is_some_and(|session| {
+                        session.generation == generation
+                            && session.guard.is_authorized(Instant::now())
+                            && session.gate.check().is_ok()
+                    })
+                };
+                if !valid(self) {
+                    let _ = completion.send(Err(SdkError::Closed));
+                    return Ok(());
+                }
+                let result = match self.signal.as_ref() {
+                    Some(signal) => signal
+                        .send_ice_generation(
+                            &id,
+                            serde_json::to_value(batch)
+                                .map_err(|_| SdkError::Signal(SignalError::InvalidMessage))?,
+                            generation,
+                            peer,
+                        )
+                        .await
+                        .map_err(SdkError::Signal),
+                    None => Err(SdkError::Offline),
+                };
+                let result = result.and_then(|(request, outcome)| {
+                    if !valid(self) {
+                        return Err(SdkError::Closed);
+                    }
+                    let session = self.sessions.get_mut(&id).ok_or(SdkError::Closed)?;
+                    if session.requests.len() == 16 {
+                        session.requests.pop_front();
+                    }
+                    session.requests.push_back((request, generation));
+                    Ok(outcome)
+                });
+                let failed = result.is_err();
+                let abandoned = completion.send(result).is_err();
+                if failed || abandoned {
                     self.close_session(&id, SdkError::Offline, false).await?;
                 }
             }
@@ -2187,6 +2217,11 @@ async fn transport_worker(
                 gate.close();
                 wait_established_cleanup(established.as_mut(), &gate, &channels_started).await;
                 result
+            },
+            result = peer.wait_trickle_failure() => {
+                gate.close();
+                wait_established_cleanup(established.as_mut(), &gate, &channels_started).await;
+                result.map_err(SdkError::Transport)
             },
         }
     };

@@ -122,8 +122,8 @@ async fn exercise_pair(expire_after_disconnect: bool) {
         event(&mut signal_b, "session.updated").await.payload["state"],
         "connecting"
     );
-    let peer_a = PeerTransport::new(transport_config()).await.unwrap();
-    let peer_b = PeerTransport::new(transport_config()).await.unwrap();
+    let peer_a = std::sync::Arc::new(PeerTransport::new(transport_config()).await.unwrap());
+    let peer_b = std::sync::Arc::new(PeerTransport::new(transport_config()).await.unwrap());
     let mut outgoing = peer_a
         .create_channel("authorized.echo", ChannelMode::ReliableMessage)
         .await
@@ -170,10 +170,19 @@ async fn exercise_pair(expire_after_disconnect: bool) {
                     "sdp_mline_index":candidate.sdp_mline_index,"username_fragment":candidate.username_fragment
                 }],"complete":false}),
                 LocalIceEvent::Complete => { complete[side]=true;json!({"candidates":[],"complete":true}) },
+                LocalIceEvent::Nominated => continue,
             };
             let (from,to,peer) = if side==0 { (&signal_a,&mut signal_b,&peer_b) }
                 else { (&signal_b,&mut signal_a,&peer_a) };
-            from.send("session.ice",Some(&session),payload).await.unwrap();
+            let local = if side==0 { peer_a.clone() } else { peer_b.clone() };
+            let (_, outcome) = from.send_ice_generation(&session,payload,1,local.clone()).await.unwrap();
+            match outcome {
+                device_core::signaling::IceConveyOutcome::SuppressedNomination => continue,
+                device_core::signaling::IceConveyOutcome::Sent {generation, ticket} => {
+                    assert_eq!(generation,1);
+                    if let Some(ticket)=ticket { local.ack_local_ice_convey(ticket).await.unwrap(); }
+                }
+            }
             let routed=event(to,"session.ice").await;
             assert_eq!(routed.session_id.as_deref(),Some(session.as_str()));
             assert_eq!(routed.negotiation_generation,Some(1));

@@ -176,10 +176,21 @@ where
 
 #[cfg(test)]
 mod bounded_close_tests;
+#[cfg(test)]
+mod trickle_writer_tests;
 
+/// Result of ordered signalling delivery, not a remote receipt acknowledgement.
+pub enum IceConveyOutcome {
+    Sent {
+        generation: u64,
+        ticket: Option<device_transport_webrtc::LocalIceConveyTicket>,
+    },
+    SuppressedNomination,
+}
 struct Command {
     envelope: Envelope,
-    completion: oneshot::Sender<Result<(), SignalError>>,
+    completion: oneshot::Sender<Result<IceConveyOutcome, SignalError>>,
+    ice_peer: Option<std::sync::Arc<device_transport_webrtc::PeerTransport>>,
 }
 /// 发送与事件队列均为32，另保留至多1个待交付事件。事件满时暂停读帧，
 /// 仍处理发送/心跳/关闭；不丢会话事件，持续停滞最终受心跳期限约束。
@@ -317,6 +328,35 @@ impl SignalClient {
         payload: Value,
         generation: u64,
     ) -> Result<String, SignalError> {
+        self.send_guarded(kind, session_id, payload, generation, None)
+            .await
+            .map(|(id, _)| id)
+    }
+    /// Send one trickled candidate or EOC through the guarded writer slot.
+    pub async fn send_ice_generation(
+        &self,
+        session_id: &str,
+        payload: Value,
+        generation: u64,
+        peer: std::sync::Arc<device_transport_webrtc::PeerTransport>,
+    ) -> Result<(String, IceConveyOutcome), SignalError> {
+        self.send_guarded(
+            "session.ice",
+            Some(session_id),
+            payload,
+            generation,
+            Some(peer),
+        )
+        .await
+    }
+    async fn send_guarded(
+        &self,
+        kind: &str,
+        session_id: Option<&str>,
+        payload: Value,
+        generation: u64,
+        ice_peer: Option<std::sync::Arc<device_transport_webrtc::PeerTransport>>,
+    ) -> Result<(String, IceConveyOutcome), SignalError> {
         if !(1..=MAX_SEQ).contains(&generation) {
             return Err(SignalError::InvalidMessage);
         }
@@ -370,6 +410,7 @@ impl SignalClient {
             .try_send(Command {
                 envelope,
                 completion,
+                ice_peer,
             })
             .map_err(|e| {
                 if matches!(e, mpsc::error::TrySendError::Full(_)) {
@@ -378,8 +419,8 @@ impl SignalClient {
                     SignalError::Closed
                 }
             })?;
-        result.await.map_err(|_| SignalError::Closed)??;
-        Ok(id)
+        let outcome = result.await.map_err(|_| SignalError::Closed)??;
+        Ok((id, outcome))
     }
     pub async fn receive(&mut self) -> Result<Envelope, SignalError> {
         self.events.recv().await.ok_or(SignalError::Closed)?
@@ -462,8 +503,8 @@ async fn drive(
         let mut outgoing = tokio::select! {
             _=&mut stop=>return Ok(()),
             _=tokio::time::sleep_until(deadline)=>return Err(SignalError::Timeout),
-            _=interval.tick()=>Some((Envelope::new("presence.heartbeat",json!({}))?,None)),
-            command=commands.recv()=>{let command=command.ok_or(SignalError::Closed)?;Some((command.envelope,Some(command.completion)))},
+            _=interval.tick()=>Some((Envelope::new("presence.heartbeat",json!({}))?,None,None)),
+            command=commands.recv()=>{let command=command.ok_or(SignalError::Closed)?;Some((command.envelope,Some(command.completion),command.ice_peer))},
             permit = events.reserve(), if pending_event.is_some() => {
                 permit.map_err(|_| SignalError::Closed)?.send(Ok(pending_event.take().expect("pending event")));
                 None
@@ -480,14 +521,51 @@ async fn drive(
                 None
             }
         };
-        if let Some((ref mut envelope, completion)) = outgoing.take() {
+        if let Some((ref mut envelope, completion, ice_peer)) = outgoing.take() {
+            // The permit starts only here, after this command reaches the write slot.
+            // It is not an actor-queue acknowledgement or a remote acknowledgement.
+            let guarded_ice = ice_peer.is_some();
+            if guarded_ice && completion.as_ref().is_some_and(|c| c.is_closed()) {
+                // Cancelled generation, not a failed shared WSS connection.
+                continue;
+            }
+            let mut ticket = None;
+            if let Some(peer) = ice_peer {
+                let batch = IceBatch::parse(&envelope.payload)?;
+                if batch.candidates.len() > 1 {
+                    return Err(SignalError::InvalidMessage);
+                }
+                if let Some(candidate) = batch.transport_candidates().first() {
+                    match peer.begin_local_ice_convey(candidate).await {
+                        Ok(Some(value)) => ticket = Some(value),
+                        Err(_) => {
+                            if let Some(completion) = completion {
+                                let _ = completion.send(Err(SignalError::Transport));
+                            }
+                            continue;
+                        }
+                        Ok(None) => {
+                            if let Some(completion) = completion {
+                                let _ = completion.send(Ok(IceConveyOutcome::SuppressedNomination));
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
             envelope.seq = next_out;
             envelope.connection_generation = ack.connection_generation;
             envelope.fencing_token = ack.fencing_token.clone();
             envelope.sent_at = timestamp()?;
             let result = write(socket, envelope).await;
             if let Some(completion) = completion {
-                let _ = completion.send(result);
+                let delivered = result.map(|()| IceConveyOutcome::Sent {
+                    generation: envelope.negotiation_generation.unwrap_or(1),
+                    ticket,
+                });
+                // A lost receiver drops this single peer's ticket. The transport
+                // failure watcher closes that generation, not unrelated sessions.
+                let _ = completion.send(delivered);
             }
             result?;
             next_out = next_out

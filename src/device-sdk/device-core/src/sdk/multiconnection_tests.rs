@@ -1214,12 +1214,20 @@ async fn early_ice_waits_for_authority_and_old_generation_is_cleared() {
     let session = actor.sessions.get(&id).unwrap();
     assert_eq!(session.generation, 2);
     assert!(session.pending_ice.is_empty());
-    actor
-        .message(ice_message(initial.clone(), 1, false))
-        .await
-        .unwrap();
+    // Late old-generation traffic cannot consume the new generation's budget.
+    for _ in 0..300 {
+        actor
+            .message(ice_message(initial.clone(), 1, false))
+            .await
+            .unwrap();
+    }
     assert!(actor.sessions.get(&id).unwrap().pending_ice.is_empty());
-    actor.message(ice_message(initial, 2, false)).await.unwrap();
+    for _ in 0..256 {
+        actor
+            .message(ice_message(initial.clone(), 2, false))
+            .await
+            .unwrap();
+    }
     assert_eq!(actor.sessions.get(&id).unwrap().pending_ice.len(), 1);
     actor
         .close_session(&id, SdkError::Closed, false)

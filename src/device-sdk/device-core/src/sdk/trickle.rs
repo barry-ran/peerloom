@@ -17,6 +17,7 @@ pub(super) async fn send(
         let batch = match event {
             LocalIceEvent::Candidate(candidate) => IceBatch::local(Some(candidate)),
             LocalIceEvent::Complete => IceBatch::local(None),
+            LocalIceEvent::Nominated => continue,
         };
         // Validate our producer too, rather than sending malformed/oversized wire.
         let batch = IceBatch::parse(
@@ -29,10 +30,34 @@ pub(super) async fn send(
         }
         let complete = batch.complete;
         gate.check()?;
+        let (completion, acknowledged) = oneshot::channel();
         events
-            .send(Internal::Ice(id.clone(), generation, batch))
+            .send(Internal::Ice(
+                id.clone(),
+                generation,
+                batch,
+                peer.clone(),
+                completion,
+            ))
             .await
             .map_err(|_| SdkError::Closed)?;
+        match acknowledged.await.map_err(|_| SdkError::Closed)?? {
+            crate::signaling::IceConveyOutcome::Sent {
+                generation: sent_generation,
+                ticket,
+            } => {
+                gate.check()?;
+                if sent_generation != generation {
+                    return Err(SdkError::Closed);
+                }
+                if let Some(ticket) = ticket {
+                    peer.ack_local_ice_convey(ticket)
+                        .await
+                        .map_err(SdkError::Transport)?;
+                }
+            }
+            crate::signaling::IceConveyOutcome::SuppressedNomination => {}
+        }
         if complete {
             // Gathering completion is not a connection-close event.
             return std::future::pending().await;
@@ -99,6 +124,38 @@ mod tests {
         Arc<Gate>,
         mpsc::Receiver<Command>,
     );
+    // Worker-only test signal relay. Actual WSS writer-slot tests live in signaling.
+    async fn relay(
+        batch: IceBatch,
+        peer: Arc<PeerTransport>,
+        completion: oneshot::Sender<Result<crate::signaling::IceConveyOutcome, SdkError>>,
+        target: &mpsc::Sender<RemoteSignal>,
+    ) {
+        let ticket = if let Some(candidate) = batch.transport_candidates().first() {
+            match peer.begin_local_ice_convey(candidate).await.unwrap() {
+                Some(ticket) => Some(ticket),
+                None => {
+                    assert!(
+                        completion
+                            .send(Ok(crate::signaling::IceConveyOutcome::SuppressedNomination))
+                            .is_ok()
+                    );
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        target.send(RemoteSignal::Ice(batch)).await.unwrap();
+        assert!(
+            completion
+                .send(Ok(crate::signaling::IceConveyOutcome::Sent {
+                    generation: 1,
+                    ticket
+                }))
+                .is_ok()
+        );
+    }
     fn worker(offer: Option<SessionDescription>, turn_port: u16) -> TestWorker {
         let gate = Arc::new(Gate::default());
         gate.update(Some(Instant::now() + Duration::from_secs(60)));
@@ -166,10 +223,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let Internal::Ice(_, 1, batch) = first_ice else {
+        let Internal::Ice(_, 1, batch, peer, completion) = first_ice else {
             panic!("expected initial target candidate");
         };
-        a_tx.send(RemoteSignal::Ice(batch)).await.unwrap();
+        relay(batch, peer, completion, &a_tx).await;
         a_tx.send(RemoteSignal::Answer(Box::new(
             SessionDescription::answer(sdp).unwrap(),
         )))
@@ -184,10 +241,10 @@ mod tests {
                     event=b_events.recv()=>(1,event.unwrap()),
                 };
                 match event {
-                    Internal::Ice(_, 1, batch) => {
+                    Internal::Ice(_, 1, batch, peer, completion) => {
                         completed[side] = batch.complete;
                         let tx = if side == 0 { &b_tx } else { &a_tx };
-                        tx.send(RemoteSignal::Ice(batch)).await.unwrap();
+                        relay(batch, peer, completion, tx).await;
                     }
                     Internal::Ready(_, 1, connection) => {
                         assert!(

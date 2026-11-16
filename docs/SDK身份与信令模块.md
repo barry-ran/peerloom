@@ -185,6 +185,8 @@ sequenceDiagram
 ```
 
 - actor 在当前 WSS fencing、协商代和授权边界内接收消息。等待权威快照时只缓存同代候选，不创建传输；快照确认新代会清空旧缓存。未授权缓存溢出仅本地拒绝，不据此向服务端终止未经确认的会话。
+- 本地候选只有在 SignalClient 的实际 WebSocket 写槽取得一次性 convey ticket 后才开始发送；actor 入队不算传达。写成功回执仅表示 sent-to-signalling，不表示对端已收到。worker 复核代次和授权后消费 ticket，底层才允许该本地候选参与配对。
+- nomination 与 ticket 预留共用底层串行状态：nomination 后不再开始新候选发送，已经预留的在途写可完成；其回执若晚于 nomination 不新增配对。未消费 ticket、写失败或取消终结所属代次，不能偷偷重发旧代候选。单代取消不关闭其他会话共用的信令连接，真实 WebSocket 写失败才触发共享信令恢复。
 - 每方向每代最多 256 个候选、256 KiB 字段字节，重复候选也占预算；每批最多 16 个候选、16 KiB JSON。pre-SDP 队列共享同一累计上界，超额显式失败。重复空 complete 幂等，不继续堆积；接收 complete 后的结构合法候选仍计资源预算，但忽略且不再交 ICE；发送侧不得在 complete 后追加候选。
 - 远端控制通道承载 Answer/ICE；候选早于 answer 时先有界缓存，应用 answer 后逐条交给 transport 核对真实 mid、m-line index 与 ufrag。底层去重不绕过预算。
 - Ready 后收发泵继续存在。收集结束只停止本地取候选，不结束连接；远端处理继续到 close。两个泵是 worker 持有的 future，不是游离后台任务。取消先销毁泵，再关闭并 join 原生传输；已有通道仍执行真实排空，不把取消声明成清理成功。
