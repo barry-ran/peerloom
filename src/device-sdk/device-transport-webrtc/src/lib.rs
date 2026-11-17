@@ -14,6 +14,7 @@ mod gathering;
 pub use gathering::GatheringOutcome;
 
 pub mod stream;
+pub mod stream_latency;
 pub use stream::{ByteStream, StreamError};
 
 use async_trait::async_trait;
@@ -274,7 +275,9 @@ fn incoming_mode(
     match (protocol, ordered, max_retransmits, max_packet_life_time) {
         ("", true, None, None) => Ok(ChannelMode::ReliableMessage),
         ("", false, Some(0), None) => Ok(ChannelMode::LowLatencyMessage),
-        (stream::PROTOCOL, true, None, None) => Ok(ChannelMode::ReliableStream),
+        (stream::PROTOCOL | stream::TIMED_PROTOCOL, true, None, None) => {
+            Ok(ChannelMode::ReliableStream)
+        }
         _ => Err(TransportError::UnsupportedChannel),
     }
 }
@@ -659,7 +662,10 @@ impl PeerTransport {
                 if channel.max_message_bytes >= stream::MIN_MESSAGE_BYTES =>
             {
                 incoming.pending.take();
-                Ok(IncomingChannel::ReliableStream(ByteStream::new(channel)))
+                let measured = channel.metadata().await?.protocol == stream::TIMED_PROTOCOL;
+                Ok(IncomingChannel::ReliableStream(ByteStream::with_latency(
+                    channel, measured,
+                )))
             }
             other => {
                 let error = other.err().unwrap_or(TransportError::UnsupportedChannel);

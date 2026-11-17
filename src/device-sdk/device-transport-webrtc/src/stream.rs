@@ -2,11 +2,15 @@
 //! `write` 返回已接纳字节数，BufferFull 表示未接纳，调用者不得丢旧/丢新。
 //! 取消正在发送的 future 后该流失败关闭，不能猜测或重放不确定字节。
 
+use crate::stream_latency::{LatencyMonitor, now_us};
 use crate::{IncomingChannel, MessageChannel, PeerTransport, TransportError, reserve_channel};
 use std::sync::atomic::Ordering;
 use webrtc::data_channel::RTCDataChannelInit;
 
 pub(crate) const PROTOCOL: &str = "peerloom.stream.v1";
+pub(crate) const TIMED_PROTOCOL: &str = "peerloom.stream.v2";
+const PROBE: u8 = 4;
+const REPLY: u8 = 5;
 const HEADER: usize = 17;
 pub(crate) const MIN_MESSAGE_BYTES: usize = HEADER + 4;
 const MAX_CHUNK: usize = 16 << 10;
@@ -89,6 +93,11 @@ impl From<TransportError> for StreamError {
 
 pub struct ByteStream {
     channel: MessageChannel,
+    measured: bool,
+    latency: LatencyMonitor,
+    pending_reply: Option<(u64, u64)>,
+    last_probe: u64,
+    outstanding_probe: u64,
     receive_limit: usize,
     send_limit: usize,
     settings_sent: bool,
@@ -108,20 +117,34 @@ pub struct ByteStream {
 impl PeerTransport {
     /// 创建独立的可靠字节流通道；需要先完成协商再 wait_open。
     pub async fn create_stream(&self, label: &str) -> Result<ByteStream, StreamError> {
+        self.create_stream_with_latency(label, false).await
+    }
+
+    /// Opt-in timed protocol; the remote SDK must support peerloom.stream.v2.
+    pub async fn create_stream_with_latency(
+        &self,
+        label: &str,
+        measured: bool,
+    ) -> Result<ByteStream, StreamError> {
         self.ensure_open()?;
-        if label.len() > 128 || self.config.max_message_bytes < HEADER + 4 {
+        if label.len() > 128
+            || self.config.max_message_bytes < HEADER + if measured { 24 } else { 4 }
+        {
             return Err(TransportError::InvalidConfiguration.into());
         }
         reserve_channel(&self.channel_count, self.config.max_channels)?;
         let options = RTCDataChannelInit {
-            protocol: PROTOCOL.into(),
+            protocol: if measured { TIMED_PROTOCOL } else { PROTOCOL }.into(),
             ..Default::default()
         };
         match self
             .bounded(self.peer.create_data_channel(label, Some(options)))
             .await
         {
-            Ok(channel) => Ok(ByteStream::new(self.wrap_channel(channel))),
+            Ok(channel) => Ok(ByteStream::with_latency(
+                self.wrap_channel(channel),
+                measured,
+            )),
             Err(error) => {
                 if error != TransportError::Timeout {
                     self.channel_count.fetch_sub(1, Ordering::AcqRel);
@@ -153,10 +176,15 @@ impl ByteStream {
         self.channel.metadata().await.map_err(StreamError::from)
     }
 
-    pub(crate) fn new(channel: MessageChannel) -> Self {
+    pub(crate) fn with_latency(channel: MessageChannel, measured: bool) -> Self {
         let max_chunk = MAX_CHUNK.min(channel.max_message_bytes - HEADER);
         Self {
             channel,
+            measured,
+            latency: LatencyMonitor::default(),
+            pending_reply: None,
+            last_probe: 0,
+            outstanding_probe: 0,
             receive_limit: max_chunk,
             send_limit: max_chunk,
             settings_sent: false,
@@ -200,7 +228,7 @@ impl ByteStream {
                 return Err(StreamError::Protocol);
             }
         };
-        if !(4..=MAX_CHUNK).contains(&remote_limit) {
+        if !(if self.measured { 24 } else { 4 }..=MAX_CHUNK).contains(&remote_limit) {
             self.failed = true;
             return Err(StreamError::Protocol);
         }
@@ -223,6 +251,14 @@ impl ByteStream {
 
     /// 最多接纳一个有限分片；返回 n 后调用者继续发送剩余字节。
     pub async fn write(&mut self, bytes: &[u8]) -> Result<usize, StreamError> {
+        self.write_admitted(bytes, now_us()).await
+    }
+    /// Carry the SDK admission timestamp through its own queues.
+    pub async fn write_admitted(
+        &mut self,
+        bytes: &[u8],
+        admitted_us: u64,
+    ) -> Result<usize, StreamError> {
         self.ensure_valid()?;
         if !self.initialized {
             return Err(TransportError::NotReady.into());
@@ -233,14 +269,36 @@ impl ByteStream {
         if bytes.is_empty() {
             return Ok(0);
         }
-        let n = bytes.len().min(self.send_limit);
-        self.send_frame(DATA, &bytes[..n]).await?;
+        let n = bytes
+            .len()
+            .min(self.send_limit - if self.measured { 8 } else { 0 });
+        self.send_frame_at(DATA, &bytes[..n], admitted_us).await?;
         Ok(n)
     }
 
     async fn send_frame(&mut self, kind: u8, payload: &[u8]) -> Result<(), StreamError> {
+        self.send_frame_at(kind, payload, now_us()).await
+    }
+    async fn send_frame_at(
+        &mut self,
+        kind: u8,
+        payload: &[u8],
+        admitted_us: u64,
+    ) -> Result<(), StreamError> {
         let next = self.tx_seq.checked_add(1).ok_or(StreamError::Protocol)?;
-        encode_frame_into(&mut self.tx_frame, kind, self.tx_seq, payload);
+        if self.measured && kind == DATA {
+            // Prefix in the reused frame buffer; no extra payload allocation/copy.
+            self.tx_frame.clear();
+            self.tx_frame.extend_from_slice(MAGIC);
+            self.tx_frame.push(kind);
+            self.tx_frame.extend_from_slice(&self.tx_seq.to_be_bytes());
+            self.tx_frame
+                .extend_from_slice(&((payload.len() + 8) as u32).to_be_bytes());
+            self.tx_frame.extend_from_slice(&admitted_us.to_be_bytes());
+            self.tx_frame.extend_from_slice(payload);
+        } else {
+            encode_frame_into(&mut self.tx_frame, kind, self.tx_seq, payload);
+        }
         self.tx_pending = true;
         let outcome = self.channel.send(&self.tx_frame).await;
         self.tx_pending = false;
@@ -290,29 +348,94 @@ impl ByteStream {
         if !self.pending.is_empty() {
             return Ok(self.pending.split_to(maximum.min(self.pending.len())));
         }
-        let frame = match self.channel.receive_owned().await {
-            Ok(frame) => frame,
-            Err(TransportError::Timeout) => return Err(TransportError::Timeout.into()),
-            Err(error) => {
-                self.failed = true;
-                return Err(error.into());
+        loop {
+            let frame = match self.channel.receive_owned().await {
+                Ok(frame) => frame,
+                Err(TransportError::Timeout) => return Err(TransportError::Timeout.into()),
+                Err(error) => {
+                    self.failed = true;
+                    return Err(error.into());
+                }
+            };
+            let received = now_us();
+            let (kind, payload) =
+                match decode_frame_mode(&frame, self.rx_seq, self.receive_limit, self.measured) {
+                    Ok((kind, payload)) if kind != SETTINGS => (kind, payload),
+                    _ => {
+                        self.failed = true;
+                        return Err(StreamError::Protocol);
+                    }
+                };
+            self.rx_seq = self.rx_seq.checked_add(1).ok_or(StreamError::Protocol)?;
+            if kind == FIN {
+                self.read_closed = true;
+                return Ok(OwnedChunk::default());
             }
-        };
-        let kind = match decode_frame(&frame, self.rx_seq, self.receive_limit) {
-            Ok((kind, _)) if kind != SETTINGS => kind,
-            _ => {
-                self.failed = true;
-                return Err(StreamError::Protocol);
+            if kind == PROBE {
+                self.pending_reply =
+                    Some((u64::from_be_bytes(payload.try_into().unwrap()), received));
+                continue;
             }
-        };
-        self.rx_seq = self.rx_seq.checked_add(1).ok_or(StreamError::Protocol)?;
-        if kind == FIN {
-            self.read_closed = true;
-            return Ok(OwnedChunk::default());
+            if kind == REPLY {
+                let t1 = u64::from_be_bytes(payload[..8].try_into().unwrap());
+                if t1 != 0 && t1 == self.outstanding_probe {
+                    self.latency.synchronize(
+                        t1,
+                        u64::from_be_bytes(payload[8..16].try_into().unwrap()),
+                        u64::from_be_bytes(payload[16..24].try_into().unwrap()),
+                        received,
+                    );
+                    self.outstanding_probe = 0;
+                }
+                continue;
+            }
+            if self.measured {
+                self.latency.received(
+                    u64::from_be_bytes(payload[..8].try_into().unwrap()),
+                    received,
+                );
+            }
+            self.pending = OwnedChunk::from_buffer(frame);
+            self.pending
+                .advance(HEADER + if self.measured { 8 } else { 0 });
+            return Ok(self.pending.split_to(maximum.min(self.pending.len())));
         }
-        self.pending = OwnedChunk::from_buffer(frame);
-        self.pending.advance(HEADER);
-        Ok(self.pending.split_to(maximum.min(self.pending.len())))
+    }
+
+    pub fn measures_latency(&self) -> bool {
+        self.measured
+    }
+    pub fn set_latency_monitor(&mut self, monitor: LatencyMonitor) {
+        self.latency = monitor;
+    }
+    pub fn latency_monitor(&self) -> LatencyMonitor {
+        self.latency.clone()
+    }
+    /// Drive periodically outside any cancellation-safe read future. SDK does this automatically.
+    pub async fn poll_timing(&mut self) -> Result<(), StreamError> {
+        if !self.measured || !self.initialized || self.write_closed || self.read_closed {
+            return Ok(());
+        }
+        self.ensure_valid()?;
+        if let Some((t1, t2)) = self.pending_reply {
+            let mut payload = [0; 24];
+            payload[..8].copy_from_slice(&t1.to_be_bytes());
+            payload[8..16].copy_from_slice(&t2.to_be_bytes());
+            payload[16..].copy_from_slice(&now_us().to_be_bytes());
+            self.send_frame(REPLY, &payload).await?;
+            self.pending_reply = None;
+        }
+        let now = now_us();
+        // Keep one bounded outstanding probe until its response or calibration TTL.
+        // Replacing it every second would discard every reply on high-RTT links.
+        let can_probe =
+            self.outstanding_probe == 0 || now.saturating_sub(self.last_probe) > 10_000_000;
+        if can_probe && (self.last_probe == 0 || now.saturating_sub(self.last_probe) >= 1_000_000) {
+            self.send_frame(PROBE, &now.to_be_bytes()).await?;
+            self.last_probe = now;
+            self.outstanding_probe = now;
+        }
+        Ok(())
     }
 
     /// 已收到 FIN 后继续等待底层完全关闭；FIN 本身不关闭反向写入。
@@ -366,6 +489,14 @@ fn encode_frame(kind: u8, sequence: u64, payload: &[u8]) -> Vec<u8> {
     frame
 }
 fn decode_frame(frame: &[u8], sequence: u64, max_chunk: usize) -> Result<(u8, &[u8]), StreamError> {
+    decode_frame_mode(frame, sequence, max_chunk, false)
+}
+fn decode_frame_mode(
+    frame: &[u8],
+    sequence: u64,
+    max_chunk: usize,
+    measured: bool,
+) -> Result<(u8, &[u8]), StreamError> {
     if frame.len() < HEADER || &frame[..4] != MAGIC {
         return Err(StreamError::Protocol);
     }
@@ -380,10 +511,12 @@ fn decode_frame(frame: &[u8], sequence: u64, max_chunk: usize) -> Result<(u8, &[
     if actual_seq != sequence
         || length > max_chunk
         || frame.len() - HEADER != length
-        || !matches!(kind, DATA | FIN | SETTINGS)
+        || !(matches!(kind, DATA | FIN | SETTINGS) || measured && matches!(kind, PROBE | REPLY))
+        || (kind == PROBE && length != 8)
+        || (kind == REPLY && length != 24)
         || (kind == SETTINGS && length != 4)
         || (kind == FIN && length != 0)
-        || (kind == DATA && length == 0)
+        || (kind == DATA && length <= if measured { 8 } else { 0 })
     {
         return Err(StreamError::Protocol);
     }
@@ -392,6 +525,17 @@ fn decode_frame(frame: &[u8], sequence: u64, max_chunk: usize) -> Result<(u8, &[
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timed_control_frames_cannot_enter_legacy_streams() {
+        let probe = super::encode_frame(super::PROBE, 1, &[0; 8]);
+        assert!(super::decode_frame(&probe, 1, 128).is_err());
+        assert!(super::decode_frame_mode(&probe, 1, 128, true).is_ok());
+        let short = super::encode_frame(super::DATA, 1, &[0; 8]);
+        assert!(super::decode_frame_mode(&short, 1, 128, true).is_err());
+        let wrong_reply = super::encode_frame(super::REPLY, 1, &[0; 23]);
+        assert!(super::decode_frame_mode(&wrong_reply, 1, 128, true).is_err());
+    }
+
     use super::*;
     #[test]
     fn frame_scratch_reuses_one_bounded_allocation_for_data_settings_and_fin() {

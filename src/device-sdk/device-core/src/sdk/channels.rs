@@ -166,6 +166,7 @@ pub(super) struct OpenRequest {
     mode: ChannelMode,
     queue: QueueConfig,
     result: oneshot::Sender<Result<SdkChannel, SdkError>>,
+    measured: bool,
 }
 
 use crate::outbound::OutboundBudget;
@@ -260,6 +261,7 @@ impl Connection {
         label: &str,
         mode: ChannelMode,
         queue: QueueConfig,
+        measured: bool,
     ) -> Result<SdkChannel, SdkError> {
         self.gate.check()?;
         if label.len() > 128 || !valid_queue(queue) {
@@ -269,6 +271,7 @@ impl Connection {
         self.channels
             .try_send(OpenRequest {
                 label: label.into(),
+                measured,
                 mode,
                 queue,
                 result,
@@ -288,14 +291,27 @@ impl Connection {
         if mode == ChannelMode::ReliableStream {
             return Err(SdkError::InvalidConfiguration);
         }
-        match self.open_typed(label, mode, queue).await? {
+        match self.open_typed(label, mode, queue, false).await? {
             SdkChannel::Message(channel) => Ok(channel),
             _ => Err(SdkError::Closed),
         }
     }
     pub async fn open_stream(&self, label: &str) -> Result<SdkByteStream, SdkError> {
+        self.open_stream_with_latency(label, false).await
+    }
+    /// Timed streams require a remote SDK with peerloom.stream.v2 support.
+    pub async fn open_stream_with_latency(
+        &self,
+        label: &str,
+        measured: bool,
+    ) -> Result<SdkByteStream, SdkError> {
         match self
-            .open_typed(label, ChannelMode::ReliableStream, QueueConfig::default())
+            .open_typed(
+                label,
+                ChannelMode::ReliableStream,
+                QueueConfig::default(),
+                measured,
+            )
             .await?
         {
             SdkChannel::Stream(channel) => Ok(channel),
@@ -451,7 +467,7 @@ pub(super) async fn run(
                     preparing.spawn(async move {
                         let operation = async {
                             let mut raw = match request.mode {
-                                ChannelMode::ReliableStream => RawChannel::Stream(peer.create_stream(&request.label).await.map_err(stream_error)?),
+                                ChannelMode::ReliableStream => RawChannel::Stream(peer.create_stream_with_latency(&request.label, request.measured).await.map_err(stream_error)?),
                                 mode => RawChannel::Message(peer.create_channel(&request.label, mode).await.map_err(SdkError::Transport)?, mode),
                             };
                             match raw.ready().await {

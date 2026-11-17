@@ -206,3 +206,39 @@ flowchart LR
 ### 有界发送帧复用
 
 每个已准入 ByteStream 只保留一个 16401 字节（17 字节帧头 + 16 KiB 负载）编码 scratch；闲置容量也算该通道固定内存，受现有最大通道数约束，显式 close 释放。DATA、SETTINGS、FIN 共用该缓冲，原有 tx_pending 取消写失败关闭逻辑不变。MessageChannel::send 在 await 前复制到独立 BytesMut，故只消除逐帧 Vec 分配，未消除该次发送拷贝，也不是全链路零拷贝或全局池。
+
+
+## 可选通道延迟统计
+
+`DP_CAP_CHANNEL_STATS`（1024）表示本机 SDK 支持通道延迟统计，不表示远端支持。
+打开 `reliable_stream` 时可以增加 `measure_latency: true`。不设置仍使用原来的
+`peerloom.stream.v1`，线格式和现有调用不变；启用后使用 `peerloom.stream.v2`。
+新版接收端按 DCEP protocol 自动识别 v1/v2。应用必须先通过自己的能力交换确认远端
+支持 v2，再启用测量；未知或旧端保持 v1，不展示延迟。不能仅凭本地 capability 开启。
+旧 SDK 收到 v2 会拒绝该通道，不能将失败当成 v1 后继续发送相同字节。
+
+对 stream 调用 `dp_channel_submit(..., DP_CHANNEL_STATS, NULL, 0, ...)`，完成事件 JSON：
+
+```json
+{"available":true,"rx_delay_us":2100,"uncertainty_us":1300,"sample_age_ms":4,"sample_count":80}
+```
+
+测量端点是公开发送 API 成功接纳数据时至接收 SDK 解析该 DATA 帧时，包含 Peerloom
+FFI/core 的发送排队，不是采集至渲染。FULL 等失败操作不产生 DATA；重调成功重新计时，
+一次接纳内的分片保留接纳戳，返回 written 后剩余数据的新调用另行计时。
+每个 DATA 分片增加 8 字节单调时钟戳，仍在原复用发送缓冲区构造；接收剥离前缀不复制
+负载。统计的是实际数据分片，不是将探针 RTT 除二冒充视频延迟。
+同一可靠有序通道每秒进行一次四时间戳校准，扣除远端处理时间，选择近期低 RTT 样本
+估计时钟偏移。`uncertainty_us` 包含不对称路径的 RTT/2 范围，以及 100 ppm 的漂移预算。
+这不是精确单向延迟，也不是任意设备时钟漂移下的数学保证；UI 应表达估算语义。
+未校准、校准超过 10 秒、推导出负时延时 `available=false`。不按固定精度阈值屏蔽弱网；
+读取者依据完整 uncertainty 决定是否展示。100 ppm 是工程漂移假设而非硬保证，预算
+同时覆盖校准年龄及已观测排队时间。
+读取者还应按 `sample_age_ms` 隐藏过期 DATA（推荐 3 秒）。新校准后等待下一 DATA 再有效。
+统计只影响显式启用的流，默认流无定时器唤醒；不改变可靠性、有序性、负载及 FIN 语义。
+
+Rust 原始 ByteStream 使用者需在取消安全的 read 外定期驱动 `poll_timing()`；core/FFI
+自动驱动。不要在可能取消的 read future 中执行测量写入。Android 使用
+`PeerloomSdk.capabilities()` 查询本机 native 位掩码，`CAP_CHANNEL_STATS` 为对应常量。
+
+半关闭后不再发送计时控制帧，仍可传输反向 DATA，但校准最终会过期；不要据此推断流失效。

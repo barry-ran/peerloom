@@ -456,12 +456,13 @@ async fn stream_worker(
                     .map_err(error)
             } else {
                 writer
-                    .write_before(
+                    .write_admitted_before(
                         &guard.operation().input,
                         guard
                             .operation()
                             .deadline
                             .expect("stream admission deadline"),
+                        guard.operation().admitted_us,
                     )
                     .await
                     .map(|written| json!({"written":written}).to_string().into_bytes())
@@ -502,6 +503,18 @@ async fn stream_worker(
                         reading = Some((maximum, ReadScope::new(instance.clone()), guard));
                     }
                     65 | 69 => guard.finish(BUSY, Vec::new(), None),
+                    70 => {
+                        match reader.latency_stats() {
+                            Ok(stats) => guard.finish(OK, serde_json::to_vec(&json!({
+                                "available": stats.available,
+                                "rx_delay_us": stats.rx_delay_us,
+                                "uncertainty_us": stats.uncertainty_us,
+                                "sample_age_ms": stats.sample_age_ms,
+                                "sample_count": stats.sample_count,
+                            })).unwrap_or_default(), None),
+                            Err(value) => guard.finish(error(value), Vec::new(), None),
+                        }
+                    },
                     68 => { close = Some(guard); break; }
                     _ => guard.finish(UNSUPPORTED, Vec::new(), None),
                 }
@@ -554,6 +567,8 @@ async fn stream_worker(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Open {
+    #[serde(default)]
+    measure_latency: bool,
     label: String,
     #[serde(deserialize_with = "read_mode")]
     mode: ChannelMode,
@@ -571,6 +586,9 @@ struct MessageQueueOptions {
 }
 impl Open {
     fn queue(&self) -> Result<QueueConfig, u32> {
+        if self.measure_latency && self.mode != ChannelMode::ReliableStream {
+            return Err(INVALID);
+        }
         if self.label.is_empty() || self.label.len() > 128 {
             return Err(INVALID);
         }
@@ -664,7 +682,7 @@ pub fn spawn_connection(
                                 let request: Open = serde_json::from_slice(&guard.operation().input).map_err(|_| INVALID)?;
                                 let queue = request.queue()?;
                                 let channel = if request.mode == ChannelMode::ReliableStream {
-                                    SdkChannel::Stream(connection.open_stream(&request.label).await.map_err(error)?)
+                                    SdkChannel::Stream(connection.open_stream_with_latency(&request.label, request.measure_latency).await.map_err(error)?)
                                 } else {
                                     SdkChannel::Message(connection.open_message(&request.label, request.mode, queue).await.map_err(error)?)
                                 };
@@ -871,6 +889,22 @@ mod tests {
                 .await,
             UNKNOWN
         );
+    }
+    #[test]
+    fn latency_measurement_is_opt_in_and_stream_only() {
+        let plain: Open =
+            serde_json::from_str(r#"{"label":"s","mode":"reliable_stream"}"#).unwrap();
+        assert!(!plain.measure_latency);
+        let timed: Open = serde_json::from_str(
+            r#"{"label":"s","mode":"reliable_stream","measure_latency":true}"#,
+        )
+        .unwrap();
+        assert!(timed.measure_latency && timed.queue().is_ok());
+        let bad: Open = serde_json::from_str(
+            r#"{"label":"s","mode":"reliable_message","measure_latency":true}"#,
+        )
+        .unwrap();
+        assert_eq!(bad.queue().err(), Some(INVALID));
     }
     #[test]
     fn wire_modes_are_strict_and_stream_rejects_message_drop_options() {

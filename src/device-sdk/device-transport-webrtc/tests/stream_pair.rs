@@ -79,16 +79,20 @@ async fn actual_byte_stream_preserves_bytes_and_half_close() {
 #[tokio::test]
 #[ignore = "requires local UDP sockets"]
 async fn stream_backpressure_does_not_skip_bytes_or_sequence() {
-    backpressure_preserves_bytes_and_sequence(128, 512).await;
+    backpressure_preserves_bytes_and_sequence(128, 512, false).await;
 }
 
 #[tokio::test]
 #[ignore = "requires local UDP sockets"]
 async fn full_frame_backpressure_does_not_skip_bytes_or_sequence() {
-    backpressure_preserves_bytes_and_sequence(16_401, 16_384).await;
+    backpressure_preserves_bytes_and_sequence(16_401, 16_384, false).await;
 }
 
-async fn backpressure_preserves_bytes_and_sequence(message_limit: usize, payload_size: usize) {
+async fn backpressure_preserves_bytes_and_sequence(
+    message_limit: usize,
+    payload_size: usize,
+    measured: bool,
+) {
     let config = TransportConfig {
         policy: ConnectionPolicy::DirectOnly,
         include_loopback: true,
@@ -98,7 +102,10 @@ async fn backpressure_preserves_bytes_and_sequence(message_limit: usize, payload
     };
     let source = PeerTransport::new(config.clone()).await.unwrap();
     let target = PeerTransport::new(config).await.unwrap();
-    let mut outgoing = source.create_stream("bounded").await.unwrap();
+    let mut outgoing = source
+        .create_stream_with_latency("bounded", measured)
+        .await
+        .unwrap();
     let offer = source.create_offer().await.unwrap();
     let answer = target.answer_offer(offer).await.unwrap();
     source.apply_answer(answer).await.unwrap();
@@ -500,7 +507,10 @@ async fn unidirectional_stream_notifications_do_not_starve_reverse_reliable_chan
             b"control survives both stream FINs"
         );
     });
-    let outcome = tokio::time::timeout(Duration::from_secs(15), &mut operation).await;
+    // Windows timer granularity turns the deliberate 2 ms pacing into ~15.6 ms.
+    // 1152 iterations alone exceed 15 s; this is a liveness, not throughput, test.
+    let budget = if cfg!(target_os = "windows") { 45 } else { 15 };
+    let outcome = tokio::time::timeout(Duration::from_secs(budget), &mut operation).await;
     if !outcome.as_ref().is_ok_and(|result| result.is_ok()) {
         operation.abort();
         if outcome.is_err() {
@@ -600,6 +610,155 @@ async fn owned_stream_slices_survive_close_and_mix_with_borrowed_reads() {
     incoming.close().await.unwrap();
     assert_eq!(first.as_slice(), b"ab");
     assert_eq!(last.as_slice(), b"ef");
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn timed_stream_measures_actual_data_without_changing_payload() {
+    use device_transport_webrtc::stream::ByteStream;
+    use std::time::Duration;
+    async fn drive(mut stream: ByteStream) {
+        let monitor = stream.latency_monitor();
+        let mut ticks = tokio::time::interval(Duration::from_millis(20));
+        let until = tokio::time::Instant::now() + Duration::from_secs(2);
+        let mut measured = false;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(until) => break,
+                _ = ticks.tick() => {
+                    stream.poll_timing().await.unwrap();
+                    assert_eq!(stream.write(b"payload").await.unwrap(), 7);
+                },
+                chunk = stream.read_owned(1024) => {
+                    assert_eq!(chunk.unwrap().as_slice(), b"payload");
+                    let s = monitor.snapshot();
+                    if s.available { measured = true; assert!(s.sample_count > 0); }
+                }
+            }
+        }
+        assert!(measured, "no calibrated DATA timing observed");
+        // Retain the transport until both actors finish.
+    }
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        ..TransportConfig::default()
+    };
+    let source = PeerTransport::new(config.clone()).await.unwrap();
+    let target = PeerTransport::new(config).await.unwrap();
+    let mut outgoing = source
+        .create_stream_with_latency("timed", true)
+        .await
+        .unwrap();
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    let mut incoming = target.accept_stream().await.unwrap();
+    assert!(incoming.measures_latency());
+    let (a, b) = tokio::join!(outgoing.wait_open(), incoming.wait_open());
+    a.unwrap();
+    b.unwrap();
+    tokio::join!(drive(outgoing), drive(incoming));
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn timed_stream_full_preserves_bytes_and_sequence() {
+    backpressure_preserves_bytes_and_sequence(16_401, 16_384, true).await;
+}
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn timed_probe_read_cancellation_and_half_close_preserve_data() {
+    use std::time::Duration;
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        ..TransportConfig::default()
+    };
+    let source = PeerTransport::new(config.clone()).await.unwrap();
+    let target = PeerTransport::new(config).await.unwrap();
+    let mut a = source
+        .create_stream_with_latency("cancel-timed", true)
+        .await
+        .unwrap();
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    let mut b = target.accept_stream().await.unwrap();
+    let (ra, rb) = tokio::join!(a.wait_open(), b.wait_open());
+    ra.unwrap();
+    rb.unwrap();
+    a.poll_timing().await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(60), b.read_owned(1024))
+            .await
+            .is_err()
+    );
+    // The cancelled read consumed a PROBE, persisted reply state, but not user bytes.
+    b.poll_timing().await.unwrap();
+    assert_eq!(a.write(b"abcdef").await.unwrap(), 6);
+    assert_eq!(b.read_owned(2).await.unwrap().as_slice(), b"ab");
+    assert_eq!(b.read_owned(8).await.unwrap().as_slice(), b"cdef");
+    a.shutdown_write().await.unwrap();
+    assert!(b.read_owned(8).await.unwrap().is_empty());
+    // Half-closed stream still transports the reverse direction; no probe after FIN.
+    b.poll_timing().await.unwrap();
+    assert_eq!(b.write(b"reverse").await.unwrap(), 7);
+    assert_eq!(a.read_owned(64).await.unwrap().as_slice(), b"reverse");
+    b.shutdown_write().await.unwrap();
+    assert!(a.read_owned(64).await.unwrap().is_empty());
+    a.close().await.unwrap();
+    b.close().await.unwrap();
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local UDP sockets"]
+async fn timed_reply_after_one_second_is_not_replaced_by_next_probe() {
+    use std::time::Duration;
+    let config = TransportConfig {
+        policy: ConnectionPolicy::DirectOnly,
+        include_loopback: true,
+        ..TransportConfig::default()
+    };
+    let source = PeerTransport::new(config.clone()).await.unwrap();
+    let target = PeerTransport::new(config).await.unwrap();
+    let mut a = source
+        .create_stream_with_latency("delayed-probe", true)
+        .await
+        .unwrap();
+    let offer = source.create_offer().await.unwrap();
+    let answer = target.answer_offer(offer).await.unwrap();
+    source.apply_answer(answer).await.unwrap();
+    let mut b = target.accept_stream().await.unwrap();
+    let (ra, rb) = tokio::join!(a.wait_open(), b.wait_open());
+    ra.unwrap();
+    rb.unwrap();
+    a.poll_timing().await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(60), b.read_owned(1024))
+            .await
+            .is_err()
+    );
+    b.poll_timing().await.unwrap();
+    b.write(b"queued-data").await.unwrap();
+    // A delayed local receive is part of observed RTT; this used to overwrite t1.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    a.poll_timing().await.unwrap();
+    assert_eq!(a.read_owned(1024).await.unwrap().as_slice(), b"queued-data");
+    let stats = a.latency_monitor().snapshot();
+    assert!(
+        stats.available,
+        "delayed probe must still calibrate: {stats:?}"
+    );
+    assert!(stats.uncertainty_us > 500_000);
+    a.close().await.unwrap();
+    b.close().await.unwrap();
     source.close().await.unwrap();
     target.close().await.unwrap();
 }

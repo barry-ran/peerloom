@@ -73,6 +73,7 @@ pub fn lookup(id: u64) -> Result<Arc<Instance>, u32> {
 
 /// phase: 0 queued, 1 running, 2 cancelled before start, 3 complete, 4 irreversible close queued.
 pub struct Operation {
+    pub admitted_us: u64,
     pub id: u64,
     pub kind: u32,
     pub connection: u64,
@@ -441,7 +442,7 @@ impl Instance {
         channel: u64,
         input: impl AsRef<[u8]>,
     ) -> Result<u64, u32> {
-        if !(1..=6).contains(&kind) {
+        if !(1..=7).contains(&kind) {
             return Err(UNSUPPORTED);
         }
         self.submit_scoped(63 + kind, connection, channel, input.as_ref())
@@ -456,7 +457,7 @@ impl Instance {
         if self.shutting.load(Ordering::Acquire) {
             return Err(CLOSED);
         }
-        if !(1..=8).contains(&kind) && !(64..=69).contains(&kind) {
+        if !(1..=8).contains(&kind) && !(64..=70).contains(&kind) {
             return Err(UNSUPPORTED);
         }
         let mut ops = self.operations.lock().map_err(|_| INTERNAL)?;
@@ -505,7 +506,7 @@ impl Instance {
                 .channel_kind(connection, channel)
                 .map_err(handle_error)?;
             let stream = mode == ChannelKind::ReliableStream;
-            if (kind == 64 && stream) || (matches!(kind, 65..=67 | 69) && !stream) {
+            if (kind == 64 && stream) || (matches!(kind, 65..=67 | 69 | 70) && !stream) {
                 return Err(UNSUPPORTED);
             }
             if matches!(kind, 66 | 67) {
@@ -533,7 +534,7 @@ impl Instance {
                 }
             }
         }
-        if matches!(kind, 6 | 67 | 68) && !input.is_empty() {
+        if matches!(kind, 6 | 67 | 68 | 70) && !input.is_empty() {
             return Err(INVALID);
         }
         let now = std::time::Instant::now();
@@ -631,6 +632,7 @@ impl Instance {
             },
         );
         let operation = Operation {
+            admitted_us: device_transport_webrtc::stream_latency::now_us(),
             id,
             kind,
             connection,
@@ -971,6 +973,43 @@ mod reset_tests {
         drop(events);
         drop(instance);
         assert_eq!(budget.snapshot(), (total, 0, 0));
+    }
+    #[test]
+    fn stats_do_not_take_read_fence_and_close_still_admits() {
+        let (instance, commands, _callbacks) = setup();
+        let (connection, channel) = {
+            let mut handles = instance.handles.lock().unwrap();
+            let allocate = || next_id().map_err(|_| HandleError::Allocator);
+            let connection = handles.add_connection(Authority::Test, allocate).unwrap();
+            let channel = handles
+                .add_channel(
+                    connection,
+                    ChannelKind::ReliableStream,
+                    Authority::Test,
+                    allocate,
+                )
+                .unwrap();
+            (connection, channel)
+        };
+        instance
+            .submit_channel(6, connection, channel, br#"{"max_bytes":64}"#)
+            .unwrap();
+        instance
+            .submit_channel(7, connection, channel, b"")
+            .unwrap();
+        assert_eq!(
+            instance.submit_channel(7, connection, channel, b"{}"),
+            Err(INVALID)
+        );
+        assert_eq!(
+            instance.submit_channel(2, connection, channel, br#"{"max_bytes":64}"#),
+            Err(BUSY)
+        );
+        instance
+            .submit_channel(5, connection, channel, b"")
+            .unwrap();
+        let operation = commands.try_recv().unwrap();
+        assert!(operation.admitted_us > 0);
     }
     #[test]
     fn owned_and_borrowed_reads_share_fence_and_lease_survives_sdk_drop() {

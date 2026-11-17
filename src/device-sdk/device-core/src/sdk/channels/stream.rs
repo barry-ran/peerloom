@@ -2,8 +2,11 @@ use super::*;
 use crate::outbound::{GlobalPermit, OutboundBudget};
 use device_transport_webrtc::stream::{ByteStream, OwnedChunk, StreamError};
 
+use device_transport_webrtc::stream_latency::{ChannelLatencyStats, LatencyMonitor};
+
 const CHUNK: usize = 16 * 1024;
 struct WriteRequest {
+    admitted_us: u64,
     bytes: Vec<u8>,
     fin: bool,
     expires: Instant,
@@ -11,6 +14,7 @@ struct WriteRequest {
     result: oneshot::Sender<Result<usize, SdkError>>,
 }
 pub struct SdkStreamReader {
+    latency: LatencyMonitor,
     scope: Scope,
     received: mpsc::Receiver<OwnedChunk>,
     pending: OwnedChunk,
@@ -71,6 +75,10 @@ impl SdkByteStream {
     }
 }
 impl SdkStreamReader {
+    pub fn latency_stats(&self) -> Result<ChannelLatencyStats, SdkError> {
+        self.scope.gate.check()?;
+        Ok(self.latency.snapshot())
+    }
     scope_methods!();
     pub async fn read(&mut self, output: &mut [u8]) -> Result<usize, SdkError> {
         let chunk = self.read_owned(output.len()).await?;
@@ -118,6 +126,7 @@ impl SdkStreamWriter {
         bytes: &[u8],
         fin: bool,
         caller_deadline: Option<Instant>,
+        admitted_us: Option<u64>,
     ) -> Result<usize, SdkError> {
         self.scope.gate.check()?;
         let now = Instant::now();
@@ -136,6 +145,8 @@ impl SdkStreamWriter {
         let charge = self.budget.reserve(n).map_err(queue_error)?;
         let (result, completion) = oneshot::channel();
         permit.send(WriteRequest {
+            admitted_us: admitted_us
+                .unwrap_or_else(device_transport_webrtc::stream_latency::now_us),
             bytes: bytes[..n].to_vec(),
             fin,
             expires,
@@ -162,16 +173,28 @@ impl SdkStreamWriter {
             self.scope.gate.check()?;
             return Ok(0);
         }
-        self.submit(bytes, false, None).await
+        self.submit(bytes, false, None, None).await
     }
     pub async fn shutdown_write(&self) -> Result<(), SdkError> {
-        self.submit(&[], true, None).await.map(|_| ())
+        self.submit(&[], true, None, None).await.map(|_| ())
+    }
+    /// Native bindings preserve successful public API admission time across their queues.
+    pub async fn write_admitted_before(
+        &self,
+        bytes: &[u8],
+        deadline: Instant,
+        admitted_us: u64,
+    ) -> Result<usize, SdkError> {
+        self.submit(bytes, false, Some(deadline), Some(admitted_us))
+            .await
     }
     pub async fn write_before(&self, bytes: &[u8], deadline: Instant) -> Result<usize, SdkError> {
-        self.submit(bytes, false, Some(deadline)).await
+        self.submit(bytes, false, Some(deadline), None).await
     }
     pub async fn shutdown_write_before(&self, deadline: Instant) -> Result<(), SdkError> {
-        self.submit(&[], true, Some(deadline)).await.map(|_| ())
+        self.submit(&[], true, Some(deadline), None)
+            .await
+            .map(|_| ())
     }
 
     pub async fn close(self) -> Result<(), SdkError> {
@@ -190,10 +213,12 @@ impl Drop for SdkStreamWriter {
 }
 
 pub(super) fn wrap(scope: Scope, budget: OutboundBudget) -> (SdkByteStream, StreamWorker) {
+    let latency = LatencyMonitor::default();
     let (commands, writes) = mpsc::channel(1);
     let (received, reads) = mpsc::channel(4);
     let stream = SdkByteStream {
         reader: SdkStreamReader {
+            latency: latency.clone(),
             scope: scope.clone(),
             received: reads,
             pending: OwnedChunk::default(),
@@ -208,6 +233,7 @@ pub(super) fn wrap(scope: Scope, budget: OutboundBudget) -> (SdkByteStream, Stre
     (
         stream,
         StreamWorker {
+            latency,
             scope,
             writes,
             received,
@@ -215,6 +241,7 @@ pub(super) fn wrap(scope: Scope, budget: OutboundBudget) -> (SdkByteStream, Stre
     )
 }
 pub(super) struct StreamWorker {
+    latency: LatencyMonitor,
     scope: Scope,
     writes: mpsc::Receiver<WriteRequest>,
     received: mpsc::Sender<OwnedChunk>,
@@ -232,7 +259,11 @@ impl StreamWorker {
         mut raw: ByteStream,
         _permit: ActivePermit,
     ) -> Result<(), SdkError> {
+        let measured = raw.measures_latency();
+        raw.set_latency_monitor(self.latency.clone());
         let operation = async {
+            let mut timing = tokio::time::interval(Duration::from_millis(25));
+            timing.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut eof = false;
             loop {
                 self.scope.gate.check()?;
@@ -256,7 +287,7 @@ impl StreamWorker {
                         request.charge.check_open().map_err(queue_error)?;
                         let write = async {
                             if request.fin { raw.shutdown_write().await.map(|_| 0) }
-                            else { raw.write(&request.bytes).await }
+                            else { raw.write_admitted(&request.bytes, request.admitted_us).await }
                         };
                         let result = tokio::select! {
                             biased;
@@ -291,6 +322,16 @@ impl StreamWorker {
                         self.scope.gate.check()?;
                         eof = chunk.is_empty();
                         read_permit.expect("reserved stream capacity").send(chunk);
+                    },
+                    _ = timing.tick(), if measured => {
+                        let result = tokio::select! {
+                            _ = self.scope.gate.invalidated() => return Err(SdkError::Closed),
+                            result = raw.poll_timing() => result,
+                        };
+                        match result {
+                            Ok(()) | Err(StreamError::Transport(TransportError::BufferFull)) => {},
+                            Err(value) => return Err(error(value)),
+                        }
                     },
                     // Bounded backpressure retry, never busy-spin on a full receiver.
                     _ = tokio::time::sleep(Duration::from_millis(5)), if !eof && read_permit.is_none() => {},
@@ -330,6 +371,79 @@ mod tests {
     include!("stream_performance_tests.rs");
     use super::*;
     use futures_util::{pin_mut, poll};
+
+    #[tokio::test]
+    #[ignore = "requires local UDP sockets"]
+    async fn timed_worker_drives_calibration_without_host_probes() {
+        use device_protocol::ConnectionPolicy;
+        use device_transport_webrtc::{PeerTransport, TransportConfig};
+        let config = TransportConfig {
+            policy: ConnectionPolicy::DirectOnly,
+            include_loopback: true,
+            ..TransportConfig::default()
+        };
+        let source = PeerTransport::new(config.clone()).await.unwrap();
+        let target = PeerTransport::new(config).await.unwrap();
+        let mut a = source
+            .create_stream_with_latency("worker-timed", true)
+            .await
+            .unwrap();
+        let offer = source.create_offer().await.unwrap();
+        let answer = target.answer_offer(offer).await.unwrap();
+        source.apply_answer(answer).await.unwrap();
+        let mut b = target.accept_stream().await.unwrap();
+        let (ra, rb) = tokio::join!(a.wait_open(), b.wait_open());
+        ra.unwrap();
+        rb.unwrap();
+        let (sa, wa, _, pa) = fixture();
+        let (mut sb, wb, _, pb) = fixture();
+        let active = Arc::new(ActiveChannels {
+            used: AtomicUsize::new(0),
+            limit: 2,
+        });
+        let aa = active.reserve().unwrap();
+        let ab = active.reserve().unwrap();
+        let ta = tokio::spawn(wa.run(a, aa));
+        let tb = tokio::spawn(wb.run(b, ab));
+        let mut observed = false;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for _ in 0..60 {
+                sa.write(b"abc").await.unwrap();
+                let mut bytes = [0; 3];
+                assert_eq!(sb.read(&mut bytes).await.unwrap(), 3);
+                assert_eq!(&bytes, b"abc");
+                observed |= sb.reader.latency_stats().unwrap().available;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(observed, "core workers did not calibrate DATA");
+        assert!(
+            !sa.reader.latency_stats().unwrap().available,
+            "probes alone are not DATA samples"
+        );
+        let admitted = device_transport_webrtc::stream_latency::now_us();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        sa.writer
+            .write_admitted_before(b"queued", Instant::now() + Duration::from_secs(2), admitted)
+            .await
+            .unwrap();
+        let mut bytes = [0; 6];
+        assert_eq!(sb.read(&mut bytes).await.unwrap(), 6);
+        let queued = sb.reader.latency_stats().unwrap();
+        assert!(queued.available);
+        assert!(
+            queued.rx_delay_us >= 3_900_000,
+            "SDK admission queue time omitted: {queued:?}"
+        );
+
+        pa.close();
+        pb.close();
+        let _ = tokio::join!(ta, tb);
+        source.close().await.unwrap();
+        target.close().await.unwrap();
+    }
     #[tokio::test]
     async fn owned_read_keeps_partial_bytes_and_checks_revocation() {
         let (mut stream, worker, _budget, parent) = fixture();

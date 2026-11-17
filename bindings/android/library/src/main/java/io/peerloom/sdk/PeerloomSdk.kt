@@ -99,6 +99,10 @@ private constructor(
     private val deliveryFailed = AtomicBoolean(false)
 
     companion object {
+        const val CAP_CHANNEL_STATS: Long = 1024L
+        /** Capabilities of the loaded native SDK, not of a remote peer. */
+        @JvmStatic fun capabilities(): Long = Native.capabilities()
+
         private val work =
             ThreadPoolExecutor(
                 2,

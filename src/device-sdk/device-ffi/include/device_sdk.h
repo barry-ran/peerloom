@@ -36,6 +36,8 @@ extern "C" {
 #define DP_CHANNEL_FINISH_WRITE UINT32_C(4)
 #define DP_CHANNEL_CLOSE UINT32_C(5)
 #define DP_CHANNEL_READ_OWNED UINT32_C(6)
+/* Empty input; estimated send-to-parse timing JSON. Requires DP_CAP_CHANNEL_STATS. */
+#define DP_CHANNEL_STATS UINT32_C(7)
 #define DP_EVENT_COMPLETE UINT32_C(1)
 #define DP_EVENT_ONLINE UINT32_C(2)
 #define DP_EVENT_OFFLINE UINT32_C(3)
@@ -62,6 +64,7 @@ extern "C" {
 #define DP_CAP_LOW_LATENCY_MESSAGE UINT64_C(128)
 #define DP_CAP_LONG_LIVED_IDENTITY UINT64_C(256)
 #define DP_CAP_OWNED_READ UINT64_C(512)
+#define DP_CAP_CHANNEL_STATS UINT64_C(1024)
 
 typedef struct dp_event {
     uint32_t abi_version;
