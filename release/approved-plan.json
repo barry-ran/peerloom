@@ -1,35 +1,7 @@
 {
   "format_version": 1,
   "repository": "barry-ran/peerloom",
-  "approved": true,
+  "approved": false,
   "administration_sha": "event",
-  "operation": "release",
-  "release_sha": "43bc6b911d03a153949a0c4c3711c6d68c9800fb",
-  "tag_sha": "event",
-  "tag": "v0.3.0",
-  "prerelease": false,
-  "final_scope_accepted": true,
-  "artifacts": {
-    "linux-x86_64": {
-      "id": 14156073332,
-      "sha256": "cd202f12c9b825034f38b1c98b52f95304595798b992511cf1ee7ec3af643e7e"
-    },
-    "server-linux-amd64": {
-      "id": 14155819174,
-      "sha256": "7485f1df023ea45a83dc520f04fee7736c62ae013de478f1b82f42a70639c640"
-    },
-    "apple": {
-      "id": 14156044817,
-      "sha256": "70ff82fe6a1bccad9c3a0b782839ebb3032e8523f40a1c97a5ceb548c870cc8e"
-    },
-    "windows-x86_64": {
-      "id": 14155513085,
-      "sha256": "dd070d3d180302c82fe115e9b05db9448e556f0e64e9de5cdca4c9477973366d"
-    },
-    "android": {
-      "id": 14155901678,
-      "sha256": "13ed720f338fe83617744ba626c169d4fb494cb70adc9775061b9c68a9baf47b"
-    }
-  },
-  "notes": "# Peerloom v0.3.0\n\n## 自建部署与服务凭据自动续期\n\n- 发布包新增 selfhost.py，将隔离项目初始化、迁移、首次租户/应用创建和状态核验串联；重复执行校验真实凭据，不覆盖已有密钥。公网仍须正确配置域名与 TLS。\n- 新增稳定服务主体及有限期密钥续期：默认 30 天、提前 7 天续期，旧密钥最多重叠 24 小时且不超过原到期日。同操作恢复同一后继，不分叉；主体撤销阻断所有代次。\n- 新 setup 主体允许自动续期；已有主体迁移及普通签发默认不允许，需运维明确离线启用，不静默扩大权限。数据库迁移版本升至 12。\n- Peerloom 提供 self/renew API；实际消费服务仍须实现安全持久化与后台续期。QM 已实现私有可写 FILE 托管；静态环境变量凭据不会自动更新。自动续期不能替代泄露后的主体撤销。\n- C ABI 保持 2，SDK 接口、可靠有序传输及既有 owned-buffer 约定不变。\n\n## 精确源码与门禁\n\n制品源码：`43bc6b911d03a153949a0c4c3711c6d68c9800fb`，版本 0.3.0。标签指向仅更新受审发布计划的管理提交。\n\n- [Linux、真实 PostgreSQL/发布包/TLS/WSS 与 500 并发](https://github.com/barry-ran/peerloom/actions/runs/43698855712)：成功。\n- [Windows 与 Apple 原生验收](https://github.com/barry-ran/peerloom/actions/runs/43698855700)：成功。\n- [Android 双 ABI 与 4K/16K 模拟器](https://github.com/barry-ran/peerloom/actions/runs/43698855706)：成功。\n- [PostgreSQL 与 Chromium 管理安全](https://github.com/barry-ran/peerloom/actions/runs/43698855705)：成功。\n- [QM 真实 TLS/续期联调](https://github.com/barry-ran/quick-mirror-service/actions/runs/43698968087)：成功，覆盖丢响应重试、持久化重启、稳定主体跨代授权重放和撤销拒绝；不等同完整设备服务器部署。\n\n## 交付边界\n\n交付 Linux、Windows、Apple、Android SDK 及 Linux amd64 服务端五角色 ZIP，包含校验和、来源元数据与部署材料。Android 为 arm64-v8a/x86_64，不含 ARM32；Apple 模拟器及未签名设备构建不代表 iOS 真机验证。发布工作流本身不部署服务器、不改变现有数据库或权限。\n\nLinux SDK target: x86_64; Linux server target: amd64.\n\nPrior evidence: native run 43696309679 first failed during dependency setup (make exit 2, unique root cause unproven); one retry exposed a diagnostic exit-code unit test startup-time race. Only that non-deadline test now has startup headroom. Product watchdog deadlines and the separate strict deadline assertions were unchanged. The final exact source passed all gates. Release preflight 43696093701 rejected a missing exact selfhost.py package-policy entry; the final source requires that file and continues rejecting unknown deployment files.\n"
+  "operation": "release"
 }
