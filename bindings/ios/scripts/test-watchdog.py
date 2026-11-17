@@ -775,7 +775,9 @@ class LaunchDiagnosticTests(unittest.TestCase):
                      "import json;print(json.dumps([{'processID':1,'processImagePath':'/debugserver','eventMessage':'x'*10}]*10000))"):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                result, children = self.run_observed(root, "import time;time.sleep(.4)", host=host)
+                # Output bounds/privacy, not a deadline test: allow interpreter startup headroom.
+                # The adjacent 0.2s deadline and collector timeout assertions remain strict.
+                result, children = self.run_observed(root, "import time;time.sleep(.4)", host=host, timeout=5)
                 self.assertEqual(result, 0)
                 log = root / "phase-test-host-log.log"
                 self.assertLessEqual(log.stat().st_size, DIAGNOSTICS.MAX_BYTES)
