@@ -55,7 +55,8 @@ static void wait_storage(void) {
 int main(void) {
     const char config[] = "{\"abi_version\":2,\"origin\":\"http://127.0.0.1:1\",\"application_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"storage\":\"external\",\"development_loopback\":true}";
     assert(dp_abi_version() == 2);
-    assert(dp_capabilities() == 1023);
+    const uint64_t required = UINT64_C(1023) | DP_CAP_CHANNEL_STATS;
+    assert((dp_capabilities() & required) == required);
     uint64_t bad = 99;
     assert(dp_sdk_create(NULL, 1, callback, 721, &bad) == DP_INVALID_ARGUMENT && bad == 0);
     assert(dp_sdk_create((const uint8_t *)config, sizeof(config)-1, callback, 721, &sdk) == DP_OK && sdk);
