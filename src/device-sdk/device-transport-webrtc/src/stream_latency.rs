@@ -41,7 +41,8 @@ impl LatencyMonitor {
         let Ok(s) = self.0.lock() else {
             return ChannelLatencyStats::default();
         };
-        // Conservative 100 ppm drift allowance, in addition to asymmetric-path RTT/2.
+        // Engineering assumption: 100 ppm relative drift plus calibration RTT/2.
+        // Not a guaranteed bound for arbitrary clock-rate changes or path evolution.
         let uncertainty = s.rtt.div_ceil(2).saturating_add(
             now.saturating_sub(s.synced)
                 .saturating_add(s.delay)
@@ -136,6 +137,29 @@ mod tests {
         assert!(s.available);
         assert_eq!(s.rx_delay_us, 4_000_020);
         assert!(s.uncertainty_us >= 420);
+    }
+    #[test]
+    fn signed_clock_offsets_and_assumed_drift_budget() {
+        for offset in [-1_000_000i64, 1_000_000] {
+            for drift in [-500i64, 500] {
+                let m = LatencyMonitor::default();
+                m.synchronize(
+                    2_000_000,
+                    (2_000_020 + offset) as u64,
+                    (2_000_030 + offset) as u64,
+                    2_000_050,
+                );
+                // Five seconds later, relative clock drift is +/-100 ppm.
+                // Actual DATA delay remains 1000 us; no new clock calibration.
+                m.received((6_999_000 + offset + drift) as u64, 7_000_000);
+                let s = m.snapshot_at(7_000_000);
+                assert!(s.available);
+                assert_eq!(s.rx_delay_us, (1000 - drift) as u64);
+                assert!(s.rx_delay_us.abs_diff(1000) <= s.uncertainty_us);
+                assert!(!m.snapshot_at(12_000_051).available);
+            }
+        }
+        // Above the assumed drift rate, this budget is not an accuracy guarantee.
     }
     #[test]
     fn no_sync_invalid_or_negative_samples_are_unavailable() {
