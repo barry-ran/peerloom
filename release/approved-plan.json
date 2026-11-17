@@ -1,7 +1,35 @@
 {
   "format_version": 1,
   "repository": "barry-ran/peerloom",
-  "approved": false,
+  "approved": true,
   "administration_sha": "event",
-  "operation": "release"
+  "operation": "release",
+  "release_sha": "f8b597f1ace2c97ed6058d730c600fc7961f69f1",
+  "tag_sha": "event",
+  "tag": "v0.4.0",
+  "prerelease": false,
+  "final_scope_accepted": true,
+  "artifacts": {
+    "linux-x86_64": {
+      "id": 14289013886,
+      "sha256": "c92754f2ab56e73621395c4c46ba18b1a2bebb9527c1c983e8459fefc9aef095"
+    },
+    "server-linux-amd64": {
+      "id": 14289597089,
+      "sha256": "2157cb531d8f7abf84184de2382509487bc7371654ee7a8a305aee6234e8be7d"
+    },
+    "windows-x86_64": {
+      "id": 14289371633,
+      "sha256": "5c048fce6abf1f2e431c047f0503a36bdbd5c8dbd3018e8e87b9e324dbeb7022"
+    },
+    "android": {
+      "id": 14288568245,
+      "sha256": "a9884ea3b8de8df026d20575aec59dca0eeb66f9282b4b23f649f7a3ba75f26b"
+    },
+    "apple": {
+      "id": 14289734320,
+      "sha256": "3e31412dd5ea6ef4725b311855e12610b99c77c0a19ed8e9b9090e85e03c5f81"
+    }
+  },
+  "notes": "# Peerloom v0.4.0\n\n## 连接与中继\n\n- PC/Android 通用 SDK 使用 Trickle ICE：初始 SDP 不再等待全部接口收集结束，候选通过受授权的会话按代次增量交换。\n- 保留所有网络候选及 RelayOnly 的失效关闭；没有过滤蜂窝接口、缩短 ICE 重传或修改业务连接期限。\n- TURN 438 重试保留 ChannelBind 关联；TURN 输入后及时处理生成的事件与输出，减少等待下一次定时器。\n- preReady 取消先完成协商和底层退出，再返回可关联的请求终态，避免超时后重试永久 pending。\n\n## 托管中继\n\n托管 coturn 动态口令配置改为数据库管理，密钥加密使用独立于数据库的部署密钥，版本化轮换保护在途回执。变更用于新会话；修改 Peerloom 配置不会自动同步 coturn 的共享密钥，不承诺轮换无中断。\n\n## 会话正确性\n\n候选预算、会话授权、代次、mid/ufrag、去重与 EOC 均校验。候选成功写入信令后才允许本地配对；这不是对端收件确认。成功 nomination 后禁止新候选发送准入，已经准入的在途发送可以完成。关闭、取消和过时代次不能提交新配对。\n\nfull ICE 的 PAC 默认39.5秒且内部可配置，从本代实际开始检查时计时；上层现有30秒业务取消仍可能先结束请求。已连接的 consent 超时及显式关闭不因此延后。\n\n## 升级边界\n\n这是不兼容旧信令的版本。服务端及通信双方 SDK 需协同升级，不支持混用 v0.3.0。数据库迁移至14；已有测试环境已验证升级。部署前停止旧客户端及活动会话，保留旧程序、配置和数据库恢复点；不能仅把 SDK 文件替换为新包而继续连接旧信令服务。\n\nC 头文件与 v0.3.0 逐字节一致，C ABI 仍为2。不要将C ABI兼容误认为信令协议兼容。\n\n## 验证与交付\n\n源码 f8b597f1ace2c97ed6058d730c600fc7961f69f1 的 Linux/500容量、Windows、Apple、Android4K/16K和管理浏览器全部门禁通过，五类制品版本为0.4.0，来源与摘要通过既有发布校验。已在受控测试环境验证 Trickle Auto/Relay 实际画面、点击/滑动及停止重连；初始化业务请求耗时另行处理，不宣称已解决。\n\nAndroid支持arm64-v8a/x86_64，不含ARM32；Apple模拟器及未签名设备构建不代表iOS真机。发布操作不修改服务器或安全权限。\n\n## 许可证证据边界\n\n五类制品均通过既有 release_delivery_eligible 发布策略。制品仍保留已登记的第三方许可证证据缺口，release_evidence_complete=false，legal_review=not-performed；这不是法律清关声明。详见各制品随附的第三方许可及来源材料。\n"
 }
