@@ -115,8 +115,42 @@ class VendorTests(unittest.TestCase):
         (self.base / 'crate/extra.rs').write_text('unexpected')
         with self.assertRaisesRegex(gen.EvidenceError, 'UNTRACKED'): self.call()
 
+    def test_generated_vendor_target_is_rejected(self):
+        for name in ('rtc-ice', 'rtc-turn'):
+            with self.subTest(name=name):
+                target = self.root / f'third_party/rust/{name}-0.21.1/crate/target/debug'
+                target.mkdir(parents=True)
+                (target / 'test-output').write_text('generated')
+                with self.assertRaisesRegex(gen.EvidenceError, 'UNTRACKED'):
+                    self.call(name, '0.21.1')
+
     def test_tampered_patch(self):
         (self.base / '应用补丁.patch').write_text('changed')
         with self.assertRaisesRegex(gen.EvidenceError, 'PATCH_CHECKSUM'): self.call()
+
+class VendorBuildIsolationTests(unittest.TestCase):
+    def validate(self, source):
+        import shlex
+        commands = [shlex.split(line.strip()) for line in source.splitlines()
+                    if line.strip().startswith('cargo test --manifest-path ../../third_party/rust/')]
+        self.assertEqual(len(commands), 2)
+        for args in commands:
+            self.assertIn('--locked', args)
+            self.assertIn('--target-dir', args)
+            target = args[args.index('--target-dir') + 1]
+            self.assertIn(target, ('target/vendor-rtc-ice-tests', 'target/vendor-rtc-turn-tests'))
+            manifest = args[args.index('--manifest-path') + 1]
+            crate = 'rtc-ice' if '/rtc-ice-' in manifest else 'rtc-turn'
+            self.assertEqual(target, f'target/vendor-{crate}-tests')
+
+    def test_standalone_tests_keep_outputs_outside_vendor(self):
+        source = (Path(__file__).resolve().parent / 'check.sh').read_text()
+        self.validate(source)
+
+    def test_missing_target_is_rejected(self):
+        source = (Path(__file__).resolve().parent / 'check.sh').read_text()
+        for crate in ('rtc-ice', 'rtc-turn'):
+            with self.subTest(crate=crate), self.assertRaises(AssertionError):
+                self.validate(source.replace(f' --target-dir target/vendor-{crate}-tests', ''))
 
 if __name__ == '__main__': unittest.main()
