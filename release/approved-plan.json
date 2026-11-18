@@ -4,32 +4,32 @@
   "approved": true,
   "administration_sha": "event",
   "operation": "release",
-  "release_sha": "025a936ea0fd8cdb90cdb28d3e91870aa9b13ab8",
+  "release_sha": "032a3ed0654adf2cd48edc97b6a1a2907d59cbd8",
   "tag_sha": "event",
-  "tag": "v0.5.0",
+  "tag": "v0.5.1",
   "prerelease": false,
   "final_scope_accepted": true,
   "artifacts": {
+    "android": {
+      "id": 14431358620,
+      "sha256": "7fb0606233eaf5c1bdb2a054f1866f904ec11cb947c39020e4b395522533d672"
+    },
     "linux-x86_64": {
-      "id": 14399481927,
-      "sha256": "d2dd93e73f5b7285ca0befb59c35dd314a88ee3de73f3709e032adbc030c8fc0"
+      "id": 14432649312,
+      "sha256": "ae0c4efbeebc73c49027ef603bddb7d08ce59753765a3087fcac53b42e73dece"
     },
     "server-linux-amd64": {
-      "id": 14399382258,
-      "sha256": "27fc47ddd9abb636d0264ecc6c09e859f2238187cece76d323cf19ab42df6ab4"
+      "id": 14433647143,
+      "sha256": "b3e86b0d536daa11ef0f8e9cc2136b9101e24a5c8b7bd59aafe441e6e7093b5c"
     },
     "windows-x86_64": {
-      "id": 14398009928,
-      "sha256": "0744072fa4e9561496882e4b8cece7f30997f93f60db33e5cecc684531264e8c"
-    },
-    "android": {
-      "id": 14398497930,
-      "sha256": "de2d5b27cd19f9f4c0c97592a2097ca9d1e343ffbaa4624564ea31ced874582f"
+      "id": 14433025409,
+      "sha256": "0885340fcddfcfd40095dab7bf330b9b4922251504e650798b99c9ee087bec7a"
     },
     "apple": {
-      "id": 14399827332,
-      "sha256": "062ae94a5ea0fd06b4ebb058123a6a49a4f613de51c412985d0b0c69251e386a"
+      "id": 14434001828,
+      "sha256": "37f3a127a97c6a1829ee6e8ef3c30074b73aa88eb204fc8bef795178dcd898f2"
     }
   },
-  "notes": "# Peerloom v0.5.0\n\n## 通道延迟统计\n\n- 新增可选可靠字节流发送到接收解析的延迟估算，包括公开发送 API 成功接纳后的 SDK 排队时间，不代表采集到渲染的端到端延迟。\n- C API 新增 `DP_CAP_CHANNEL_STATS` 和 `DP_CHANNEL_STATS`，返回 `available`、`rx_delay_us`、`uncertainty_us`、`sample_age_ms`、`sample_count`；Android 可用 `PeerloomSdk.capabilities()` 查询 native 能力。\n- 统计使用实际 DATA 时间戳及四戳校准，不直接跨设备相减，也不将探针 RTT/2 当作视频延迟。误差预算包含路径不对称及 100 ppm 相对时钟漂移工程假设，不是任意设备与网络条件下的精度保证。\n- 无有效校准、校准过期或推导负延迟时不可用；调用方应检查误差与样本年龄。半关闭后校准停止，存活反向数据仍可传输，统计最终过期。\n\n```mermaid\nsequenceDiagram\n    participant A as 发送端 SDK\n    participant B as 接收端 SDK\n    Note over A,B: 先确认双方支持，再显式启用统计\n    A->>B: 四戳探针与校准回复\n    Note over A: 发送成功接纳时记录时间戳\n    A->>B: DATA（包含 SDK 排队时间）\n    Note over B: 解析 DATA，使用校准估算延迟\n    B-->>B: stats 返回估算、误差和年龄\n```\n\n## 兼容与升级\n\n默认仍使用可靠有序 `peerloom.stream.v1`，不改变现有可靠性、顺序、背压与 FIN 行为。只有明确配置 `measure_latency:true` 的通道使用 v2；应用必须先确认远端也支持该能力。对未知或旧版远端继续使用 v1，不展示统计，不能仅凭本地能力启用 v2。\n\nC ABI 仍为 2，新增能力位为 1024。需按实际能力位判断，不能要求 capability 掩码精确等于旧常量。PC 和 Android 若需统计，必须成对升级对应的 SDK 产物；此功能不需要服务端数据库或配置迁移。\n\n## 验证与发布边界\n\n已验证功能覆盖实际 UDP DATA、排队计时、FULL、读取消、半关闭、高 RTT 校准和正负时钟偏移/漂移。源码 `025a936ea0fd8cdb90cdb28d3e91870aa9b13ab8` 的 Linux/500客户端、Windows、Apple、Android4K/16K及管理端 CI 全部通过；五平台归档通过版本、源码与内部散列校验。\n\n发布包沿用现有第三方证据说明；不得将可交付状态当作完成法律审查。真实设备配对已验证视频及左下角延迟显示；未完成真实弱网自动调质验收，不将模拟测试或单次点击扩大表述为全部控制验收。\n"
+  "notes": "# Peerloom v0.5.1\n\n- Android AAR 新增 armeabi-v7a，保留 arm64-v8a 和 x86_64。\n- 构建及打包校验支持 ELF32，并校验三 ABI、机器类型与 LOAD 对齐。\n- 不改变现有 C ABI、通信协议、可靠有序策略或服务端数据结构。SDK min API 24 不变，下游 AutoX app 模式仍要求 API 26+。\n- ARM32 功能提交已完成 Android 12 真机 32 位 JNI、投屏及控制主流程验证，不宣称全版本或全功能回归。\n- 版本源码 032a3ed0654adf2cd48edc97b6a1a2907d59cbd8 的 Android 4K/16K、Windows、Apple、Linux/500客户端及管理端 CI 全部通过。容量作业首次在 Redis 测试依赖构建失败，保留失败记录；同SHA单次重跑通过。\n- 五平台归档均通过源码、版本及完整散列校验，沿用现有第三方证据边界，不代表法律审查完成。\n"
 }
