@@ -12,7 +12,7 @@ ndk = android / "ndk" / "29.0.14206865"
 bin_dir = ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin"
 if not bin_dir.is_dir():
     raise SystemExit("Pinned NDK 29.0.14206865 is required; no implicit download")
-for triple, compiler in (("aarch64-linux-android", "aarch64-linux-android24-clang"), ("x86_64-linux-android", "x86_64-linux-android24-clang")):
+for triple, compiler in (("armv7-linux-androideabi", "armv7a-linux-androideabi24-clang"), ("aarch64-linux-android", "aarch64-linux-android24-clang"), ("x86_64-linux-android", "x86_64-linux-android24-clang")):
     subprocess.run(["rustup", "target", "add", "--toolchain", "1.99.1", triple], check=True)
     env = dict(os.environ)
     env["RUSTUP_TOOLCHAIN"] = "1.99.1"

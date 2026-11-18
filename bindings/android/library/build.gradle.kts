@@ -31,6 +31,7 @@ val buildRust by
         inputs.files(fileTree(rootProject.projectDir.resolve("../../third_party/rust/rtc-ice-0.21.1")))
         inputs.files(fileTree(rootProject.projectDir.resolve("../../third_party/rust/webrtc-0.21.1")))
         outputs.files(
+            rustTarget.resolve("armv7-linux-androideabi/release/libdevice_ffi.a"),
             rustTarget.resolve("aarch64-linux-android/release/libdevice_ffi.a"),
             rustTarget.resolve("x86_64-linux-android/release/libdevice_ffi.a"),
         )
@@ -57,7 +58,7 @@ android {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64") }
         externalNativeBuild {
             cmake {
                 arguments +=

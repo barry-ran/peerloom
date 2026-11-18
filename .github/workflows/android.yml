@@ -35,6 +35,7 @@ jobs:
           persist-credentials: false
       - name: 隔离构建安全负例（不启动真实模拟器或修改KVM）
         run: |
+          python3 bindings/android/scripts/test-artifacts.py
           python3 bindings/android/scripts/test-build-safety.py
           python3 bindings/android/scripts/test-diagnostics.py
           python3 bindings/android/scripts/test-trust-fixture.py
@@ -49,7 +50,7 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
           rustc +1.99.1 --version
           cat "$ANDROID_HOME/ndk/29.0.14206865/source.properties"
-      - name: 两个ABI真实构建、AAR和示例APK
+      - name: 三个ABI真实构建、AAR和示例APK
         working-directory: bindings/android
         run: |
           ./gradlew --no-daemon :library:testDebugUnitTest :library:assembleRelease :library:assembleDebugAndroidTest :sample:assembleDebug
