@@ -101,7 +101,7 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 
 产物必须随带项目 MIT、Rust Android target 与 Maven runtime/test 分开的依赖/许可证证据。 正常联网构建阶段仅针对两个已解析 configuration 的精确外部坐标，使用既有仓库规则预取 POM；不跟随 POM 内任意下载 URL，不改版本或加入新依赖。预取清单绑定依赖图、POM 身份/摘要与解析到的 binary 大小/摘要；离线采集重新解析并逐项核对，缺 POM、坐标不符或准备后字节替换均拒绝。POM 可继承同文档 parent 的 group/version，但不会联网追踪 parent。可得原文及 notice 必须保留；仅剩许可证原文不足仍如实标记 incomplete，不自动获得 Maven 交付例外或法律批准。现有 Linux SBOM 不能冒充 AAR 完整清单；Maven 证据仍需配套发布流程补齐，不能仅凭 native tests 绿就宣布许可证审计完成。
 
-ARMv7 使用 Rust `armv7-linux-androideabi` 与 NDK `armv7a-linux-androideabi24-clang`，保持 SDK min API 24 和其余 ABI 不变。候选 `562be0f0` 的[三 ABI 构建、产物校验及既有 4KB/16KB 模拟器门禁](https://github.com/barry-ran/peerloom/actions/runs/44287489823)均通过；模拟器运行的是 x86_64，不等于 ARM32 真机运行已通过。下游须在支持 ARM32 的设备上明确选择 `armeabi-v7a` 安装并确认实际进程位数，再验收连接、收发与关闭。ABI 扩展不自动降低下游应用的最低 Android API。
+ARMv7 使用 Rust `armv7-linux-androideabi` 与 NDK `armv7a-linux-androideabi24-clang`，保持 SDK min API 24 和其余 ABI 不变。候选 `562be0f0` 的[三 ABI 构建、产物校验及既有 4KB/16KB 模拟器门禁](https://github.com/barry-ran/peerloom/actions/runs/44287489823)均通过；模拟器运行的是 x86_64，不作为 ARM32 运行证明。下游 AutoX 已在支持 ARM32 的 M2006J10C（Android 12 / API 31）上验证 32 位进程、JNI 加载及 Peerloom 视频和控制主流程；此为改动相关真机验收，不宣称所有 Android 版本或旧功能已全量回归。ABI 扩展不自动降低下游应用的最低 Android API。
 
 ## 官方依据
 
