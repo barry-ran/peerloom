@@ -74,7 +74,7 @@ flowchart LR
 | Kotlin | 2.2.20 |
 | NDK / CMake | 29.0.14206865 / 3.22.1 |
 | compile/target API / min API | 36 / 24 |
-| ABI | arm64-v8a、x86_64 |
+| ABI | armeabi-v7a、arm64-v8a、x86_64 |
 | verifier Kotlin AAR | 从 Cargo.lock 校验 `rustls-platform-verifier-android` 0.2.0，实际 Maven group 为 `org.rustls` |
 | emulator | 官方 stable 37.2.12；API36 两类镜像 revision7，变化时必须显式复核 |
 
@@ -88,7 +88,7 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 
 `.github/workflows/android.yml` 分为构建和 emulator jobs；模拟器分别断言真实 `PAGE_SIZE` 为 4096/16384，不仅检查编译 flag。
 
-1. 构建两个 ABI，检查每个 ELF LOAD 段 >=16KB 对齐；对示例/测试 APK 执行 `zipalign -P 16`。
+1. 构建三个 ABI，按 ABI 检查 ELF32/ELF64、机器类型及每个 ELF LOAD 段 >=16KB 对齐；对示例/测试 APK 执行 `zipalign -P 16`。
 2. CheckJNI 下多轮 create/start/close/release、无效句柄与 receiver 引用归零。
 3. Keystore 同进程/独立进程 CAS、持锁子进程强杀释放、tombstone、rename 故障和软链接拒绝、磁盘不含测试明文；通过独立 instrumentation 进程与 force-stop 验证重启读取。
 4. 仅 GitHub Actions 独占临时 AVD 的测试 APK 可临时启用测试管理员，安装从已核验 APK 提取、按 DER SHA256 确认的单张临时 CA；HTTPS 与 WSS 分别验证正确 CA/SAN 接受、错误 SAN 和不可信 CA 拒绝。无论成功失败，先卸载并确认该 CA 消失，再移除管理员并确认失效，最后销毁本任务 AVD；清理失败必须 CI 失败。禁止批量清空 CA、修改宿主/用户设备或把管理员、测试 CA 带入 AAR/示例 APK。锁定的 verifier 使用 `AndroidCAStore`，不会读取应用 NSC 的自定义 raw CA；测试不通过修改生产验证器绕过此差异。
@@ -100,6 +100,8 @@ CI checkout 不持久化 Git 凭证。下载后先验证八项完整产物清单
 16KB 测试曾从本包 `ApplicationExitInfo` 取得 `REASON_LOW_MEMORY=3` 的明确记录，表明持锁测试进程被系统低内存清理，因而采用上述固定内存 fixture；保持原断言、五轮首败即红，不重试掩盖。该证据不追认更早所有崩溃都属于同一根因，也不证明任意低内存真机的长期行为。失败诊断仅保留白名单阶段、数值退出原因和受限异常类别，不读取进程 trace/description，不上传原始 logcat 或凭证。普通 emulator 不等于真机；移动网络切换、系统休眠、OEM Keystore 与长期后台生命周期仍需专项验收。
 
 产物必须随带项目 MIT、Rust Android target 与 Maven runtime/test 分开的依赖/许可证证据。 正常联网构建阶段仅针对两个已解析 configuration 的精确外部坐标，使用既有仓库规则预取 POM；不跟随 POM 内任意下载 URL，不改版本或加入新依赖。预取清单绑定依赖图、POM 身份/摘要与解析到的 binary 大小/摘要；离线采集重新解析并逐项核对，缺 POM、坐标不符或准备后字节替换均拒绝。POM 可继承同文档 parent 的 group/version，但不会联网追踪 parent。可得原文及 notice 必须保留；仅剩许可证原文不足仍如实标记 incomplete，不自动获得 Maven 交付例外或法律批准。现有 Linux SBOM 不能冒充 AAR 完整清单；Maven 证据仍需配套发布流程补齐，不能仅凭 native tests 绿就宣布许可证审计完成。
+
+ARMv7 使用 Rust `armv7-linux-androideabi` 与 NDK `armv7a-linux-androideabi24-clang`，保持 SDK min API 24 和其余 ABI 不变。候选 `562be0f0` 的[三 ABI 构建、产物校验及既有 4KB/16KB 模拟器门禁](https://github.com/barry-ran/peerloom/actions/runs/44287489823)均通过；模拟器运行的是 x86_64，不等于 ARM32 真机运行已通过。下游须在支持 ARM32 的设备上明确选择 `armeabi-v7a` 安装并确认实际进程位数，再验收连接、收发与关闭。ABI 扩展不自动降低下游应用的最低 Android API。
 
 ## 官方依据
 
