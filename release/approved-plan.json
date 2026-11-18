@@ -4,32 +4,32 @@
   "approved": true,
   "administration_sha": "event",
   "operation": "release",
-  "release_sha": "f8b597f1ace2c97ed6058d730c600fc7961f69f1",
+  "release_sha": "025a936ea0fd8cdb90cdb28d3e91870aa9b13ab8",
   "tag_sha": "event",
-  "tag": "v0.4.0",
+  "tag": "v0.5.0",
   "prerelease": false,
   "final_scope_accepted": true,
   "artifacts": {
     "linux-x86_64": {
-      "id": 14289013886,
-      "sha256": "c92754f2ab56e73621395c4c46ba18b1a2bebb9527c1c983e8459fefc9aef095"
+      "id": 14399481927,
+      "sha256": "d2dd93e73f5b7285ca0befb59c35dd314a88ee3de73f3709e032adbc030c8fc0"
     },
     "server-linux-amd64": {
-      "id": 14289597089,
-      "sha256": "2157cb531d8f7abf84184de2382509487bc7371654ee7a8a305aee6234e8be7d"
+      "id": 14399382258,
+      "sha256": "27fc47ddd9abb636d0264ecc6c09e859f2238187cece76d323cf19ab42df6ab4"
     },
     "windows-x86_64": {
-      "id": 14289371633,
-      "sha256": "5c048fce6abf1f2e431c047f0503a36bdbd5c8dbd3018e8e87b9e324dbeb7022"
+      "id": 14398009928,
+      "sha256": "0744072fa4e9561496882e4b8cece7f30997f93f60db33e5cecc684531264e8c"
     },
     "android": {
-      "id": 14288568245,
-      "sha256": "a9884ea3b8de8df026d20575aec59dca0eeb66f9282b4b23f649f7a3ba75f26b"
+      "id": 14398497930,
+      "sha256": "de2d5b27cd19f9f4c0c97592a2097ca9d1e343ffbaa4624564ea31ced874582f"
     },
     "apple": {
-      "id": 14289734320,
-      "sha256": "3e31412dd5ea6ef4725b311855e12610b99c77c0a19ed8e9b9090e85e03c5f81"
+      "id": 14399827332,
+      "sha256": "062ae94a5ea0fd06b4ebb058123a6a49a4f613de51c412985d0b0c69251e386a"
     }
   },
-  "notes": "# Peerloom v0.4.0\n\n## 连接与中继\n\n- PC/Android 通用 SDK 使用 Trickle ICE：初始 SDP 不再等待全部接口收集结束，候选通过受授权的会话按代次增量交换。\n- 保留所有网络候选及 RelayOnly 的失效关闭；没有过滤蜂窝接口、缩短 ICE 重传或修改业务连接期限。\n- TURN 438 重试保留 ChannelBind 关联；TURN 输入后及时处理生成的事件与输出，减少等待下一次定时器。\n- preReady 取消先完成协商和底层退出，再返回可关联的请求终态，避免超时后重试永久 pending。\n\n## 托管中继\n\n托管 coturn 动态口令配置改为数据库管理，密钥加密使用独立于数据库的部署密钥，版本化轮换保护在途回执。变更用于新会话；修改 Peerloom 配置不会自动同步 coturn 的共享密钥，不承诺轮换无中断。\n\n## 会话正确性\n\n候选预算、会话授权、代次、mid/ufrag、去重与 EOC 均校验。候选成功写入信令后才允许本地配对；这不是对端收件确认。成功 nomination 后禁止新候选发送准入，已经准入的在途发送可以完成。关闭、取消和过时代次不能提交新配对。\n\nfull ICE 的 PAC 默认39.5秒且内部可配置，从本代实际开始检查时计时；上层现有30秒业务取消仍可能先结束请求。已连接的 consent 超时及显式关闭不因此延后。\n\n## 升级边界\n\n这是不兼容旧信令的版本。服务端及通信双方 SDK 需协同升级，不支持混用 v0.3.0。数据库迁移至14；已有测试环境已验证升级。部署前停止旧客户端及活动会话，保留旧程序、配置和数据库恢复点；不能仅把 SDK 文件替换为新包而继续连接旧信令服务。\n\nC 头文件与 v0.3.0 逐字节一致，C ABI 仍为2。不要将C ABI兼容误认为信令协议兼容。\n\n## 验证与交付\n\n源码 f8b597f1ace2c97ed6058d730c600fc7961f69f1 的 Linux/500容量、Windows、Apple、Android4K/16K和管理浏览器全部门禁通过，五类制品版本为0.4.0，来源与摘要通过既有发布校验。已在受控测试环境验证 Trickle Auto/Relay 实际画面、点击/滑动及停止重连；初始化业务请求耗时另行处理，不宣称已解决。\n\nAndroid支持arm64-v8a/x86_64，不含ARM32；Apple模拟器及未签名设备构建不代表iOS真机。发布操作不修改服务器或安全权限。\n\n## 许可证证据边界\n\n五类制品均通过既有 release_delivery_eligible 发布策略。制品仍保留已登记的第三方许可证证据缺口，release_evidence_complete=false，legal_review=not-performed；这不是法律清关声明。详见各制品随附的第三方许可及来源材料。\n"
+  "notes": "# Peerloom v0.5.0\n\n## 通道延迟统计\n\n- 新增可选可靠字节流发送到接收解析的延迟估算，包括公开发送 API 成功接纳后的 SDK 排队时间，不代表采集到渲染的端到端延迟。\n- C API 新增 `DP_CAP_CHANNEL_STATS` 和 `DP_CHANNEL_STATS`，返回 `available`、`rx_delay_us`、`uncertainty_us`、`sample_age_ms`、`sample_count`；Android 可用 `PeerloomSdk.capabilities()` 查询 native 能力。\n- 统计使用实际 DATA 时间戳及四戳校准，不直接跨设备相减，也不将探针 RTT/2 当作视频延迟。误差预算包含路径不对称及 100 ppm 相对时钟漂移工程假设，不是任意设备与网络条件下的精度保证。\n- 无有效校准、校准过期或推导负延迟时不可用；调用方应检查误差与样本年龄。半关闭后校准停止，存活反向数据仍可传输，统计最终过期。\n\n```mermaid\nsequenceDiagram\n    participant A as 发送端 SDK\n    participant B as 接收端 SDK\n    Note over A,B: 先确认双方支持，再显式启用统计\n    A->>B: 四戳探针与校准回复\n    Note over A: 发送成功接纳时记录时间戳\n    A->>B: DATA（包含 SDK 排队时间）\n    Note over B: 解析 DATA，使用校准估算延迟\n    B-->>B: stats 返回估算、误差和年龄\n```\n\n## 兼容与升级\n\n默认仍使用可靠有序 `peerloom.stream.v1`，不改变现有可靠性、顺序、背压与 FIN 行为。只有明确配置 `measure_latency:true` 的通道使用 v2；应用必须先确认远端也支持该能力。对未知或旧版远端继续使用 v1，不展示统计，不能仅凭本地能力启用 v2。\n\nC ABI 仍为 2，新增能力位为 1024。需按实际能力位判断，不能要求 capability 掩码精确等于旧常量。PC 和 Android 若需统计，必须成对升级对应的 SDK 产物；此功能不需要服务端数据库或配置迁移。\n\n## 验证与发布边界\n\n已验证功能覆盖实际 UDP DATA、排队计时、FULL、读取消、半关闭、高 RTT 校准和正负时钟偏移/漂移。源码 `025a936ea0fd8cdb90cdb28d3e91870aa9b13ab8` 的 Linux/500客户端、Windows、Apple、Android4K/16K及管理端 CI 全部通过；五平台归档通过版本、源码与内部散列校验。\n\n发布包沿用现有第三方证据说明；不得将可交付状态当作完成法律审查。真实设备配对已验证视频及左下角延迟显示；未完成真实弱网自动调质验收，不将模拟测试或单次点击扩大表述为全部控制验收。\n"
 }
